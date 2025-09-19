@@ -67,7 +67,7 @@ type Oti struct {
 	EncodingSymbolLength          uint16
 	MaxNumberOfParitySymbols      uint32
 	ReedSolomonGF2MSchemeSpecific *ReedSolomonGF2MSchemeSpecific
-	InhandFti                     bool
+	InBandFti                     bool
 }
 
 type OtiAttributes struct {
@@ -86,7 +86,7 @@ func NewOti() *Oti {
 		MaximumSourceBlockLength:      64,
 		EncodingSymbolLength:          1424,
 		ReedSolomonGF2MSchemeSpecific: nil,
-		InhandFti:                     true,
+		InBandFti:                     true,
 	}
 }
 
@@ -97,7 +97,7 @@ func NewNoCode(encodingSymbolLength uint16, maximumSourceBlockLength uint32) *Ot
 		MaximumSourceBlockLength:      maximumSourceBlockLength,
 		EncodingSymbolLength:          encodingSymbolLength,
 		ReedSolomonGF2MSchemeSpecific: nil,
-		InhandFti:                     true,
+		InBandFti:                     true,
 	}
 }
 
@@ -109,7 +109,7 @@ func NewReedSolomonRS28(encodingSymbolLength uint16, maximumSourceBlockLength ui
 		EncodingSymbolLength:          encodingSymbolLength,
 		MaxNumberOfParitySymbols:      uint32(maxNumberOfParitySymbols),
 		ReedSolomonGF2MSchemeSpecific: nil,
-		InhandFti:                     true,
+		InBandFti:                     true,
 	}, nil
 }
 
@@ -121,7 +121,7 @@ func NewReedSolomonRs28UnderSpecified(encodingSymbolLength uint16, maximumSource
 		EncodingSymbolLength:          encodingSymbolLength,
 		MaxNumberOfParitySymbols:      uint32(maxNumberOfParitySymbols),
 		ReedSolomonGF2MSchemeSpecific: nil,
-		InhandFti:                     true,
+		InBandFti:                     true,
 	}, nil
 }
 
@@ -150,7 +150,11 @@ func (o *Oti) MaxSourceBlockNumber() uint64 {
 		return uint64(maxU8)
 	case ReedSolomonGF28UnderSpecified:
 		return uint64(maxU32)
+	default:
+		return 0
 	}
 }
 
-func (o *Oti) GetAttributes()
+func (o *Oti) GetAttributes() {
+
+}
