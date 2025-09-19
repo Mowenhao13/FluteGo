@@ -1,10 +1,5 @@
 package fec
 
-import (
-	"errors"
-	"fmt"
-)
-
 type FecShard interface {
 	Data() []byte
 	ESI() uint32
