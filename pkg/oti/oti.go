@@ -126,14 +126,14 @@ func NewReedSolomonRs28UnderSpecified(encodingSymbolLength uint16, maximumSource
 }
 
 func (o *Oti) MaxTransferLength() uint64 {
-	var transferlength uint64
-	switch o.FecEncodingID {
-	case NoCode, ReedSolomonGF2M, ReedSolomonGF28:
-		transferlength = 0xFFFFFFFFFFFF // 48bits
-	default:
-		transferlength = 0
+	var transferlength uint64 = 0xFFFFFFFFFFFF
+	maxSbn := o.MaxSourceBlockNumber()
+	blockSize := uint64(o.EncodingSymbolLength) * uint64(o.MaximumSourceBlockLength)
+	size := blockSize * maxSbn
+	if size > transferlength {
+		return transferlength
 	}
-	return transferlength
+	return size
 }
 
 func (o *Oti) MaxSourceBlockNumber() uint64 {
