@@ -70,6 +70,9 @@ func StrPtr(s string) *string { return &s }
 // Uint8Ptr 返回 uint8 指针
 func Uint8Ptr(v uint8) *uint8 { return &v }
 
+func Uint16Ptr(v uint16) *uint16 { return &v }
+func Uint32Ptr(v uint32) *uint32 { return &v }
+
 // MapOrNil: 若 src 为 nil 返回 nil，否则对其值应用 f 并返回结果指针
 func MapOrNil[T any, R any](src *T, f func(T) R) *R {
 	if src == nil {
@@ -86,4 +89,12 @@ func ValueOrDefault[T any, R any](src *T, f func(T) R) R {
 		return zero
 	}
 	return f(*src)
+}
+
+func PtrSliceToSlice(p *[]string) []string {
+	if p == nil {
+		return []string{}
+	}
+	// 拷贝一份，避免和原始切片共享底层数组
+	return append([]string(nil), (*p)...)
 }
