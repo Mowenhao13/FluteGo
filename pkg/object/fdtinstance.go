@@ -51,6 +51,7 @@ type FdtInstance struct {
 	SchemaVersion *uint32  `xml:"sv:schemaVersion,omitempty"`
 	BaseURL1      []string `xml:"mbms2012:Base-URL-1,omitempty"`
 	BaseURL2      []string `xml:"mbms2012:Base-URL-2,omitempty"`
+	Group         []string `xml:"mbms2005:Group,omitempty"`
 }
 
 // 单个文件项
