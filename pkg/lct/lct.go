@@ -25,7 +25,7 @@ const (
 	ExtTime     = 2
 )
 
-const TOI_FDT uint8 = 0
+var TOI_FDT = t.Uint128{}
 
 type LCTHeader struct {
 	Len             uint64    // 头部长度(字节)
@@ -118,7 +118,7 @@ func nbBytes64(n uint64, min uint32) uint32 {
 }
 
 // LCT 头构建
-func PushLctHeader(
+func PushLCTHeader(
 	data *[]byte,
 	psi uint8,
 	cci t.Uint128,
@@ -203,7 +203,7 @@ func IncHdrLen(data []byte, val uint8) {
 	data[2] += val
 }
 
-func ParseLctHeader(data []byte) (*LCTHeader, error) {
+func ParseLCTHeader(data []byte) (*LCTHeader, error) {
 	if len(data) < 4 {
 		return nil, errors.New("fail to read lct header size")
 	}
