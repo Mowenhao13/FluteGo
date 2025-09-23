@@ -32,14 +32,18 @@ type toiAllocatorInternal struct {
 // ToiAllocator
 
 type ToiAllocator struct {
-	internal *sync.Mutex
-	state    *toiAllocatorInternal
+	mu    sync.Mutex
+	state *toiAllocatorInternal
 }
 
 // Toi 对象，类似 Rust struct Toi
 type Toi struct {
 	allocator *ToiAllocator
 	value     t.Uint128
+}
+
+func (t Toi) String() string {
+	return t.value.String()
 }
 
 // ToiAllocatorInternal 方法
@@ -59,7 +63,8 @@ func newInternal(toiMaxLength TOIMaxLength, toiInitialValue *t.Uint128) *toiAllo
 	}
 
 	toi = toMaxLength(toi, toiMaxLength)
-	if toi == t.FromUint8(lct.TOI_FDT) {
+	// 永远跳过 FDT=0
+	if toi == lct.TOI_FDT {
 		toi = toi.AddUint64(1)
 	}
 
@@ -91,25 +96,36 @@ func toMaxLength(toi t.Uint128, toiMaxLength TOIMaxLength) t.Uint128 {
 	}
 }
 
+// 分配下一枚 TOI：跳过已保留/保留表冲突/TOI_FDT
 func (i *toiAllocatorInternal) allocate() t.Uint128 {
-	ret := i.toi
-	key := ret.String()
-	if _, ok := i.toiReserved[key]; ok {
-		panic("TOI already reserved")
-	}
-	i.toiReserved[key] = struct{}{}
-
 	for {
-		i.toi = toMaxLength(i.toi.AddUint64(1), i.toiMaxLength)
-		if i.toi == t.FromUint8(lct.TOI_FDT) {
-			i.toi = t.Uint128{High: 0, Low: 1}
+		ret := i.toi
+
+		// 永远跳过 FDT=0
+		if ret == lct.TOI_FDT {
+			i.bump()
+			continue
 		}
-		if _, ok := i.toiReserved[i.toi.String()]; !ok {
-			break
+		if _, used := i.toiReserved[ret.String()]; !used {
+			// 占用这枚
+			i.toiReserved[ret.String()] = struct{}{}
+			// bump 到下一枚，方便下次快速分配
+			i.bump()
+			return ret
 		}
-		log.Printf("warn: TOI %s is already used by a file or reserved", i.toi.String())
+
+		// 冲突：继续尝试下一枚
+		log.Printf("warn: TOI %s already reserved; bumping", ret.String())
+		i.bump()
 	}
-	return ret
+}
+
+// 递增并掩码，跳过 FDT
+func (i *toiAllocatorInternal) bump() {
+	i.toi = toMaxLength(i.toi.AddUint64(1), i.toiMaxLength)
+	if i.toi == lct.TOI_FDT {
+		i.toi = t.Uint128{High: 0, Low: 1}
+	}
 }
 
 func (i *toiAllocatorInternal) release(toi t.Uint128) {
@@ -123,8 +139,8 @@ func NewToiAllocator(toiMaxLength TOIMaxLength, toiInitialValue *t.Uint128) *Toi
 }
 
 func (a *ToiAllocator) Allocate() *Toi {
-	a.internal.Lock()
-	defer a.internal.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	val := a.state.allocate()
 	return &Toi{
 		allocator: a,
@@ -140,11 +156,12 @@ func (a *ToiAllocator) AllocateToiFDT() *Toi {
 }
 
 func (a *ToiAllocator) Release(toi t.Uint128) {
-	if toi == t.FromUint8(lct.TOI_FDT) {
+	// FDT 不需要释放/不可释放
+	if toi == lct.TOI_FDT {
 		return
 	}
-	a.internal.Lock()
-	defer a.internal.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.state.release(toi)
 }
 

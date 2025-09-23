@@ -16,7 +16,7 @@ type FDTPublishMode int
 
 const (
 	FullFDT FDTPublishMode = iota
-	// 其它模式按需扩充
+	ObjectsBeingTransferred
 )
 
 // TransferInfo

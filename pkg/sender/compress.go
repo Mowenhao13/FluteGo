@@ -119,15 +119,15 @@ func streamCompressDeflate(input io.Reader, output io.Writer) error {
 
 // 小工具：把 []byte 当作 Writer
 
-type bufferWriter struct {
+type BufferWriter struct {
 	buf *[]byte
 }
 
-func NewBufferWriter(buf *[]byte) *bufferWriter {
-	return &bufferWriter{buf: buf}
+func NewBufferWriter(buf *[]byte) *BufferWriter {
+	return &BufferWriter{buf: buf}
 }
 
-func (b *bufferWriter) Write(p []byte) (int, error) {
+func (b *BufferWriter) Write(p []byte) (int, error) {
 	*b.buf = append(*b.buf, p...)
 	return len(p), nil
 }

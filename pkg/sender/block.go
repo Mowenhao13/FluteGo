@@ -22,7 +22,7 @@ type EncodingSymbol struct {
 	IsSourceSymbol bool
 }
 
-func NewFromBuffer(
+func NewBlockFromBuffer(
 	sbn uint32,
 	buffer []byte,
 	blockLength uint64,
