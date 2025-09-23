@@ -199,10 +199,11 @@ func (f *FileDesc) IsTransferring() bool {
 	return f.transferInfo.transferring
 }
 
-func (f *FileDesc) GetNextTransferTimestamp() *time.Time {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return f.transferInfo.nextTransferTimestamp
+func (f *FileDesc) NextTransferTimestamp() (time.Time, bool) {
+	if f.transferInfo.nextTransferTimestamp == nil {
+		return time.Time{}, false
+	}
+	return *f.transferInfo.nextTransferTimestamp, true
 }
 
 func (f *FileDesc) IncNextTransferTimestamp() {
