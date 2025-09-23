@@ -52,13 +52,13 @@ type ReedSolomonGF2MSchemeSpecific struct {
 	G uint8
 }
 
-func (r ReedSolomonGF2MSchemeSpecific) SchemeSpecific() string {
-
-}
-
-func (r ReedSolomonGF2MSchemeSpecific) Decode(fec_oti_scheme_specific_info string) (ReedSolomonGF2MSchemeSpecific, error) {
-
-}
+//func (r ReedSolomonGF2MSchemeSpecific) SchemeSpecific() string {
+//
+//}
+//
+//func (r ReedSolomonGF2MSchemeSpecific) Decode(fec_oti_scheme_specific_info string) (ReedSolomonGF2MSchemeSpecific, error) {
+//
+//}
 
 type Oti struct {
 	FecEncodingID                 FECEncodingID
@@ -155,6 +155,27 @@ func (o *Oti) MaxSourceBlockNumber() uint64 {
 	}
 }
 
-func (o *Oti) GetAttributes() {
+// Convert Oti → OtiAttributes
+func (o *Oti) GetAttributes() OtiAttributes {
+	enc := uint8(o.FecEncodingID)
+	inst := uint64(o.FecInstanceID)
+	maxSBL := uint64(o.MaximumSourceBlockLength)
+	esl := uint64(o.EncodingSymbolLength)
+	maxN := uint64(o.MaximumSourceBlockLength) + uint64(o.MaxNumberOfParitySymbols)
 
+	var scheme *string
+	if o.ReedSolomonGF2MSchemeSpecific != nil {
+		// 你可以序列化为字符串，比如 "M=8,G=1"
+		s := fmt.Sprintf("M=%d,G=%d", o.ReedSolomonGF2MSchemeSpecific.M, o.ReedSolomonGF2MSchemeSpecific.G)
+		scheme = &s
+	}
+
+	return OtiAttributes{
+		FecOtiFecEncodingID:              &enc,
+		FecOtiFecInstanceID:              &inst,
+		FecOtiMaximumSourceBlockLength:   &maxSBL,
+		FecOtiEncodingSymbolLength:       &esl,
+		FecOtiMaxNumberOfEncodingSymbols: &maxN,
+		FecOtiSchemeSpecificInfo:         scheme,
+	}
 }
