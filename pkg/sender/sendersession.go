@@ -73,7 +73,7 @@ func (s *SenderSession) Run(fdt *Fdt, now time.Time) []byte {
 		}
 
 		// 若文件设置了“下次发送时间戳”，且时间未到，先返回 nil
-		if ts := file.GetNextTransferTimestamp(); !ts.IsZero() && ts.After(now) {
+		if ts, ok := file.NextTransferTimestamp(); ok && ts.After(now) {
 			return nil
 		}
 
