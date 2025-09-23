@@ -78,13 +78,15 @@ type FdtFile struct {
 	FECSchemeInfo *string `xml:"FEC-OTI-Scheme-Specific-Info,attr,omitempty"` // Base64
 }
 
-// CacheControlChoice（Go 里用一个容器承接三种情况）
+type CacheControlChoice struct {
+	// 这几个字段互斥，仅会设置其中之一。
+	// XML tag 里加上 name / alias
+	NoCache  *bool   `xml:"mbms2007:no-cache,omitempty" json:"no-cache,omitempty"`
+	MaxStale *bool   `xml:"mbms2007:max-stale,omitempty" json:"max-stale,omitempty"`
+	Expires  *uint32 `xml:"mbms2007:Expires,omitempty"  json:"Expires,omitempty"`
+}
 type CacheControl struct {
-	// 只解析三种受支持的子元素之一：
-	// <mbms2007:no-cache/>, <mbms2007:max-stale/>, <mbms2007:Expires>12345</mbms2007:Expires>
-	NoCache  *bool
-	MaxStale *bool
-	Expires  *uint32
+	Value CacheControlChoice `xml:",any"` // 把子元素作为 Value
 }
 
 type ObjectCacheControl interface{ isCacheCtl() }
@@ -116,6 +118,7 @@ func (c *CacheControl) UnmarshalXML(d *xml.Decoder, start xml.StartElement) erro
 		Value   string `xml:",chardata"`
 	}
 	var elems []anyElem
+
 	for {
 		tok, err := d.Token()
 		if err != nil {
@@ -139,14 +142,14 @@ DONE:
 		switch e.XMLName.Local {
 		case "no-cache":
 			b := true
-			c.NoCache = &b
+			c.Value.NoCache = &b
 		case "max-stale":
 			b := true
-			c.MaxStale = &b
+			c.Value.MaxStale = &b
 		case "Expires":
 			if v, err := strconv.ParseUint(e.Value, 10, 32); err == nil {
 				u := uint32(v)
-				c.Expires = &u
+				c.Value.Expires = &u
 			}
 		}
 	}
@@ -245,14 +248,14 @@ func (f FdtInstance) GetOti() *oti.Oti {
 func (f *FdtFile) GetObjectCacheControl(fdtExp *time.Time) ObjectCacheControl {
 	// 1) 优先看 Cache-Control
 	if f.CacheControl != nil {
-		if f.CacheControl.NoCache != nil && *f.CacheControl.NoCache {
+		if f.CacheControl.Value.NoCache != nil && *f.CacheControl.Value.NoCache {
 			return ObjectCacheControlNoCache
 		}
-		if f.CacheControl.MaxStale != nil && *f.CacheControl.MaxStale {
+		if f.CacheControl.Value.MaxStale != nil && *f.CacheControl.Value.MaxStale {
 			return ObjectCacheControlMaxStale
 		}
-		if f.CacheControl.Expires != nil {
-			ntp := uint64(*f.CacheControl.Expires) << 32
+		if f.CacheControl.Value.Expires != nil {
+			ntp := uint64(*f.CacheControl.Value.Expires) << 32
 			if tm, err := tools.NTPToSystemTime(ntp); err == nil {
 				return ObjectCacheControlExpiresAt{Time: tm}
 			}
