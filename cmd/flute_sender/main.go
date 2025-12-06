@@ -26,7 +26,7 @@ var (
 	sendFileDir = flag.String("dir", constant.SendFileDir, "Directory containing files to send")
 	otiID      = flag.Int("oti", 0, "OTI Encoding ID: 0=NoCode, 1=RaptorQ, 2=Reed-Solomon")
 	maxConcurrentSends = flag.Int("concurrent", constant.MaxConcurrentSends, "Maximum number of concurrent file sends")
-	destIP      = flag.String("dest", constant.DestIP, "Destination IP address")
+	destIP      = flag.String("ip", constant.DestIP, "Destination IP address")
 )
 
 func main() {

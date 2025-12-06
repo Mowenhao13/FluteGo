@@ -15,8 +15,8 @@ import (
 )
 
 var (
-	saveFileDir = flag.String("recvdir", constant.SaveFileDir, "Directory to receive files")
-	destIP      = flag.String("dest", constant.DestIP, "Destination IP address")
+	saveFileDir = flag.String("dir", constant.SaveFileDir, "Directory to receive files")
+	destIP      = flag.String("ip", constant.DestIP, "Destination IP address")
 )
 
 func main() {
