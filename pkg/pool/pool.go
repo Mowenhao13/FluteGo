@@ -47,6 +47,7 @@ type GlobalConnectionPool struct {
 	fileChunks     sync.Map
 	fileMd5Matched sync.Map
 	stopChan       chan struct{}
+	DestIP         string
 }
 
 // 连接池统计信息
@@ -136,12 +137,13 @@ func (g *GlobalConnectionPool) IsFileMd5Matched(fdtID uint8) bool {
 }
 
 // 初始化全局连接池
-func InitGlobalConnectionPool(maxConns int, timeout time.Duration, mode uint8) {
+func InitGlobalConnectionPool(maxConns int, timeout time.Duration, mode uint8, destIP string) {
 	poolOnce.Do(func() {
 		globalPool = &GlobalConnectionPool{
 			Mode:        mode,
 			maxConns:    maxConns,
 			ConnTimeout: timeout,
+			DestIP:     destIP,
 			stopChan:    make(chan struct{}),
 		}
 		stats.LastPort = constant.MetaPort
@@ -337,13 +339,13 @@ func (g *GlobalConnectionPool) CreateNewFileConnWithBasePort(fdtID uint8, numCon
 
 	for i := 0; i < int(numConn); i++ {
 		port := basePort + i
-		key := net.JoinHostPort(constant.DestIP, fmt.Sprintf("%d", port))
+		key := net.JoinHostPort(g.DestIP, fmt.Sprintf("%d", port))
 
 		// Try to reuse existing connection
 		if wrapper, ok := g.getHealthyConnection(key); ok {
 			wrapper.FdtID = fdtID
 			conns = append(conns, wrapper)
-			fmt.Printf("Reused connection for fdtID(%d): %s:%d\n", fdtID, constant.DestIP, port)
+			fmt.Printf("Reused connection for fdtID(%d): %s:%d\n", fdtID, g.DestIP, port)
 			continue
 		}
 
@@ -356,7 +358,7 @@ func (g *GlobalConnectionPool) CreateNewFileConnWithBasePort(fdtID uint8, numCon
 		// 设置FdtID
 		conn.FdtID = fdtID
 		conns = append(conns, conn)
-		fmt.Printf("Created connection for fdtID(%d): %s:%d\n", fdtID, constant.DestIP, port)
+		fmt.Printf("Created connection for fdtID(%d): %s:%d\n", fdtID, g.DestIP, port)
 	}
 
 	if len(conns) > 0 {

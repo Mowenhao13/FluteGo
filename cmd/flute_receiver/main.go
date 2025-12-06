@@ -1,8 +1,10 @@
 package main
 
 import (
+	"FluteGo/constant"
 	"FluteGo/pkg/system"
 	"context"
+	"flag"
 	"log"
 	"os"
 	"os/signal"
@@ -10,6 +12,11 @@ import (
 	"runtime/pprof"
 	"syscall"
 	"time"
+)
+
+var (
+	saveFileDir = flag.String("recvdir", constant.SaveFileDir, "Directory to receive files")
+	destIP      = flag.String("dest", constant.DestIP, "Destination IP address")
 )
 
 func main() {
@@ -35,7 +42,7 @@ func main() {
 
 	// 1. Initialize System
 	// Use default max workers (0 = auto)
-	sys, err := system.InitReceiverSystem(0)
+	sys, err := system.InitReceiverSystem(0, *destIP, *saveFileDir)
 	if err != nil {
 		log.Fatalf("Failed to initialize system: %v", err)
 	}

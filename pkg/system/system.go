@@ -31,6 +31,8 @@ type ReceiverSystem struct {
 	curReceived sync.Map
 
 	FileReporter FileReporter
+	DestIP       string
+	SaveDir      string
 }
 
 type FileReporter struct {
@@ -55,7 +57,7 @@ var (
 	fileSizeKey = contextKey{"fileSize"}
 )
 
-func InitReceiverSystem(maxWorkers int32) (*ReceiverSystem, error) {
+func InitReceiverSystem(maxWorkers int32, destIP string, saveDir string) (*ReceiverSystem, error) {
 	if maxWorkers <= 0 {
 		maxWorkers = int32(runtime.NumCPU() / 2)
 	}
@@ -73,9 +75,11 @@ func InitReceiverSystem(maxWorkers int32) (*ReceiverSystem, error) {
 			ReportChan: make(chan FileReport, 100),
 			FileChans:  make(map[uint8]chan FileReport),
 		},
+		DestIP: destIP,
+		SaveDir: saveDir,
 	}
 
-	pool.InitGlobalConnectionPool(int(maxWorkers), constant.MaxMetaConnTimeout, 1)
+	pool.InitGlobalConnectionPool(int(maxWorkers), constant.MaxMetaConnTimeout, 1, destIP)
 	s.recvPool = pool.GetGlobalPool()
 	if s.recvPool == nil {
 		return nil, fmt.Errorf("pool not initialized")
@@ -317,7 +321,7 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 	}
 	defer s.recvPool.CloseFileConn(fdtID)
 
-	recv, err := receiver.InitReceiver(task)
+	recv, err := receiver.InitReceiver(task, s.SaveDir)
 	if err != nil {
 		s.reportError(ctx, uint8(errs.LevelError), err, fdtID)
 		close(recvReportChan)

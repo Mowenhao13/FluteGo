@@ -74,7 +74,7 @@ type WriteRequest struct {
 	ChunkIdx uint32
 }
 
-func initDecoderConfig(mt *meta.MetaPkt) decoder.DecoderConfig {
+func initDecoderConfig(mt *meta.MetaPkt, saveDir string) decoder.DecoderConfig {
 	decoderType := mt.Oti.FECEncodingID
 	fileSize := mt.File.TransferLen
 	chunkSize := mt.Oti.MaximumChunkSize
@@ -97,15 +97,15 @@ func initDecoderConfig(mt *meta.MetaPkt) decoder.DecoderConfig {
 		RedundancyRatio: redundancyRatio,
 		MaxPacketSize:   maxPacketSize,
 		FName:           constant.RsTmpRecvInDir + mt.File.Name,
-		OutputPath:      mt.File.SaveDir + mt.File.Name, // Final output path for RS decoder
+		OutputPath:      saveDir + mt.File.Name, // Final output path for RS decoder
 	}
 
 	return decoderConfig
 }
 
-func InitReceiver(mt *meta.MetaPkt) (*Receiver, error) {
-	outFilePath := mt.File.SaveDir + mt.File.Name
-	config := initDecoderConfig(mt)
+func InitReceiver(mt *meta.MetaPkt, saveDir string) (*Receiver, error) {
+	outFilePath := saveDir + mt.File.Name
+	config := initDecoderConfig(mt, saveDir)
 	chunkSize := int64(config.ChunkSize)
 	if chunkSize <= 0 {
 		chunkSize = int64(constant.DefaultChunkSize)

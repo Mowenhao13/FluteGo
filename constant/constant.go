@@ -22,8 +22,8 @@ const (
 
 // Sender param
 const (
-	SendFileDir = "/home/Halllo/Projects/Flute_test_v2/cmd/send_files/"
-	SaveFileDir = "/home/Halllo/Projects/Flute_test_v2/cmd/received_files/"
+	SendFileDir = "cmd/send_files/"
+	SaveFileDir = "cmd/received_files/"
 
 	SendRedundancyRatio      = 1.05
 	DefaultSendRateLimitMbps = 1000 // default send rate limit; 0 disables throttling
@@ -56,8 +56,8 @@ const (
 	RsWithLeopardGF16            = false 
 	RsWithInversionCache         = true
 
-	RsTmpSendOutDir              = "/home/Halllo/Projects/Flute_test_v2/tmp/rs_send/"
-	RsTmpRecvInDir               = "/home/Halllo/Projects/Flute_test_v2/tmp/rs_recv/"
+	RsTmpSendOutDir              = "../tmp/rs_send/"
+	RsTmpRecvInDir               = "../tmp/rs_recv/"
 )
 
 // system param

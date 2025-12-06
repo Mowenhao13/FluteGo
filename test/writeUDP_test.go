@@ -1,6 +1,7 @@
 package test
 
 import (
+	"FluteGo/constant"
 	pool "FluteGo/pkg/pool"
 	"context"
 	"encoding/binary"
@@ -25,7 +26,7 @@ const (
 
 func init() {
 	go func() {
-		pool.InitGlobalConnectionPool(100, 120*time.Second, 0)
+		pool.InitGlobalConnectionPool(100, 120*time.Second, 0, constant.DestIP)
 	}()
 	time.Sleep(100 * time.Millisecond)
 }

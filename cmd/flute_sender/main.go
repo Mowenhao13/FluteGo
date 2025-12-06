@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"FluteGo/constant"
 	"FluteGo/pkg/meta"
 	"FluteGo/pkg/oti"
@@ -20,6 +21,13 @@ import (
 
 var globalPool *pool.GlobalConnectionPool
 var sendFileIndex uint32
+
+var (
+	sendFileDir = flag.String("dir", constant.SendFileDir, "Directory containing files to send")
+	otiID      = flag.Int("oti", 0, "OTI Encoding ID: 0=NoCode, 1=RaptorQ, 2=Reed-Solomon")
+	maxConcurrentSends = flag.Int("concurrent", constant.MaxConcurrentSends, "Maximum number of concurrent file sends")
+	destIP      = flag.String("dest", constant.DestIP, "Destination IP address")
+)
 
 func main() {
 	// 创建内存profile文件
@@ -47,7 +55,7 @@ func main() {
 	var sendFileList []*os.File
 	for _, file := range files {
 		if !file.IsDir() {
-			f, err := os.Open(constant.SendFileDir + file.Name())
+			f, err := os.Open(*sendFileDir + file.Name())
 			if err != nil {
 				log.Printf("Failed to open file: %v", err)
 			}
@@ -57,26 +65,39 @@ func main() {
 	}
 
 	if len(sendFileList) == 0 {
-		log.Printf("No files found in %s", constant.SendFileDir)
+		log.Printf("No files found in %s", *sendFileDir)
 		return
 	}
 
 	fdtID := uint8(1)
+	var o oti.Oti
 
-	oti := oti.NewReedSolomon(12, 4)
-	if oti.MaximumChunkSize == 0 {
-		oti.MaximumChunkSize = uint32(constant.DefaultChunkSize)
+	switch *otiID {
+	case 0:
+		o = oti.NewNoCode(1400)
+		log.Printf("Using OTI: NoCode")
+	case 1:
+		o = oti.NewRaptorQ(1400)
+		log.Printf("Using OTI: RaptorQ (Not implemented, defaulting to Reed-Solomon)")
+	case 2:
+		o = oti.NewReedSolomon(12, 4)	
+		log.Printf("Using OTI: Reed-Solomon")
+	default:
+		log.Printf("Invalid OTI ID %d, defaulting to Reed-Solomon", *otiID)
+	}
+	if o.MaximumChunkSize == 0 {
+		o.MaximumChunkSize = uint32(constant.DefaultChunkSize)
 	}
 
 	// Align ChunkSize to page size to ensure consistency between Sender (mmap) and Receiver
 	pageSize := os.Getpagesize()
-	if int(oti.MaximumChunkSize)%pageSize != 0 {
-		alignedSize := uint32(((int(oti.MaximumChunkSize) + pageSize - 1) / pageSize) * pageSize)
-		log.Printf("Aligning ChunkSize from %d to %d (PageSize: %d)", oti.MaximumChunkSize, alignedSize, pageSize)
-		oti.MaximumChunkSize = alignedSize
+	if int(o.MaximumChunkSize)%pageSize != 0 {
+		alignedSize := uint32(((int(o.MaximumChunkSize) + pageSize - 1) / pageSize) * pageSize)
+		log.Printf("Aligning ChunkSize from %d to %d (PageSize: %d)", o.MaximumChunkSize, alignedSize, pageSize)
+		o.MaximumChunkSize = alignedSize
 	}
 
-	pool.InitGlobalConnectionPool(100, constant.MaxMetaConnTimeout, 0)
+	pool.InitGlobalConnectionPool(100, constant.MaxMetaConnTimeout, 0, *destIP)
 	globalPool = pool.GetGlobalPool()
 	if globalPool == nil {
 		log.Panic("Pool not initialized\n")
@@ -89,7 +110,7 @@ func main() {
 
 	defer globalPool.CloseMetaConn()
 
-	maxConcurrent := constant.MaxConcurrentSends
+	maxConcurrent := *maxConcurrentSends
 	if maxConcurrent <= 0 {
 		maxConcurrent = 1
 	}
@@ -123,7 +144,7 @@ func main() {
 			defer globalPool.CloseFileConn(fid)
 
 			basePort := portFromConn(conns[0].Conn)
-			metaPkt, err := meta.InitMetaPkt(f, oti, basePort, uint16(numPorts), fid, constant.SaveFileDir)
+			metaPkt, err := meta.InitMetaPkt(f, o, basePort, uint16(numPorts), fid, constant.SaveFileDir)
 			if err != nil {
 				log.Printf("Failed to init MetaPkt: %v", err)
 				return
