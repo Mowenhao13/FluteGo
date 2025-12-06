@@ -1,0 +1,33 @@
+# Work files and test data
+cmd/work_files/
+cmd/send_files/
+cmd/received_files/
+
+# Temporary directories
+tmp/
+test/tmp/
+test/tmp_recv/
+
+# Memory profiles
+*.pprof
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.dll
+
+# Go
+*.go.bak
+vendor/
+go.sum.bak

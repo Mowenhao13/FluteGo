@@ -4,9 +4,16 @@ import (
 	constant "FluteGo/constant"
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 
 	rs "github.com/klauspost/reedsolomon"
+	"golang.org/x/sys/unix"
 )
 
 type RsEncoder struct {
@@ -62,21 +69,12 @@ func NewRsEncoder(config EncoderConfig) (*RsEncoder, error) {
 	}, nil
 }
 
-func (e *RsEncoder) EncodeChunk(chunkIdx uint32, chunkSz uint32, data []byte, cb SendCallback) (int, error) {
-	if len(data) == 0 {
-		return 0, nil
-	}
-
-	callback := cb
-	if callback == nil {
-		callback = e.Callback
-	}
-
+func (e *RsEncoder) encode() error {
 	dataShards := int(e.Config.DataShards)
 	parityShards := int(e.Config.ParityShards)
 	totalShards := dataShards + parityShards
 
-	enc, err := rs.New(dataShards, parityShards,
+	enc, err := rs.NewStream(dataShards, parityShards,
 		rs.WithSSE2(e.RsExtraParam.WithSSE2),
 		rs.WithSSSE3(e.RsExtraParam.WithSSSE3),
 		rs.WithAVX2(e.RsExtraParam.WithAVX2),
@@ -90,93 +88,204 @@ func (e *RsEncoder) EncodeChunk(chunkIdx uint32, chunkSz uint32, data []byte, cb
 		rs.WithLeopardGF16(e.RsExtraParam.WithLeopardGF16),
 		rs.WithInversionCache(e.RsExtraParam.WithInversionCache),
 	)
-
 	if err != nil {
-		return 0, fmt.Errorf("failed to create Reed-Solomon encoder: %w", err)
+		return fmt.Errorf("failed to create Reed-Solomon encoder: %w", err)
 	}
 
-	shards, err := enc.Split(data)
-	if err != nil {
-		return 0, fmt.Errorf("failed to split data into shards: %w", err)
+	out := make([]*os.File, totalShards)
+	dir, file := filepath.Split(e.Config.FName)
+	if constant.RsTmpSendOutDir != "" {
+		dir = constant.RsTmpSendOutDir
 	}
 
-	shardSize := len(shards[0])
-	totalSymbolsPerShard := (shardSize + int(e.Config.SymbolSize) - 1) / int(e.Config.SymbolSize)
+	log.Printf("RS encoder will write shards to dir: %s (base filename: %s)", dir, file)
 
-	// for shardIdx, shard := range shards {
-	// 	for symbolIdx := 0; symbolIdx < totalSymbolsPerShard; symbolIdx++ {
-	// 		start := symbolIdx * int(e.Config.SymbolSize)
-	// 		end := start + int(e.Config.SymbolSize)
-	// 		if end > len(shard) {
-	// 			end = len(shard)
-	// 		}
-
-	// 		if callback != nil {
-	// 			if err := callback(chunkIdx, uint32(shardIdx*totalSymbolsPerShard+symbolIdx), chunkSz, shard[start:end]); err != nil {
-	// 				if shardIdx < dataShards {
-	// 					return shardIdx*totalSymbolsPerShard + symbolIdx, fmt.Errorf("callback failed for data shard %d symbol %d: %w", shardIdx, symbolIdx, err)
-	// 				}
-	// 				log.Printf("Warning: failed to send parity shard %d symbol %d for chunk %d: %v\n", shardIdx, symbolIdx, chunkIdx, err)
-	// 			}
-	// 		}
-	// 	}
-	// }
-
-	symbolSent := 0
-	for symbolIdx := 0; symbolIdx < totalSymbolsPerShard; symbolIdx++ {
-		for shardIdx := 0; shardIdx < totalShards; shardIdx++ {
-			start := symbolIdx * int(e.Config.SymbolSize)
-			end := start + int(e.Config.SymbolSize)
-			if end > len(shards[shardIdx]) {
-				end = len(shards[shardIdx])
-			}
-			if start > end {
-				continue 
-			}
-
-			symbolData := shards[shardIdx][start:end]
-			if callback != nil {
-				if err := callback(chunkIdx, uint32(shardIdx*totalSymbolsPerShard+symbolIdx), chunkSz, symbolData); err != nil {
-					if shardIdx < dataShards {
-						return shardIdx*totalSymbolsPerShard + symbolIdx, fmt.Errorf("callback failed for data shard %d symbol %d: %w", shardIdx, symbolIdx, err)
-					}
-					log.Printf("Warning: failed to send parity shard %d symbol %d for chunk %d: %v\n", shardIdx, symbolIdx, chunkIdx, err)
-				}
-			}
+	if dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.Printf("Failed to create RS temp dir %s: %v", dir, err)
+			return err
 		}
-		symbolSent++
 	}
-	enc = nil
 
-	return symbolSent, nil
+	for i := range out {
+		outfn := fmt.Sprintf("%s.%d", file, i)
+		fullPath := filepath.Join(dir, outfn)
+		out[i], err = os.Create(fullPath)
+		if err != nil {
+			log.Printf("Failed to create shard file %s: %v", fullPath, err)
+			return err
+		}
+		log.Printf("Created shard file: %s", fullPath)
+	}
+
+	data := make([]io.Writer, dataShards)
+	for i := range data {
+		data[i] = out[i]
+	}
+
+	// Open source file and split into data shards first
+	srcFile, err := os.Open(e.Config.FName)
+	if err != nil {
+		return fmt.Errorf("failed to open source file %s: %w", e.Config.FName, err)
+	}
+	defer srcFile.Close()
+
+	log.Println("Splitting source into data shards...")
+	if err := enc.Split(srcFile, data, int64(e.Config.FileSize)); err != nil {
+		return fmt.Errorf("split failed: %w", err)
+	}
+	log.Println("Encoding parity...")
+	input := make([]io.Reader, dataShards)
+
+	for i := range data {
+		if err := out[i].Close(); err != nil {
+			return err
+		}
+		f, err := os.Open(out[i].Name())
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		input[i] = f
+	}
+
+	// Validate input shards (ensure non-empty and readable)
+	for i, r := range input {
+		if r == nil {
+			return fmt.Errorf("data shard %d reader is nil", i)
+		}
+		if f, ok := r.(*os.File); ok {
+			st, err := f.Stat()
+			if err != nil {
+				return fmt.Errorf("failed to stat data shard %d: %w", i, err)
+			}
+			log.Printf("Data shard %d size: %d bytes", i, st.Size())
+			if st.Size() == 0 {
+				return fmt.Errorf("ENCODE_FAILED: data shard %d is empty", i)
+			}
+			// ensure read offset at start
+			f.Seek(0, 0)
+		}
+	}
+
+	parity := make([]io.Writer, parityShards)
+	for i := range parity {
+		parity[i] = out[dataShards+i]
+		defer out[dataShards+i].Close()
+	}
+
+	err = enc.Encode(input, parity)
+	if err != nil {
+		return fmt.Errorf("ENCODE_FAILED: %w", err)
+	}
+
+	fmt.Printf("File successfully split into %d data + %d parity shards.\n", dataShards, parityShards)
+
+	return nil
+}
+
+// extractShardIndex extracts the numeric suffix from a shard filename
+// e.g., "file.bin.3" -> 3, "file.bin" -> 0
+func extractShardIndex(filename string) int {
+	parts := strings.Split(filename, ".")
+	if len(parts) > 0 {
+		if idx, err := strconv.Atoi(parts[len(parts)-1]); err == nil {
+			return idx
+		}
+	}
+	return 0
 }
 
 func (e *RsEncoder) Encode(ctx context.Context, chunkCount uint32, provider DataProvider, cb SendCallback) error {
-	callback := cb 
+	callback := cb
 	if callback == nil {
 		callback = e.Callback
 	}
 
-	// For RS, we just encode chunks sequentially for now as it doesn't support symbol-level interleaving easily
-	// without significant changes to how RS works (it's block based).
-	for i := uint32(0); i < chunkCount; i++ {
-		if ctx != nil {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
+	if err := e.encode(); err != nil {
+		return fmt.Errorf("failed to encode data: %w", err)
+	}
+
+	fs, err := os.ReadDir(constant.RsTmpSendOutDir)
+	if err != nil {
+		return fmt.Errorf("failed to read temp dir: %w", err)
+	}
+
+	// Sort files by numeric suffix (e.g., file.0, file.1, file.10, file.2 -> sorted as 0, 1, 2, 10)
+	sort.Slice(fs, func(i, j int) bool {
+		iIdx := extractShardIndex(fs[i].Name())
+		jIdx := extractShardIndex(fs[j].Name())
+		return iIdx < jIdx
+	})
+
+	for _, fn := range fs {
+		if !fn.Type().IsRegular() {
+			continue
+		}
+		if !strings.HasPrefix(fn.Name(), filepath.Base(e.Config.FName)+".") {
+			continue
+		}
+
+		log.Printf("Found shard: %s\n", fn.Name())
+
+		// debug: report parsed shard index
+		partsDbg := strings.Split(fn.Name(), ".")
+		if len(partsDbg) > 0 {
+			if ix, err := strconv.Atoi(partsDbg[len(partsDbg)-1]); err == nil {
+				log.Printf("Parsed shard index %d from filename %s", ix, fn.Name())
 			}
 		}
 
-		data, sz, err := provider(i)
+		f, err := os.Open(filepath.Join(constant.RsTmpSendOutDir, fn.Name()))
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to open shard %s: %w", fn.Name(), err)
 		}
-		_, err = e.EncodeChunk(i, uint32(sz), data, callback)
+		defer f.Close()
+
+		instat, err := f.Stat()
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to stat shard %s: %w", fn.Name(), err)
 		}
+		log.Printf("Shard %s size: %d bytes\n", fn.Name(), instat.Size())
+
+		sz := int(instat.Size())
+		shardData, err := unix.Mmap(int(f.Fd()), 0, sz, unix.PROT_READ, unix.MAP_SHARED)
+		if err != nil {
+			return fmt.Errorf("mmap failed for shard %s: %w", fn.Name(), err)
+		}
+
+		if len(shardData) != sz {
+			return fmt.Errorf("mmap size mismatch for shard %s: expected %d, got %d", fn.Name(), sz, len(shardData))
+		}
+
+		// determine shard index from filename suffix
+		shardIdx := 0
+		parts := strings.Split(fn.Name(), ".")
+		if len(parts) > 0 {
+			if ix, err := strconv.Atoi(parts[len(parts)-1]); err == nil {
+				shardIdx = ix
+			}
+		}
+
+		for i := 0; i < sz; i += int(e.Config.SymbolSize) {
+			start := i
+			end := i + int(e.Config.SymbolSize)
+			if end > sz {
+				end = sz
+			}
+
+			symbolIdx := i / int(e.Config.SymbolSize)
+			symData := shardData[start:end]
+			// 添加调试日志
+			log.Printf("DEBUG: Calling callback with shardIdx=%d, symbolIdx=%d, shardSize=%d, dataLen=%d",
+				shardIdx, symbolIdx, sz, len(symData))
+			if err := callback(uint32(shardIdx), uint32(symbolIdx), uint32(sz), symData); err != nil {
+				return fmt.Errorf("callback failed for shard %d symbol %d: %w", shardIdx, symbolIdx, err)
+			}
+		}
+		unix.Munmap(shardData)
 	}
+
 	return nil
 }
 

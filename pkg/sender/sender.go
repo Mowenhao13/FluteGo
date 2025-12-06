@@ -34,7 +34,7 @@ type Sender struct {
 
 	totalSent            int64
 	totalPackets         int64
-	totalFiles           uint16 
+	totalFiles           uint16
 	startTime            time.Time
 	rateLimiter          *rate.Limiter
 	rateLimitBytesPerSec int
@@ -49,6 +49,19 @@ func initEncoderConfig(mt *meta.MetaPkt) encoder.EncoderConfig {
 		chunkSize = uint32(constant.DefaultChunkSize)
 	}
 	symbolSize := mt.Oti.SymbolSize
+	// For Reed-Solomon we expect a packet/symbol size (e.g. MTU).
+	// Some OTI constructors set SymbolSize=1 as a placeholder; prefer mt.MaxPacketSize or constant.MaxPacketSize.
+	if encoderType == 2 { // Reed-Solomon
+		if mt.MaxPacketSize > 0 {
+			symbolSize = uint16(mt.MaxPacketSize)
+		} else if symbolSize <= 1 {
+			symbolSize = uint16(constant.MaxPacketSize)
+		}
+	} else {
+		if symbolSize == 0 {
+			symbolSize = uint16(constant.MaxPacketSize)
+		}
+	}
 	dataShards := mt.Oti.DataShards
 	parityShards := mt.Oti.ParityShards
 	redundancyRatio := constant.SendRedundancyRatio
@@ -107,6 +120,7 @@ func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, 
 	config.ChunkSize = uint32(chunkSize)
 	config.FileSize = uint64(info.Size())
 	config.Fd = int(file.Fd())
+	config.FName = inputFilePath
 
 	enc, err := encoder.NewEncoder(config)
 	if err != nil {
@@ -138,13 +152,6 @@ func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, 
 
 func buildRateLimiter(maxPacketSize, totalFiles uint16) (*rate.Limiter, int, float64) {
 	limitMbps := float64(constant.DefaultSendRateLimitMbps / totalFiles)
-	// if envVal, ok := os.LookupEnv("FLUTE_SEND_RATE_MBPS"); ok {
-	// 	if parsed, err := strconv.ParseFloat(envVal, 64); err == nil {
-	// 		limitMbps = parsed
-	// 	} else {
-	// 		log.Printf("Invalid FLUTE_SEND_RATE_MBPS value %q: %v, using default %.2f Mbps", envVal, err, limitMbps)
-	// 	}
-	// }
 
 	log.Printf("Configured send rate limit: %.2f Mbps", limitMbps)
 
@@ -182,19 +189,43 @@ func (s *Sender) writeSymbol(conn *pool.UDPConnWrapper, bufPool *sync.Pool, chun
 	}
 	buf = buf[:needed]
 
-	seqNum := uint64(chunkIdx)*uint64(s.config.ChunkSize) + uint64(symbolID)
+	var seqNum uint64
+	// If encoder configuration indicates Reed-Solomon (data+parity shards),
+	// the callback for RS encoder passes shardIdx as the first argument.
+	// Receiver expects seq packed as: high32=shardIdx, low32=symbolIdx.
+	if s.config.DataShards > 0 && s.config.ParityShards > 0 {
+		seqNum = (uint64(chunkIdx) << 32) | uint64(symbolID)
+	} else {
+		seqNum = uint64(chunkIdx)*uint64(s.config.ChunkSize) + uint64(symbolID)
+	}
 	binary.BigEndian.PutUint64(buf[:8], seqNum)
 	copy(buf[8:], symbolData)
 
-	if _, err := conn.Conn.Write(buf); err != nil {
-		bufPool.Put(buf[:0])
-		return fmt.Errorf("write chunk %d symbol %d failed: %w", chunkIdx, symbolID, err)
+	if conn == nil || conn.Conn == nil {
+		bufPool.Put(buf[:cap(buf)])
+		return fmt.Errorf("no connection available to write chunk %d symbol %d", chunkIdx, symbolID)
 	}
+
+	n, err := conn.Conn.Write(buf)
+	if err != nil {
+		bufPool.Put(buf[:cap(buf)])
+		return fmt.Errorf("write failed: chunk %d symbol %d: %w", chunkIdx, symbolID, err)
+	}
+
+	if s.config.DataShards > 0 && s.config.ParityShards > 0 {
+		// RS mode: chunkIdx holds shardIdx in our packing
+		log.Printf("Write symbol for shard %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, n, len(symbolData))
+	} else {
+		log.Printf("Write symbol for chunk %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, n, len(symbolData))
+	}
+
+	// mark connection used
 	conn.MarkSent()
 
-	bufPool.Put(buf[:0])
+	bufPool.Put(buf[:cap(buf)])
 	atomic.AddInt64(&s.totalPackets, 1)
 	atomic.AddInt64(&s.totalSent, int64(len(symbolData)))
+
 	return nil
 }
 

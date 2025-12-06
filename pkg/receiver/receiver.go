@@ -68,7 +68,7 @@ type Receiver struct {
 }
 
 type WriteRequest struct {
-	FdtID    uint8 
+	FdtID    uint8
 	Data     []byte
 	Offset   int64
 	ChunkIdx uint32
@@ -96,6 +96,8 @@ func initDecoderConfig(mt *meta.MetaPkt) decoder.DecoderConfig {
 		ParityShards:    uint16(parityShards),
 		RedundancyRatio: redundancyRatio,
 		MaxPacketSize:   maxPacketSize,
+		FName:           constant.RsTmpRecvInDir + mt.File.Name,
+		OutputPath:      mt.File.SaveDir + mt.File.Name, // Final output path for RS decoder
 	}
 
 	return decoderConfig
@@ -150,8 +152,10 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 	}
 	receiver.decoder = dec
 
-	// 启动写入循环
-	receiver.startWriterLoop()
+	// 启动写入循环(对于 RaptorQ 和 NoCode)
+	if receiver.config.Type == decoder.DecoderRaptorQ || receiver.config.Type == decoder.DecoderNoCode {
+		receiver.startWriterLoop()
+	}
 
 	return receiver, nil
 }
@@ -178,7 +182,7 @@ func (r *Receiver) startWriterLoop() {
 			}
 
 			atomic.AddInt64(&r.currWritten, int64(len(req.Data)))
-			if req.ChunkIdx % 1000 == 0 {
+			if req.ChunkIdx%1000 == 0 {
 				log.Printf("fdtID(%d): chunk %d 写入完成: %d bytes\n", req.FdtID, req.ChunkIdx, len(req.Data))
 			}
 			req.Data = nil
@@ -419,45 +423,47 @@ func (r *Receiver) readWorker(ctx context.Context, conn *pool.UDPConnWrapper, bu
 			continue
 		}
 
-		seqNum := binary.BigEndian.Uint64(buf[:8])
-		// data := make([]byte, n-8)
-		// copy(data, buf[8:n])
-		// bufPool.Put(buf)
-
-		chunkSize := uint64(r.config.ChunkSize)
-		if chunkSize == 0 {
-			bufPool.Put(buf)
-			continue
-		}
-
-		chunkIdx := uint32(seqNum / chunkSize)
-		symbolIdx := uint32(seqNum % chunkSize)
-
 		// 优化：直接传递 buf 切片，避免 make 和 copy
 		// 注意：这要求 decoder.AddSymbol 内部必须拷贝数据，或者我们必须确保 buf 在 decoder 使用完之前不被复用
 		// 大多数 FEC 库（包括 raptorq）的 AddSymbol 会拷贝数据到内部结构
-		if err := r.decoder.AddSymbol(chunkIdx, symbolIdx, buf[8:n]); err != nil {
-			select {
-			case errCh <- err:
-			default:
+		if r.config.Type == decoder.DecoderRaptorQ || r.config.Type == decoder.DecoderNoCode {
+			seqNum := binary.BigEndian.Uint64(buf[:8])
+			// data := make([]byte, n-8)
+			// copy(data, buf[8:n])
+			// bufPool.Put(buf)
+
+			chunkSize := uint64(r.config.ChunkSize)
+			if chunkSize == 0 {
+				bufPool.Put(buf)
+				continue
 			}
-			bufPool.Put(buf)
-			return
+
+			chunkIdx := uint32(seqNum / chunkSize)
+			symbolIdx := uint32(seqNum % chunkSize)
+
+			if err := r.decoder.AddSymbol(chunkIdx, symbolIdx, buf[8:n]); err != nil {
+				select {
+				case errCh <- err:
+				default:
+				}
+				bufPool.Put(buf)
+				return
+			}
+		} else if r.config.Type == decoder.DecoderReedSolomon {
+			seqNum := binary.BigEndian.Uint64(buf[:8])
+			shardIdx := uint32(seqNum >> 32)
+			symbolIdx := uint32(seqNum & 0xFFFFFFFF)
+
+			if err := r.decoder.AddSymbol(shardIdx, symbolIdx, buf[8:n]); err != nil {
+				select {
+				case errCh <- err:
+				default:
+				}
+				bufPool.Put(buf)
+				return
+			}
 		}
 		bufPool.Put(buf)
-
-		// 检查是否解码完成并需要写入
-		// 注意：这里需要 decoder 提供回调或者返回解码后的数据
-		// 假设 AddSymbol 内部处理了解码逻辑，我们需要一种机制获取解码后的数据
-		// 既然您提到了“权责分明”，Decoder 应该只负责解码，不负责写入。
-		// 我们可以修改 AddSymbol 或者增加一个回调接口。
-		// 暂时假设我们在这里手动检查或者 Decoder 内部调用了回调（如果 Decoder 支持的话）。
-
-		// 如果 Decoder 还没有集成回调，我们需要在这里获取数据。
-		// 例如：
-		// if decodedData, offset, ok := r.decoder.TryGetDecodedData(chunkIdx); ok {
-		//     r.dataChan <- &WriteRequest{Data: decodedData, Offset: offset, ChunkIdx: chunkIdx}
-		// }
 
 		atomic.StoreInt64(&conn.LastUsed, time.Now().Unix())
 

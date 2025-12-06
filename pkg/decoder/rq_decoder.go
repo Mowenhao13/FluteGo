@@ -220,3 +220,8 @@ func (r *RqDecoder) Close() error {
 	})
 	return nil
 }
+
+func (r *RqDecoder) Decode() error {
+	// RaptorQ 解码是增量进行的，在 AddSymbol 中完成解码逻辑
+	return nil
+}

@@ -1,5 +1,9 @@
 package oti
 
+import (
+	"FluteGo/constant"
+)
+
 type Oti struct {
 	FECEncodingID    uint8
 	FECInstanceID    uint16
@@ -34,7 +38,8 @@ func NewReedSolomon(dataShards, parityShards uint8) Oti {
 		DataShards:    dataShards,
 		ParityShards:  parityShards,
 		// Reed-Solomon 使用分块而非固定符号长度，但仍需设置非零值避免除零
-		// 这个值在 RS 模式下实际不使用，仅用于防止除零错误
-		SymbolSize: 1,
+		// 这里将默认符号大小设为常量 MaxPacketSize（通常等于 MTU - header），
+		// 以避免占位 1 导致 symbolIdx 过大的问题。
+		SymbolSize: uint16(constant.MaxPacketSize),
 	}
 }

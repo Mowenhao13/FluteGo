@@ -4,7 +4,7 @@ package constant
 const (
 	MaxPacketSize = 1400
 	BaseFilePort  = 3400
-	MetaPort      = 3398
+	MetaPort      = 3399
 	NumPorts      = 1
 )
 
@@ -26,7 +26,7 @@ const (
 	SaveFileDir = "/home/Halllo/Projects/Flute_test_v2/cmd/received_files/"
 
 	SendRedundancyRatio      = 1.05
-	DefaultSendRateLimitMbps = 800 // default send rate limit; 0 disables throttling
+	DefaultSendRateLimitMbps = 1000 // default send rate limit; 0 disables throttling
 	WindowsSize              = 30
 
 	StartSendWait = 3 // seconds to wait before starting to send data
@@ -53,8 +53,11 @@ const (
 	RsWithConcurrentStreamWrites = true
 	RsWithConcurrentStreams      = true
 	RsWithLeopardGF              = true
-	RsWithLeopardGF16            = true
+	RsWithLeopardGF16            = false 
 	RsWithInversionCache         = true
+
+	RsTmpSendOutDir              = "/home/Halllo/Projects/Flute_test_v2/tmp/rs_send/"
+	RsTmpRecvInDir               = "/home/Halllo/Projects/Flute_test_v2/tmp/rs_recv/"
 )
 
 // system param

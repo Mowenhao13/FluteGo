@@ -62,7 +62,8 @@ func main() {
 	}
 
 	fdtID := uint8(1)
-	oti := oti.NewRaptorQ(1400)
+
+	oti := oti.NewReedSolomon(12, 4)
 	if oti.MaximumChunkSize == 0 {
 		oti.MaximumChunkSize = uint32(constant.DefaultChunkSize)
 	}

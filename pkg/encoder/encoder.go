@@ -26,6 +26,7 @@ type EncoderConfig struct {
 	MaxPacketSize   uint16  // 最大数据包大小
 	FileSize        uint64
 	Fd              int
+	FName           string
 }
 
 type ChunkInfo struct {

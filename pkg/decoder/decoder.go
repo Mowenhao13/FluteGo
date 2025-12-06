@@ -1,6 +1,8 @@
 package decoder
 
-import "time"
+import (
+	"time"
+)
 
 // Chunk level save callback function
 type OutputHandler interface {
@@ -24,6 +26,8 @@ type DecoderConfig struct {
 	ParityShards    uint16  // 校验分片数（ReedSolomon）
 	RedundancyRatio float64 // 冗余比例
 	MaxPacketSize   uint16  // 最大数据包大小
+	FName           string  // 中间分片文件路径（RS）或最终输出路径（其他）
+	OutputPath      string  // 最终输出文件路径（仅用于 RS，优先于 FName）
 }
 
 // ChunkInfo chunk基本信息
@@ -58,7 +62,7 @@ func NewDecoder(config DecoderConfig, output OutputHandler) (BaseDecoder, error)
 		}
 		return dec, nil
 	case DecoderReedSolomon:
-		dec, err := NewRsDecoder(config, output)
+		dec, err := NewRsDecoder(config)
 		if err != nil {
 			return nil, err
 		}
