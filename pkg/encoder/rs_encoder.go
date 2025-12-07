@@ -8,10 +8,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/edsrzf/mmap-go"
 	rs "github.com/klauspost/reedsolomon"
 	"golang.org/x/sys/unix"
 )
@@ -249,9 +251,21 @@ func (e *RsEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 		log.Printf("Shard %s size: %d bytes\n", fn.Name(), instat.Size())
 
 		sz := int(instat.Size())
-		shardData, err := unix.Mmap(int(f.Fd()), 0, sz, unix.PROT_READ, unix.MAP_SHARED)
-		if err != nil {
-			return fmt.Errorf("mmap failed for shard %s: %w", fn.Name(), err)
+
+		var shardData []byte 
+		offset := 0
+		if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+			shardData, err = unix.Mmap(int(f.Fd()), int64(offset), sz, unix.PROT_READ, unix.MAP_SHARED)
+			if err != nil {
+				return fmt.Errorf("mmap failed for shard %s: %w", fn.Name(), err)
+			}
+		} 
+		if runtime.GOOS == "windows" {
+			shardDat, err := mmap.MapRegion(f, sz, mmap.RDONLY, 0, int64(offset))
+			if err != nil {
+				return fmt.Errorf("mmap failed for shard %s: %w", fn.Name(), err)
+			}
+			shardData = []byte(shardDat)
 		}
 
 		if len(shardData) != sz {
