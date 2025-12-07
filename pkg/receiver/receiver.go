@@ -1,3 +1,10 @@
+/*
+ * 软件著作权声明：
+ * 本文件包含的代码是 FluteGo 软件的组成部分
+ * 版权所有 (C) 2025
+ * 保留所有权利。
+ */
+
 package receiver
 
 import (
@@ -18,28 +25,56 @@ import (
 	"time"
 )
 
-// Report defines the progress report structure
+// Report 定义进度报告结构
+// 功能说明：
+//   用于向上层报告文件接收的实时进度和状态
 type Report struct {
-	FdtID    uint8
-	Received int64
-	Total    int64
-	Status   uint8 // 0: running, 1: complete, 2: error
+	FdtID    uint8   // 文件数据传输标识符
+	Received int64   // 已接收字节数
+	Total    int64   // 文件总字节数
+	Status   uint8   // 传输状态：0-进行中，1-完成，2-错误
 }
 
-type reportKey struct{}
+type reportKey struct{} // 上下文键类型，用于安全存储报告通道
 
-// WithReportChan adds the report channel to the context
+// WithReportChan 将报告通道添加到上下文中
+// 功能说明：
+//   在上下文中设置报告通道，使得解码和接收循环可以将进度报告发送给监控组件
+// 参数：
+//   ctx - 原始上下文
+//   ch  - 报告通道
+// 返回值：
+//   context.Context - 包含报告通道的新上下文
+// 设计模式：
+//   使用上下文传递组件间通信通道，避免全局变量
 func WithReportChan(ctx context.Context, ch chan<- Report) context.Context {
 	return context.WithValue(ctx, reportKey{}, ch)
 }
 
-// GetReportChan retrieves the report channel from the context
+// GetReportChan 从上下文中获取报告通道
+// 功能说明：
+//   从上下文中提取之前设置的报告通道
+// 参数：
+//   ctx - 包含报告通道的上下文
+// 返回值：
+//   chan<- Report - 报告通道
+//   bool - 是否成功获取到通道
 func GetReportChan(ctx context.Context) (chan<- Report, bool) {
 	ch, ok := ctx.Value(reportKey{}).(chan<- Report)
 	return ch, ok
 }
 
-// Receiver 负责网络接收和文件写入
+// Receiver 接收端核心结构
+// 功能说明：
+//   负责网络数据的接收、解码、文件写入和进度报告
+// 核心特性：
+//   - 支持多种前向纠错解码算法
+//   - 异步写入架构，提高并发性能
+//   - 实时进度监控和报告
+//   - 连接池复用和缓冲区复用
+// 设计模式：
+//   生产者-消费者模式：网络接收为生产者，文件写入为消费者
+//   工作池模式：多个工作协程并行处理网络数据
 type Receiver struct {
 	fdtID            uint8
 	config           decoder.DecoderConfig
@@ -58,15 +93,18 @@ type Receiver struct {
 	writeRequestPool sync.Pool
 
 	// 统计
-	currWritten   int64
-	totalReceived int64
-	totalPackets  int64
-	totalDropped  int64
-	receiveErrs   int64
-	lastDataTime  int64
-	startTime     time.Time
+	currWritten   int64   // 当前已写入字节数
+	totalReceived int64   // 总共接收字节数
+	totalPackets  int64   // 总共接收数据包数
+	totalDropped  int64   // 总共丢包数
+	receiveErrs   int64   // 接收错误数
+	lastDataTime  int64   // 最后接收数据时间戳
+	startTime     time.Time // 接收开始时间
 }
 
+// WriteRequest 写入请求结构
+// 功能说明：
+//   定义从解码器到写入循环的数据传输单元
 type WriteRequest struct {
 	FdtID    uint8
 	Data     []byte
@@ -74,7 +112,21 @@ type WriteRequest struct {
 	ChunkIdx uint32
 }
 
+// initDecoderConfig 初始化解码器配置
+// 功能说明：
+//   根据元数据包和保存目录信息构建解码器配置
+// 参数：
+//   mt      - 元数据包，包含文件传输参数
+//   saveDir - 文件保存目录路径
+// 返回值：
+//   decoder.DecoderConfig - 初始化完成的解码器配置
+// 配置解析：
+//   1. 提取编码类型和文件大小
+//   2. 计算分块大小，设置默认值
+//   3. 配置RS解码参数（数据分片、校验分片）
+//   4. 设置冗余比例和最大包大小
 func initDecoderConfig(mt *meta.MetaPkt, saveDir string) decoder.DecoderConfig {
+	// 从元数据提取基本参数
 	decoderType := mt.Oti.FECEncodingID
 	fileSize := mt.File.TransferLen
 	chunkSize := mt.Oti.MaximumChunkSize
@@ -97,13 +149,29 @@ func initDecoderConfig(mt *meta.MetaPkt, saveDir string) decoder.DecoderConfig {
 		RedundancyRatio: redundancyRatio,
 		MaxPacketSize:   maxPacketSize,
 		FName:           constant.RsTmpRecvInDir + mt.File.Name,
-		OutputPath:      saveDir + mt.File.Name, // Final output path for RS decoder
+		OutputPath:      saveDir + mt.File.Name, // RS解码器的最终输出路径
 	}
 
 	return decoderConfig
 }
 
+// InitReceiver 从元数据包初始化接收端
+// 功能说明：
+//   将元数据包转换为接收端配置，创建接收端实例
+// 参数：
+//   mt      - 元数据包，包含文件传输描述
+//   saveDir - 文件保存目录
+// 返回值：
+//   *Receiver - 初始化的接收端实例
+//   error     - 初始化过程中的错误
+// 关键步骤：
+//   1. 构建输出文件路径
+//   2. 计算总分块数
+//   3. 创建接收端实例
+// 错误处理：
+//   文件创建失败、配置无效等情况
 func InitReceiver(mt *meta.MetaPkt, saveDir string) (*Receiver, error) {
+	// 构建输出文件路径
 	outFilePath := saveDir + mt.File.Name
 	config := initDecoderConfig(mt, saveDir)
 	chunkSize := int64(config.ChunkSize)
@@ -119,14 +187,36 @@ func InitReceiver(mt *meta.MetaPkt, saveDir string) (*Receiver, error) {
 	return newReceiver(outFilePath, config, mt.File.FdtID, chunkCount, expectedMd5)
 }
 
+// newReceiver 创建新的接收端实例
+// 功能说明：
+//   初始化接收端的所有组件，包括文件句柄、解码器、写入循环等
+// 参数：
+//   outFilePath   - 输出文件完整路径
+//   config        - 解码器配置
+//   fdtID         - 文件数据传输标识符
+//   expectedChunks - 预期总分块数
+//   expectedMd5   - 期望的MD5校验值
+// 返回值：
+//   *Receiver - 创建成功的接收端实例
+//   error     - 创建过程中的错误
+// 核心流程：
+//   1. 创建并预分配输出文件
+//   2. 初始化缓冲区和对象池
+//   3. 创建解码器实例
+//   4. 启动写入循环（针对特定解码类型）
+// 资源管理：
+//   使用对象池复用写入请求对象，减少GC压力
 func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, expectedChunks uint32, expectedMd5 string) (*Receiver, error) {
+	// 创建输出文件
 	file, err := os.Create(outFilePath)
 	if err != nil {
 		return nil, err
 	}
 
+	// 预分配文件空间(全0填充)
 	file.Truncate(int64(config.FileSize))
 
+	// 初始化接收端实例
 	receiver := &Receiver{
 		fdtID:          fdtID,
 		config:         config,
@@ -145,6 +235,7 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 		},
 	}
 
+	// 创建解码器实例
 	dec, err := decoder.NewDecoder(config, receiver)
 	if err != nil {
 		file.Close()
@@ -152,7 +243,8 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 	}
 	receiver.decoder = dec
 
-	// 启动写入循环(对于 RaptorQ 和 NoCode)
+	// 启动写入循环（针对RaptorQ和NoCode解码器）
+	// Reed-Solomon不使用
 	if receiver.config.Type == decoder.DecoderRaptorQ || receiver.config.Type == decoder.DecoderNoCode {
 		receiver.startWriterLoop()
 	}
@@ -160,20 +252,24 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 	return receiver, nil
 }
 
+// startWriterLoop 启动文件写入循环
+// 功能说明：
+//   在独立的协程中运行写入循环，处理解码完成的数据写入文件
+// 设计原理：
+//   1. 从数据通道读取写入请求
+//   2. 使用WriteAt进行随机写入（支持UDP乱序到达）
+//   3. 更新写入统计信息
+//   4. 回收写入请求对象到对象池
+// 性能优化：
+//   - 使用WriteAt直接写入，避免bufio的顺序写入限制
+//   - 依赖操作系统页缓存提高写入性能
+//   - 对象池复用减少内存分配
 func (r *Receiver) startWriterLoop() {
 	r.writerWg.Add(1)
 	go func() {
 		defer r.writerWg.Done()
 		for req := range r.dataChan {
 			// 使用 WriteAt 进行随机写入
-			// 注意：bufio.Writer 不支持 WriteAt，如果需要随机写入，必须直接使用 outputFile
-			// 如果是顺序写入，可以使用 bufio.Writer
-			// 这里假设是随机写入（因为 UDP 乱序），所以直接用 outputFile
-			// 但为了性能，我们可以在这里做一些聚合或者直接写入
-
-			// 由于是乱序到达，bufio.Writer 可能不适合（它只能顺序写）
-			// 除非我们能保证 req 是顺序的。
-			// 如果不能保证顺序，直接用 WriteAt 是最安全的。
 			// 为了提高 WriteAt 性能，依赖操作系统的页缓存。
 
 			_, err := r.outputFile.WriteAt(req.Data, req.Offset)
@@ -181,27 +277,46 @@ func (r *Receiver) startWriterLoop() {
 				log.Printf("写入文件失败: %v", err)
 			}
 
+			// 更新写入统计
 			atomic.AddInt64(&r.currWritten, int64(len(req.Data)))
+
+			// 每1000个分块记录一次日志
 			if req.ChunkIdx%1000 == 0 {
 				log.Printf("fdtID(%d): chunk %d 写入完成: %d bytes\n", req.FdtID, req.ChunkIdx, len(req.Data))
 			}
+
+			// 回收写入请求对象
 			req.Data = nil
 			r.writeRequestPool.Put(req)
 		}
-		// 循环结束，表示文件写入完成
-		// 强制执行一次 GC 以释放解码过程中可能积累的大量内存
-		// runtime.GC() // 移除强制 GC，避免阻塞
 	}()
 }
 
-// 实现 OutputHandler 接口
+// OnDecodedData 实现OutputHandler接口 - 解码数据回调
+// 功能说明：
+//   当解码器完成一个数据块解码时调用，将数据放入写入队列
+// 参数：
+//   data     - 解码后的数据
+//   offset   - 文件写入偏移量
+//   chunkIdx - 分块索引
+// 返回值：
+//   error - 入队失败的错误
+// 核心逻辑：
+//   1. 从对象池获取写入请求对象
+//   2. 填充数据参数
+//   3. 尝试放入数据通道
+//   4. 检查是否所有分块都已完成
+// 阻塞处理：
+//   通道满时记录警告并返回错误，避免阻塞解码器
 func (r *Receiver) OnDecodedData(data []byte, offset int64, chunkIdx uint32) error {
+	// 从对象池获取写入请求对象
 	req := r.writeRequestPool.Get().(*WriteRequest)
 	req.FdtID = r.fdtID
 	req.Data = data
 	req.Offset = offset
 	req.ChunkIdx = chunkIdx
 
+	// 尝试放入数据通道
 	select {
 	case r.dataChan <- req:
 		// 检查是否所有分片都已接收完成
@@ -215,14 +330,20 @@ func (r *Receiver) OnDecodedData(data []byte, offset int64, chunkIdx uint32) err
 		return nil
 	default:
 		r.writeRequestPool.Put(req)
-		// 队列满，可能会丢弃数据或者阻塞
-		// 这里选择阻塞一小段时间，然后报错，或者直接阻塞（取决于对丢包的容忍度）
-		// 为了防止阻塞网络接收，这里选择非阻塞丢弃并记录日志，或者使用更大的 buffer
+		// 通道满，回收对象并记录警告
 		log.Printf("警告: 写入队列满，丢弃 Chunk %d 数据", chunkIdx)
 		return fmt.Errorf("write queue full")
 	}
 }
 
+// showDecoderInfo 显示解码器配置信息
+// 功能说明：
+//   打印解码器的详细配置信息，用于调试和监控
+// 显示内容：
+//   1. 解码器类型和版本
+//   2. 文件大小和分块信息
+//   3. 前向纠错参数
+//   4. 网络传输参数
 func (r *Receiver) showDecoderInfo() {
 	config := r.config
 	log.Printf("=== 解码器配置信息 ===")
@@ -266,16 +387,37 @@ func (r *Receiver) showDecoderInfo() {
 	log.Printf("")
 }
 
+// ShowBasicInfo 显示接收端基本信息
+// 功能说明：
+//   公开接口，用于显示接收端的配置和状态信息
 func (r *Receiver) ShowBasicInfo() {
 	r.showDecoderInfo()
 }
 
+// Start 启动接收过程
+// 功能说明：
+//   启动网络接收、解码和文件写入的完整流程
+// 参数：
+//   ctx - 上下文，用于传递取消信号和控制流程
+// 返回值：
+//   error - 接收过程中的错误
+// 核心流程：
+//   1. 从连接池获取UDP连接
+//   2. 启动多个接收工作协程
+//   3. 等待完成信号或错误
+//   4. 清理资源并回调完成函数
+// 并发控制：
+//   - 为每个连接启动独立的接收循环
+//   - 使用等待组同步所有协程
+//   - 错误传播和上下文取消链
 func (r *Receiver) Start(ctx context.Context) error {
+	// 获取全局连接池
 	p := pool.GetGlobalPool()
 	if p == nil {
 		return fmt.Errorf("connection pool not initialized")
 	}
 
+	// 获取文件传输连接
 	_, conns, err := p.GetGlobalFileConn(r.fdtID)
 	if err != nil {
 		return fmt.Errorf("failed to get connections for fdtID %d: %v", r.fdtID, err)
@@ -285,12 +427,13 @@ func (r *Receiver) Start(ctx context.Context) error {
 		return fmt.Errorf("no connections available for fdtID %d", r.fdtID)
 	}
 
-	// session level context
+	// 创建会话级上下文
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 
 	errCh := make(chan error, len(conns))
 	var wg sync.WaitGroup
 
+	// 确保资源清理
 	defer func() {
 		sessionCancel()
 		wg.Wait()
@@ -300,6 +443,7 @@ func (r *Receiver) Start(ctx context.Context) error {
 		}
 	}()
 
+	// 为每个连接启动接收协程
 	for _, conn := range conns {
 		wrapper := conn
 		wg.Add(1)
@@ -318,18 +462,21 @@ func (r *Receiver) Start(ctx context.Context) error {
 		}()
 	}
 
+	// 等待所有协程完成
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
 		close(done)
 	}()
 
+	// 等待完成信号
 	select {
 	case <-sessionCtx.Done():
 	case <-done:
-	case <-r.finishChan:
+	case <-r.finishChan: // 文件接收完成信号
 	}
 
+	// 检查是否有错误发生
 	select {
 	case err := <-errCh:
 		if err == nil || stdErrors.Is(err, context.Canceled) || stdErrors.Is(err, net.ErrClosed) {
@@ -341,13 +488,28 @@ func (r *Receiver) Start(ctx context.Context) error {
 	}
 }
 
+// readLoop 连接接收循环
+// 功能说明：
+//   管理单个UDP连接的数据接收，包括工作协程启动和错误处理
+// 参数：
+//   ctx  - 连接级上下文
+//   conn - UDP连接包装器
+// 返回值：
+//   error - 接收过程中的错误
+// 工作模式：
+//   1. 初始化缓冲区池
+//   2. 启动多个接收工作协程
+//   3. 监听完成信号
+//   4. 清理工作协程
 func (r *Receiver) readLoop(ctx context.Context, conn *pool.UDPConnWrapper) error {
+	// 初始化缓冲区池
 	bufPool := &sync.Pool{
 		New: func() interface{} {
 			return make([]byte, r.config.MaxPacketSize*10)
 		},
 	}
 
+	// 设置工作协程数量
 	workerCount := 1
 	if workerCount <= 0 {
 		workerCount = 1
@@ -355,10 +517,11 @@ func (r *Receiver) readLoop(ctx context.Context, conn *pool.UDPConnWrapper) erro
 
 	log.Printf("Starting %d read workers for connection\n", workerCount)
 
-	// worker level context
+	// 创建工作级上下文
 	workerCtx, workerCancel := context.WithCancel(ctx)
 	defer workerCancel()
 
+	// 启动工作协程
 	errCh := make(chan error, workerCount)
 	var wg sync.WaitGroup
 	for i := 0; i < workerCount; i++ {
@@ -369,6 +532,7 @@ func (r *Receiver) readLoop(ctx context.Context, conn *pool.UDPConnWrapper) erro
 		}()
 	}
 
+	// 等待错误或取消
 	var err error
 	select {
 	case <-ctx.Done():
@@ -376,18 +540,37 @@ func (r *Receiver) readLoop(ctx context.Context, conn *pool.UDPConnWrapper) erro
 	case err = <-errCh:
 	}
 
+	// 清理工作协程
 	workerCancel()
-	// Force unblock ReadFromUDP
+	// 强制解除ReadFromUDP阻塞
 	conn.Conn.SetReadDeadline(time.Now())
 	wg.Wait()
 
-	// Restore deadline
+	// 恢复默认超时设置
 	var zero time.Time
 	conn.Conn.SetReadDeadline(zero)
 
 	return err
 }
 
+// readWorker 接收工作协程
+// 功能说明：
+//   从UDP连接读取数据，解析数据包，提交给解码器处理
+// 参数：
+//   ctx     - 工作协程上下文
+//   conn    - UDP连接
+//   bufPool - 缓冲区池
+//   errCh   - 错误通道
+// 核心流程：
+//   1. 从缓冲区池获取缓冲区
+//   2. 读取UDP数据报
+//   3. 解析数据包头部
+//   4. 根据解码器类型处理数据
+//   5. 发送进度报告
+// 性能优化：
+//   - 缓冲区池复用减少内存分配
+//   - 原子操作更新统计信息
+//   - 非阻塞进度报告
 func (r *Receiver) readWorker(ctx context.Context, conn *pool.UDPConnWrapper, bufPool *sync.Pool, errCh chan<- error) {
 	for {
 		select {
@@ -396,14 +579,18 @@ func (r *Receiver) readWorker(ctx context.Context, conn *pool.UDPConnWrapper, bu
 		default:
 		}
 
+		// 从缓冲区池获取缓冲区
 		buf := bufPool.Get().([]byte)
 		n, _, err := conn.Conn.ReadFromUDP(buf)
+
+		// 更新接收统计
 		atomic.AddInt64(&r.totalReceived, int64(n))
 		pool.GetGlobalPool().AddReceived(uint64(n))
 
 		if err != nil {
 			bufPool.Put(buf)
 			if os.IsTimeout(err) {
+				// 接收超时，记录当前状态
 				currWritten := int(atomic.LoadInt64(&r.currWritten))
 				log.Printf("接收超时，已接收: %d MB, 待写入: %d MB, 丢包: %d",
 					currWritten/(1024*1024),
@@ -423,14 +610,10 @@ func (r *Receiver) readWorker(ctx context.Context, conn *pool.UDPConnWrapper, bu
 			continue
 		}
 
-		// 优化：直接传递 buf 切片，避免 make 和 copy
-		// 注意：这要求 decoder.AddSymbol 内部必须拷贝数据，或者我们必须确保 buf 在 decoder 使用完之前不被复用
-		// 大多数 FEC 库（包括 raptorq）的 AddSymbol 会拷贝数据到内部结构
+		// 根据解码器类型处理数据
 		if r.config.Type == decoder.DecoderRaptorQ || r.config.Type == decoder.DecoderNoCode {
+			// 解析序列号
 			seqNum := binary.BigEndian.Uint64(buf[:8])
-			// data := make([]byte, n-8)
-			// copy(data, buf[8:n])
-			// bufPool.Put(buf)
 
 			chunkSize := uint64(r.config.ChunkSize)
 			if chunkSize == 0 {
@@ -438,9 +621,11 @@ func (r *Receiver) readWorker(ctx context.Context, conn *pool.UDPConnWrapper, bu
 				continue
 			}
 
+			// 计算分块索引和符号索引
 			chunkIdx := uint32(seqNum / chunkSize)
 			symbolIdx := uint32(seqNum % chunkSize)
 
+			// 提交给解码器
 			if err := r.decoder.AddSymbol(chunkIdx, symbolIdx, buf[8:n]); err != nil {
 				select {
 				case errCh <- err:
@@ -450,10 +635,12 @@ func (r *Receiver) readWorker(ctx context.Context, conn *pool.UDPConnWrapper, bu
 				return
 			}
 		} else if r.config.Type == decoder.DecoderReedSolomon {
+			// 解析RS编码序列号
 			seqNum := binary.BigEndian.Uint64(buf[:8])
 			shardIdx := uint32(seqNum >> 32)
 			symbolIdx := uint32(seqNum & 0xFFFFFFFF)
 
+			// 提交给解码器
 			if err := r.decoder.AddSymbol(shardIdx, symbolIdx, buf[8:n]); err != nil {
 				select {
 				case errCh <- err:
@@ -463,11 +650,13 @@ func (r *Receiver) readWorker(ctx context.Context, conn *pool.UDPConnWrapper, bu
 				return
 			}
 		}
+		// 返还缓冲区
 		bufPool.Put(buf)
 
+		// 更新连接最后使用时间
 		atomic.StoreInt64(&conn.LastUsed, time.Now().Unix())
 
-		// Report progress
+		// 发送进度报告
 		if ch, ok := GetReportChan(ctx); ok {
 			select {
 			case ch <- Report{
@@ -477,17 +666,33 @@ func (r *Receiver) readWorker(ctx context.Context, conn *pool.UDPConnWrapper, bu
 				Status:   0,
 			}:
 			default:
+				// 非阻塞发送，避免阻塞接收循环
 			}
 		}
 	}
 }
 
+// Close 关闭接收端
+// 功能说明：
+//   安全关闭接收端的所有组件，释放资源
+// 关闭顺序：
+//   1. 关闭数据通道
+//   2. 等待写入循环完成
+//   3. 关闭解码器
+//   4. 同步并关闭文件
+// 线程安全：
+//   通过等待组确保写入循环完成后再关闭文件
 func (r *Receiver) Close() {
+	// 关闭数据通道，停止写入循环
 	close(r.dataChan)
 	r.writerWg.Wait()
+	
+	// 关闭解码器
 	if r.decoder != nil {
 		r.decoder.Close()
 	}
+	
+	// 同步文件系统并关闭文件
 	r.outputFile.Sync()
 	r.outputFile.Close()
 }

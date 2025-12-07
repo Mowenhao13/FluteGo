@@ -1,3 +1,10 @@
+/*
+ * 软件著作权声明：
+ * 本文件包含的代码是 FluteGo 软件的组成部分
+ * 版权所有 (C) 2025 
+ * 保留所有权利。
+ */
+
 package encoder
 
 import "context"
@@ -5,9 +12,28 @@ import "context"
 // Symbol level send callback function
 type SendCallback func(chunkIdx uint32, symbolID uint32, chunkSz uint32, symbolData []byte) error
 
-// DataProvider retrieves data for a specific chunk
+// DataProvider 数据提供者函数
+// 功能说明：
+//   为指定块索引提供原始数据
+// 参数说明：
+//   chunkIdx - 块索引
+// 返回值：
+//   []byte - 块数据
+//   int    - 数据实际大小
+//   error  - 获取数据时的错误
+// 使用场景：
+//   1. 从文件读取数据
+//   2. 从内存缓冲区提供数据
+//   3. 从网络流中获取数据
 type DataProvider func(chunkIdx uint32) ([]byte, int, error)
 
+// EncoderType 编码器类型枚举
+// 功能说明：
+//   定义前向纠错编码算法的类型
+// 编码器类型：
+//   EncoderNoCode      - 无编码，直接传输原始数据
+//   EncoderRaptorQ     - RaptorQ编码
+//   EncoderReedSolomon - Reed-Solomon编码
 type EncoderType uint8
 
 const (
@@ -16,10 +42,24 @@ const (
 	EncoderReedSolomon
 )
 
+// EncoderConfig 编码器配置
+// 功能说明：
+//   定义编码器的所有配置参数
+// 核心字段：
+//   Type            - 编码器类型
+//   ChunkSize      - 单个块的最大大小（字节）
+//   SymbolSize     - 符号大小（字节）
+//   DataShards     - 数据分片数，Reed-Solomon使用
+//   ParityShards   - 校验分片数，Reed-Solomon使用
+//   RedundancyRatio - 冗余比例（>1.0）
+//   MaxPacketSize  - 最大数据包大小（字节）
+//   FileSize       - 文件大小（字节）
+//   Fd             - 文件描述符
+//   FName          - 发送文件完整路径
 type EncoderConfig struct {
 	Type            EncoderType
 	ChunkSize       uint32  // 单个chunk最大大小
-	SymbolSize      uint16  // 符号大小（RaptorQ/NoCode）
+	SymbolSize      uint16  // 符号大小
 	DataShards      uint16  // 数据分片数（ReedSolomon）
 	ParityShards    uint16  // 校验分片数（ReedSolomon）
 	RedundancyRatio float64 // 冗余比例
@@ -29,13 +69,34 @@ type EncoderConfig struct {
 	FName           string
 }
 
+// ChunkInfo 块信息结构
+// 功能说明：
+//   描述一个数据块的元数据信息
+// 字段说明：
+//   Index    - 块索引，从0开始
+//   StartPos - 块在文件中的起始位置
+//   Size     - 块的实际大小
+// 使用场景：
+//   1. 文件分块处理
+//   2. 块级错误恢复
+//   3. 并行处理控制
 type ChunkInfo struct {
 	Index    uint32
 	StartPos uint64
 	Size     uint32
 }
 
-// BaseEncoder 所有具体编码器(RS, RaptorQ, NoCode)必须实现的接口
+// BaseEncoder 编码器基础接口
+// 功能说明：
+//   所有具体编码器（RS, RaptorQ, NoCode）必须实现的接口
+// 核心方法：
+//   Encode - 编码多个块的交织数据
+//   SetCallback - 设置发送回调函数
+//   Close - 释放编码器资源
+// 设计模式：
+//   策略模式，允许运行时切换编码算法
+// 线程安全：
+//   实现应保证多协程安全调用
 type BaseEncoder interface {
 	// EncodeChunk(chunkIdx uint32, chunkSz uint32, data []byte, cb SendCallback) (int, error)
 	
@@ -48,8 +109,22 @@ type BaseEncoder interface {
 	Close() error
 }
 
-// NewChunkSendCallback wraps a handler with optional context cancellation awareness so all FEC encoders
-// can share the same callback creation logic.
+// SendCallback 发送回调函数
+// 功能说明：
+//   当编码器生成一个符号时调用，用于将符号发送到网络
+// 参数说明：
+//   chunkIdx   - 块索引
+//   symbolID   - 符号标识符
+//   chunkSz    - 块大小
+//   symbolData - 符号数据
+// 返回值：
+//   error - 发送过程中的错误
+// 使用场景：
+//   1. 网络数据包发送
+//   2. 数据写入缓冲区
+//   3. 统计信息收集
+// 注意事项：
+//   回调函数应是非阻塞的，避免阻塞编码器
 func NewChunkSendCallback(ctx context.Context, handler func(chunkIdx uint32, symbolID uint32, chunkSz uint32, symbolData []byte) error) SendCallback {
 	return func(chunkIdx uint32, symbolID uint32, chunkSz uint32, symbolData []byte) error {
 		if ctx != nil {
