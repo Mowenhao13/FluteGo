@@ -294,7 +294,14 @@ func (e *RsEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 				return fmt.Errorf("callback failed for shard %d symbol %d: %w", shardIdx, symbolIdx, err)
 			}
 		}
-		unix.Munmap(shardData)
+
+		if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+			unix.Munmap(shardData)
+		}
+		if runtime.GOOS == "windows" {
+			shardData := mmap.MMap(shardData)
+			shardData.Unmap()
+		}
 	}
 
 	return nil
