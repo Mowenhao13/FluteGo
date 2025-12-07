@@ -8,10 +8,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/edsrzf/mmap-go"
 	rs "github.com/klauspost/reedsolomon"
 	"golang.org/x/sys/unix"
 )
@@ -38,7 +40,6 @@ type RsExtraParam struct {
 
 	// 高级编码技术
 	WithLeopardGF      bool // Leopard GF算法（大分片优化）
-	WithLeopardGF16    bool // Leopard GF(2^16)算法
 	WithInversionCache bool // 逆矩阵缓存（多次解码优化）
 }
 
@@ -84,7 +85,6 @@ func (e *RsEncoder) encode() error {
 		rs.WithConcurrentStreamWrites(e.RsExtraParam.WithConcurrentStreamWrites),
 		rs.WithConcurrentStreams(e.RsExtraParam.WithConcurrentStreams),
 		rs.WithLeopardGF(e.RsExtraParam.WithLeopardGF),
-		rs.WithLeopardGF16(e.RsExtraParam.WithLeopardGF16),
 		rs.WithInversionCache(e.RsExtraParam.WithInversionCache),
 	)
 	if err != nil {
@@ -248,9 +248,21 @@ func (e *RsEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 		log.Printf("Shard %s size: %d bytes\n", fn.Name(), instat.Size())
 
 		sz := int(instat.Size())
-		shardData, err := unix.Mmap(int(f.Fd()), 0, sz, unix.PROT_READ, unix.MAP_SHARED)
-		if err != nil {
-			return fmt.Errorf("mmap failed for shard %s: %w", fn.Name(), err)
+
+		var shardData []byte 
+		offset := 0
+		if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+			shardData, err = unix.Mmap(int(f.Fd()), int64(offset), sz, unix.PROT_READ, unix.MAP_SHARED)
+			if err != nil {
+				return fmt.Errorf("mmap failed for shard %s: %w", fn.Name(), err)
+			}
+		} 
+		if runtime.GOOS == "windows" {
+			shardDat, err := mmap.MapRegion(f, sz, mmap.RDONLY, 0, int64(offset))
+			if err != nil {
+				return fmt.Errorf("mmap failed for shard %s: %w", fn.Name(), err)
+			}
+			shardData = []byte(shardDat)
 		}
 
 		if len(shardData) != sz {
@@ -282,7 +294,14 @@ func (e *RsEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 				return fmt.Errorf("callback failed for shard %d symbol %d: %w", shardIdx, symbolIdx, err)
 			}
 		}
-		unix.Munmap(shardData)
+
+		if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+			unix.Munmap(shardData)
+		}
+		if runtime.GOOS == "windows" {
+			shardData := mmap.MMap(shardData)
+			shardData.Unmap()
+		}
 	}
 
 	return nil
