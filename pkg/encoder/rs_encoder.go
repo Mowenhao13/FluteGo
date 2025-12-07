@@ -40,7 +40,6 @@ type RsExtraParam struct {
 
 	// 高级编码技术
 	WithLeopardGF      bool // Leopard GF算法（大分片优化）
-	WithLeopardGF16    bool // Leopard GF(2^16)算法
 	WithInversionCache bool // 逆矩阵缓存（多次解码优化）
 }
 
@@ -58,7 +57,6 @@ func loadExtraParams() RsExtraParam {
 		WithConcurrentStreams:      constant.RsWithConcurrentStreams,
 
 		WithLeopardGF:      constant.RsWithLeopardGF,
-		WithLeopardGF16:    constant.RsWithLeopardGF16,
 		WithInversionCache: constant.RsWithInversionCache,
 	}
 }
@@ -87,7 +85,6 @@ func (e *RsEncoder) encode() error {
 		rs.WithConcurrentStreamWrites(e.RsExtraParam.WithConcurrentStreamWrites),
 		rs.WithConcurrentStreams(e.RsExtraParam.WithConcurrentStreams),
 		rs.WithLeopardGF(e.RsExtraParam.WithLeopardGF),
-		rs.WithLeopardGF16(e.RsExtraParam.WithLeopardGF16),
 		rs.WithInversionCache(e.RsExtraParam.WithInversionCache),
 	)
 	if err != nil {
