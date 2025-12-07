@@ -85,17 +85,6 @@ func main() {
 	default:
 		log.Printf("Invalid OTI ID %d, defaulting to Reed-Solomon", *otiID)
 	}
-	if o.MaximumChunkSize == 0 {
-		o.MaximumChunkSize = uint32(constant.DefaultChunkSize)
-	}
-
-	// Align ChunkSize to page size to ensure consistency between Sender (mmap) and Receiver
-	pageSize := os.Getpagesize()
-	if int(o.MaximumChunkSize)%pageSize != 0 {
-		alignedSize := uint32(((int(o.MaximumChunkSize) + pageSize - 1) / pageSize) * pageSize)
-		log.Printf("Aligning ChunkSize from %d to %d (PageSize: %d)", o.MaximumChunkSize, alignedSize, pageSize)
-		o.MaximumChunkSize = alignedSize
-	}
 
 	pool.InitGlobalConnectionPool(100, constant.MaxMetaConnTimeout, 0, *destIP)
 	globalPool = pool.GetGlobalPool()
@@ -114,6 +103,7 @@ func main() {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 1
 	}
+	
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
 

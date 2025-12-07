@@ -1,3 +1,10 @@
+/*
+ * 软件著作权声明：
+ * 本文件包含的代码是 FluteGo 软件的组成部分
+ * 版权所有 (C) 2025
+ * 保留所有权利。
+ */
+
 package system
 
 import (
@@ -15,6 +22,16 @@ import (
 	"sync/atomic"
 )
 
+// ReceiverSystem 接收端系统
+// 功能说明：
+//   管理文件接收的整个生命周期，包括元数据接收、文件数据接收、错误处理和状态报告
+// 核心组件：
+//   - 元数据接收程序：监听UDP端口接收文件传输的元数据
+//   - 文件接收程序：根据元数据启动多端口并行接收文件数据
+//   - 错误处理程序：分级处理各种类型的错误
+//   - 连接池管理：复用UDP连接，提高性能
+// 设计模式：
+//   使用工作池模式控制并发接收任务，避免资源耗尽
 type ReceiverSystem struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
@@ -35,11 +52,23 @@ type ReceiverSystem struct {
 	SaveDir      string
 }
 
+// FileReporter 文件报告器
+// 功能说明：
+//   收集和分发文件传输的状态报告
+// 设计特点：
+//   使用通道机制实现生产者-消费者模式，解耦报告生成和消费
 type FileReporter struct {
 	ReportChan chan FileReport
 	FileChans  map[uint8]chan FileReport
 }
 
+// FileReport 文件传输报告
+// 字段说明：
+//   FdtID         - 文件数据传输标识符，唯一标识一个传输任务
+//   TotalBytes    - 文件总字节数
+//   ReceivedBytes - 已接收字节数
+//   Status        - 传输状态：0-传输中，1-已完成，2-错误
+//   TotalFiles    - 总文件数（在批量传输中使用）
 type FileReport struct {
 	FdtID         uint8
 	TotalBytes    uint64
@@ -48,22 +77,45 @@ type FileReport struct {
 	TotalFiles    uint16
 }
 
+// contextKey 上下文键类型
+// 用途：
+//   用于在context.Context中安全地存储和检索值
+//   防止键名冲突
 type contextKey struct {
 	name string
 }
 
+// 上下文键定义
+// 使用私有结构体类型作为键，避免字符串键的冲突风险
 var (
 	fdtIDKey    = contextKey{"fdtID"}
 	fileSizeKey = contextKey{"fileSize"}
 )
 
+// InitReceiverSystem 初始化接收端系统
+// 功能说明：
+//   创建并配置接收端系统的所有组件
+// 参数：
+//   maxWorkers - 最大工作协程数，控制并发接收任务数
+//   destIP     - 目标IP地址，用于绑定网络连接
+//   saveDir    - 文件保存目录路径
+// 返回值：
+//   *ReceiverSystem - 初始化完成的接收端系统实例
+//   error - 初始化过程中发生的错误
+// 初始化步骤：
+//   1. 创建工作池和错误通道
+//   2. 初始化全局连接池
+//   3. 设置文件报告器
 func InitReceiverSystem(maxWorkers int32, destIP string, saveDir string) (*ReceiverSystem, error) {
+	// 参数验证和默认值设置
 	if maxWorkers <= 0 {
 		maxWorkers = int32(runtime.NumCPU() / 2)
 	}
 
+	// 创建可取消的上下文
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// 初始化系统实例
 	s := &ReceiverSystem{
 		ctx:        ctx,
 		cancel:     cancel,
@@ -75,10 +127,11 @@ func InitReceiverSystem(maxWorkers int32, destIP string, saveDir string) (*Recei
 			ReportChan: make(chan FileReport, 100),
 			FileChans:  make(map[uint8]chan FileReport),
 		},
-		DestIP: destIP,
+		DestIP:  destIP,
 		SaveDir: saveDir,
 	}
 
+	// 初始化全局连接池
 	pool.InitGlobalConnectionPool(int(maxWorkers), constant.MaxMetaConnTimeout, 1, destIP)
 	s.recvPool = pool.GetGlobalPool()
 	if s.recvPool == nil {
@@ -88,6 +141,16 @@ func InitReceiverSystem(maxWorkers int32, destIP string, saveDir string) (*Recei
 	return s, nil
 }
 
+// StartErrorProgram 启动错误处理程序
+// 功能说明：
+//   在独立协程中启动错误处理循环
+// 设计模式：
+//   使用多路复用选择器从不同级别的错误通道读取错误
+// 错误级别：
+//   Debug    - 调试信息，仅记录日志
+//   Warning  - 警告信息，记录日志并可进行恢复操作
+//   Error    - 一般错误，影响单个文件传输
+//   Fatal    - 严重错误，可能停止整个系统
 func (s *ReceiverSystem) StartErrorProgram() {
 	s.wg.Add(1)
 	go func() {
@@ -96,6 +159,15 @@ func (s *ReceiverSystem) StartErrorProgram() {
 	}()
 }
 
+// handleErrors 错误处理主循环
+// 功能说明：
+//   持续监听各个错误级别的通道，分发处理不同类型的错误
+// 处理流程：
+//   1. 从错误通道接收错误
+//   2. 根据错误级别记录日志
+//   3. 调用对应的错误处理器
+// 退出条件：
+//   当系统上下文被取消时退出循环
 func (s *ReceiverSystem) handleErrors() {
 	for {
 		select {
@@ -122,28 +194,69 @@ func (s *ReceiverSystem) handleErrors() {
 	}
 }
 
+// updateFileStatus 更新文件状态
+// 功能说明：
+//   根据传输状态更新文件状态信息
+// 参数：
+//   fdtID      - 文件数据传输标识符
+//   status     - 传输状态
+//   erroeLevel - 错误级别
+// 待实现：
+//   当前为TODO占位符，需要实现具体的状态更新逻辑
 func (s *ReceiverSystem) updateFileStatus(fdtID uint8, status uint8, erroeLevel uint8) {
 	//TODO:
 }
 
+// handleError 处理一般错误
+// 功能说明：
+//   处理级别为Error的错误，通常影响单个文件传输
+// 典型处理：
+//   1. 记录错误日志
+//   2. 更新文件状态为错误状态
+//   3. 可能的恢复操作（如重试机制）
 func (s *ReceiverSystem) handleError(err *errs.LeveledError) {
 	// 错误处理：记录错误，可能影响单个文件
 	// 例如：重试机制或报告给监控系统
 	s.updateFileStatus(err.FdtID, 2, uint8(errs.LevelError))
 }
 
+// handleWarning 处理警告
+// 功能说明：
+//   处理级别为Warning的警告，通常是需要注意但不影响流程的情况
 func (s *ReceiverSystem) handleWarning(err *errs.LeveledError) {
 	s.updateFileStatus(err.FdtID, 2, uint8(errs.LevelWarning))
 }
 
+// handleFatalError 处理致命错误
+// 功能说明：
+//   处理级别为Fatal的错误，可能导致系统或组件停止
+// 典型处理：
+//   1. 记录致命错误日志
+//   2. 可能需要停止相关服务
+//   3. 发送警报通知
 func (s *ReceiverSystem) handleFatalError(err *errs.LeveledError) {
 	s.updateFileStatus(err.FdtID, 2, uint8(errs.LevelFatal))
 }
 
+// handleDebug 处理调试信息
+// 功能说明：
+//   处理级别为Debug的调试信息，通常用于开发调试
 func (s *ReceiverSystem) handleDebug(err *errs.LeveledError) {
 	s.updateFileStatus(err.FdtID, 2, uint8(errs.LevelDebug))
 }
 
+// reportError 报告错误
+// 功能说明：
+//   将错误分类并发送到对应的错误通道
+// 参数：
+//   ctx    - 上下文，包含传输任务信息
+//   level  - 错误级别
+//   err    - 原始错误
+//   fdtID  - 关联的文件数据传输标识符
+// 处理流程：
+//   1. 创建分级错误对象
+//   2. 根据错误级别发送到对应通道
+//   3. 由handleErrors协程统一处理
 func (s *ReceiverSystem) reportError(ctx context.Context, level uint8, err error, fdtID uint8) {
 	Err := errs.InitError(ctx, level, err, fdtID)
 	switch Err.Level {
@@ -162,6 +275,18 @@ func (s *ReceiverSystem) reportError(ctx context.Context, level uint8, err error
 	}
 }
 
+// StartMetaProgram 启动元数据接收程序
+// 功能说明：
+//   启动独立的协程监听UDP端口接收文件传输的元数据
+// 核心流程：
+//   1. 初始化元数据连接
+//   2. 循环读取UDP数据报
+//   3. 解析元数据包
+//   4. 将有效的元数据包发送到元数据通道
+// 网络处理：
+//   支持优雅关闭，检测连接关闭错误
+// 错误处理：
+//   初始化失败时报告致命错误
 func (s *ReceiverSystem) StartMetaProgram() {
 	s.wg.Add(1)
 	go func() {
@@ -183,6 +308,7 @@ func (s *ReceiverSystem) StartMetaProgram() {
 		s.metaConn = metaConns[0]
 		log.Printf("Meta receiver listening on %s", s.metaConn.Conn.LocalAddr())
 
+		// 主接收循环
 		for {
 			select {
 			case <-s.ctx.Done():
@@ -190,14 +316,14 @@ func (s *ReceiverSystem) StartMetaProgram() {
 			default:
 			}
 
-			// Read from UDP
+			// 从UDP读取数据
 			n, _, err := s.metaConn.Conn.ReadFromUDP(s.metaConn.Buffer)
 			if err != nil {
 				select {
 				case <-s.ctx.Done():
 					return
 				default:
-					// Check if error is due to closed connection
+					// 检查错误是否由于连接关闭引起
 					if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
 						return
 					}
@@ -210,10 +336,11 @@ func (s *ReceiverSystem) StartMetaProgram() {
 				continue
 			}
 
-			// Copy data to avoid buffer race conditions if buffer is reused immediately
+			// 复制数据以避免缓冲区竞争条件
 			data := make([]byte, n)
 			copy(data, s.metaConn.Buffer[:n])
 
+			// 解析元数据包
 			mt, merr := meta.DeserializeMetaPkt(data)
 			if merr != nil {
 				log.Printf("Failed to deserialize meta packet: %v", merr)
@@ -226,8 +353,9 @@ func (s *ReceiverSystem) StartMetaProgram() {
 			}
 
 			log.Printf("Received meta packet for FdtID: %d", mt.File.FdtID)
-			// mt.ShowPktInfo() // Optional: too verbose?
+			// mt.ShowPktInfo()
 
+			// 将元数据包发送到处理通道
 			select {
 			case s.metaChan <- mt:
 			case <-s.ctx.Done():
@@ -237,6 +365,13 @@ func (s *ReceiverSystem) StartMetaProgram() {
 	}()
 }
 
+// StartFileProgram 启动文件接收程序
+// 功能说明：
+//   启动多个接收工作协程，从元数据通道获取任务并处理
+// 并发控制：
+//   通过constant.ReceiverWorkers控制工作协程数量
+// 工作模式：
+//   每个工作协程独立处理元数据包，实现并行文件接收
 func (s *ReceiverSystem) StartFileProgram() {
 	log.Printf("Using %d receiverWorkers", constant.ReceiverWorkers)
 	for i := 0; i < constant.ReceiverWorkers; i++ {
@@ -245,6 +380,17 @@ func (s *ReceiverSystem) StartFileProgram() {
 	}
 }
 
+// receiverWorker 接收工作协程
+// 功能说明：
+//   从元数据通道获取任务，处理文件接收请求
+// 参数：
+//   id - 工作协程标识符，用于日志和调试
+// 处理流程：
+//   1. 监听上下文取消信号
+//   2. 从元数据通道获取任务
+//   3. 调用processMeta处理元数据
+// 退出条件：
+//   上下文被取消或元数据通道关闭
 func (s *ReceiverSystem) receiverWorker(id int) {
 	defer s.wg.Done()
 
@@ -261,12 +407,23 @@ func (s *ReceiverSystem) receiverWorker(id int) {
 	}
 }
 
+// processMeta 处理元数据包
+// 功能说明：
+//   解析并验证元数据包，启动文件接收任务
+// 关键逻辑：
+//   1. 基于FdtID进行去重，避免重复接收
+//   2. 通过工作池控制并发任务数量
+//   3. 为每个任务启动独立的接收协程
+// 参数：
+//   mainCtx  - 主上下文，用于传递取消信号
+//   metaPkt  - 接收到的元数据包
 func (s *ReceiverSystem) processMeta(mainCtx context.Context, metaPkt *meta.MetaPkt) {
-	// Deduplicate based on FdtID
+	// 基于FdtID去重
 	if _, loaded := s.targets.LoadOrStore(metaPkt.File.FdtID, true); loaded {
 		return
 	}
 
+	// 通过工作池控制并发
 	select {
 	case s.workerPool <- struct{}{}:
 		s.wg.Add(1)
@@ -282,6 +439,19 @@ func (s *ReceiverSystem) processMeta(mainCtx context.Context, metaPkt *meta.Meta
 	}
 }
 
+// runReceiver 运行文件接收器
+// 功能说明：
+//   执行单个文件的完整接收流程
+// 核心流程：
+//   1. 创建文件接收上下文
+//   2. 建立连接池
+//   3. 初始化接收器
+//   4. 启动报告转发
+//   5. 开始文件接收
+// 错误处理：
+//   记录错误并更新文件状态
+// 资源管理：
+//   确保连接和通道的正确释放
 func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt) {
 	fdtID := task.File.FdtID
 	ctx := context.WithValue(mainCtx, fdtIDKey, fdtID)
@@ -289,11 +459,11 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 		ctx = context.WithValue(ctx, fileSizeKey, task.File.TransferLen)
 	}
 
-	// Create a bridge channel to convert receiver.Report to system.FileReport
+	// 创建桥接通道，将 receiver.Report 转换为 system.FileReport
 	recvReportChan := make(chan receiver.Report, 100)
 	ctx = receiver.WithReportChan(ctx, recvReportChan)
 
-	// Start a goroutine to forward reports
+	// 启动协程转发接收报告
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -311,7 +481,7 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 		}
 	}()
 
-	// Create connections for the file
+	// 为文件创建连接
 	conns, _ := s.recvPool.CreateNewFileConnWithBasePort(fdtID, uint8(task.NumPorts), task.BasePort)
 	if len(conns) == 0 {
 		err := fmt.Errorf("failed to create connections for fdtID %d", fdtID)
@@ -321,6 +491,7 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 	}
 	defer s.recvPool.CloseFileConn(fdtID)
 
+	// 初始化接收器
 	recv, err := receiver.InitReceiver(task, s.SaveDir)
 	if err != nil {
 		s.reportError(ctx, uint8(errs.LevelError), err, fdtID)
@@ -329,7 +500,7 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 	}
 	recv.ShowBasicInfo()
 
-	// Set OnComplete to close the report channel
+	// 设置完成回调，关闭报告通道
 	recv.OnComplete = func() {
 		s.FileReporter.ReportChan <- FileReport{
 			FdtID:         fdtID,
@@ -341,9 +512,10 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 		close(recvReportChan)
 	}
 
+	// 启动接收器
 	if err := recv.Start(ctx); err != nil {
 		s.reportError(ctx, uint8(errs.LevelError), err, fdtID)
-		// Ensure channel is closed on error if OnComplete wasn't called
+		// 确保错误时通道被关闭
 		select {
 		case <-recvReportChan:
 		default:

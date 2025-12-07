@@ -56,7 +56,6 @@ func loadExtraParams() RsExtraParam {
 		WithConcurrentStreams:      constant.RsWithConcurrentStreams,
 
 		WithLeopardGF:      constant.RsWithLeopardGF,
-		WithLeopardGF16:    constant.RsWithLeopardGF16,
 		WithInversionCache: constant.RsWithInversionCache,
 	}
 }

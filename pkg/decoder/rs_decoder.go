@@ -13,12 +13,50 @@ import (
 )
 
 type RsDecoder struct {
-	Config        DecoderConfig
+	Config DecoderConfig
+	RsExtraParam
 	expectedSizes []int64 // 每个chunk的预期大小
 	inputs        []*os.File
 	receivedBytes []int64
 	fileLocks     []sync.Mutex
 	decoded       bool // 防止重复解码
+}
+
+type RsExtraParam struct {
+	// SIMD指令集优化（性能从低到高）
+	WithSSE2    bool // SSE2指令集（x86基础）
+	WithSSSE3   bool // SSSE3指令集
+	WithAVX2    bool // AVX2指令集（推荐，现代CPU）
+	WithAVX512  bool // AVX512指令集（服务器级CPU）
+	WithAVXGFNI bool // AVX+GFNI指令集（最新Intel）
+	WithGFNI    bool // GFNI指令集（Galois Field新指令）
+
+	// 并发控制
+	WithConcurrentStreamReads  bool // 并发读取流
+	WithConcurrentStreamWrites bool // 并发写入流
+	WithConcurrentStreams      bool // 同时启用读写并发
+
+	// 高级编码技术
+	WithLeopardGF      bool // Leopard GF算法（大分片优化）
+	WithInversionCache bool // 逆矩阵缓存（多次解码优化）
+}
+
+func loadExtraParams() RsExtraParam {
+	return RsExtraParam{
+		WithSSE2:    constant.RsWithSSE2,
+		WithSSSE3:   constant.RsWithSSSE3,
+		WithAVX2:    constant.RsWithAVX2,
+		WithAVX512:  constant.RsWithAVX512,
+		WithAVXGFNI: constant.RsWithAVXGFNI,
+		WithGFNI:    constant.RsWithGFNI,
+
+		WithConcurrentStreamReads:  constant.RsWithConcurrentStreamReads,
+		WithConcurrentStreamWrites: constant.RsWithConcurrentStreamWrites,
+		WithConcurrentStreams:      constant.RsWithConcurrentStreams,
+
+		WithLeopardGF:      constant.RsWithLeopardGF,
+		WithInversionCache: constant.RsWithInversionCache,
+	}
 }
 
 func NewRsDecoder(config DecoderConfig) (*RsDecoder, error) {
@@ -73,8 +111,10 @@ func NewRsDecoder(config DecoderConfig) (*RsDecoder, error) {
 		inputs[i] = f
 	}
 
+	rsExtraParam := loadExtraParams()
 	return &RsDecoder{
 		Config:        config,
+		RsExtraParam:  rsExtraParam,
 		inputs:        inputs,
 		expectedSizes: expectedSizes,
 		receivedBytes: make([]int64, totalShards),
@@ -137,7 +177,22 @@ func (r *RsDecoder) decode() error {
 		}
 	}
 
-	enc, err := rs.NewStream(int(r.Config.DataShards), int(r.Config.ParityShards))
+	dataShards := int(r.Config.DataShards)
+	parityShards := int(r.Config.ParityShards)
+
+	enc, err := rs.NewStream(dataShards, parityShards,
+		rs.WithSSE2(r.RsExtraParam.WithSSE2),
+		rs.WithSSSE3(r.RsExtraParam.WithSSSE3),
+		rs.WithAVX2(r.RsExtraParam.WithAVX2),
+		rs.WithAVX512(r.RsExtraParam.WithAVX512),
+		rs.WithAVXGFNI(r.RsExtraParam.WithAVXGFNI),
+		rs.WithGFNI(r.RsExtraParam.WithGFNI),
+		rs.WithConcurrentStreamReads(r.RsExtraParam.WithConcurrentStreamReads),
+		rs.WithConcurrentStreamWrites(r.RsExtraParam.WithConcurrentStreamWrites),
+		rs.WithConcurrentStreams(r.RsExtraParam.WithConcurrentStreams),
+		rs.WithLeopardGF(r.RsExtraParam.WithLeopardGF),
+		rs.WithInversionCache(r.RsExtraParam.WithInversionCache),
+	)
 	if err != nil {
 		return fmt.Errorf("create encoder: %w", err)
 	}

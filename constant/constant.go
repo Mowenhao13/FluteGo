@@ -53,7 +53,6 @@ const (
 	RsWithConcurrentStreamWrites = true
 	RsWithConcurrentStreams      = true
 	RsWithLeopardGF              = true
-	RsWithLeopardGF16            = false 
 	RsWithInversionCache         = true
 
 	RsTmpSendOutDir              = "../tmp/rs_send/"
@@ -63,4 +62,10 @@ const (
 // system param
 const (
 	ReceiverWorkers = 5
+)
+
+// Oti param
+const (
+	MaxNoCodeChunkSize = 32 * 1024
+	MaxRaptorQChunkSize = 32 * 1024
 )
