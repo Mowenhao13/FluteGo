@@ -27,6 +27,7 @@ controller/
 *.dylib
 *.exe
 *.dll
+*.orig
 
 # Go
 *.go.bak
