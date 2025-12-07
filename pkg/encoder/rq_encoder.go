@@ -9,6 +9,13 @@ import (
 	raptorq "github.com/xssnick/raptorq"
 )
 
+// RqEncoder RaptorQ编码器
+// 功能说明：
+//   实现RaptorQ前向纠错编码
+// 算法特点：
+//   - 支持任意丢包率
+//   - 可生成任意数量冗余符号
+//   - 计算复杂度适中
 type RqEncoder struct {
 	Config   EncoderConfig
 	Callback SendCallback
@@ -28,50 +35,24 @@ func NewRqEncoder(config EncoderConfig) (*RqEncoder, error) {
 	}, nil
 }
 
-func (e *RqEncoder) EncodeChunk(chunkIdx uint32, chunkSz uint32, data []byte, cb SendCallback) (int, error) {
-	if len(data) == 0 {
-		return 0, nil
-	}
-
-	callback := cb
-	if callback == nil {
-		callback = e.Callback
-	}
-
-	rq := raptorq.NewRaptorQ(uint32(e.Config.SymbolSize))
-	enc, err := rq.CreateEncoder(data)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create encoder: %w", err)
-	}
-
-	baseSymbols := enc.BaseSymbolsNum()
-	if baseSymbols == 0 {
-		return 0, nil
-	}
-
-	totalSymbols := uint32(float64(baseSymbols) * e.Config.RedundancyRatio)
-	if totalSymbols < baseSymbols {
-		totalSymbols = baseSymbols
-	}
-
-	for i := uint32(0); i < totalSymbols; i++ {
-		symbol := enc.GenSymbol(i)
-		if symbol == nil {
-			return int(i), fmt.Errorf("failed to generate symbol %d for chunk %d", i, chunkIdx)
-		}
-
-		if callback != nil {
-			if err := callback(chunkIdx, i, chunkSz, symbol); err != nil {
-				if i < baseSymbols {
-					return int(i), fmt.Errorf("callback failed for symbol %d: %w", i, err)
-				}
-			}
-		}
-	}
-
-	return int(totalSymbols), nil
-}
-
+// Encode 编码实现
+// 功能说明：
+//   对多个块进行RaptorQ编码，支持滑动窗口
+// 算法特点：
+//   1. 窗口化处理，控制内存使用
+//   2. 符号级交织，提高网络适应性
+//   3. 支持冗余控制
+// 参数：
+//   ctx        - 上下文，支持取消
+//   chunkCount - 总块数
+//   provider   - 数据提供函数
+//   cb         - 发送回调函数
+// 返回值：
+//   error - 编码过程中的错误
+// 实现要点：
+//   1. 滑动窗口控制内存
+//   2. 符号交织抵抗突发丢包
+//   3. 错误处理和资源清理
 func (e *RqEncoder) Encode(ctx context.Context, chunkCount uint32, provider DataProvider, cb SendCallback) error {
 	callback := cb
 	if callback == nil {
