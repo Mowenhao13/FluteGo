@@ -9,6 +9,7 @@ package oti
 
 import (
 	"FluteGo/constant"
+	"os"
 )
 
 // OTI 对象传输信息结构
@@ -51,11 +52,17 @@ type Oti struct {
 //   FECInstanceID: 0
 //   MaximumChunkSize: 32 * 1024
 func NewNoCode(SymbolSize uint16) Oti {
+	maxChunkSize := constant.MaxNoCodeChunkSize
+	pageSize := os.Getpagesize()
+	var alignedSize uint32 
+	if maxChunkSize % pageSize != 0 {
+		alignedSize = uint32(((maxChunkSize + pageSize - 1) / pageSize - 1) / pageSize)
+	}
 	return Oti{
 		FECEncodingID:    0,
 		FECInstanceID:    0,
 		SymbolSize:       SymbolSize,
-		MaximumChunkSize: constant.MaxNoCodeChunkSize,
+		MaximumChunkSize: alignedSize,
 	}
 }
 
@@ -79,11 +86,18 @@ func NewNoCode(SymbolSize uint16) Oti {
 //   FECInstanceID: 1
 //   MaximumChunkSize: 32 * 1024
 func NewRaptorQ(SymbolSize uint16) Oti {
+	maxChunkSize := constant.MaxRaptorQChunkSize
+	pageSize := os.Getpagesize()
+	var alignedSize uint32 
+	if maxChunkSize % pageSize != 0 {
+		alignedSize = uint32(((maxChunkSize + pageSize - 1) / pageSize - 1) / pageSize)
+	}
+
 	return Oti{
 		FECEncodingID:    1,
 		FECInstanceID:    1,
 		SymbolSize:       SymbolSize,
-		MaximumChunkSize: constant.MaxRaptorQChunkSize,
+		MaximumChunkSize: alignedSize,
 	}
 }
 
@@ -113,9 +127,6 @@ func NewReedSolomon(dataShards, parityShards uint8) Oti {
 		FECInstanceID: 2,
 		DataShards:    dataShards,
 		ParityShards:  parityShards,
-		// Reed-Solomon 使用分块而非固定符号长度，但仍需设置非零值避免除零
-		// 这里将默认符号大小设为常量 MaxPacketSize（通常等于 MTU - header），
-		// 以避免占位 1 导致 symbolIdx 过大的问题。
 		SymbolSize: uint16(constant.MaxPacketSize),
 	}
 }
