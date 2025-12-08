@@ -1,6 +1,10 @@
 # **FluteGo - File Delivery over Unidirectional Transport in Go implementation**
 ## **Unicast File Transfer Solution for Small-Scale Scalable Deployments**
 
+## Acknowledgments
+
+- Protocol inspiration: [ypo/flute](https://github.com/ypo/flute) - FLUTE implementation in Rust
+
 ## RFC
 This library implements the following RFCs 
 
@@ -61,7 +65,7 @@ sudo ip link set <send_interface> up
 sudo ip neighbor del <receiver_ip> dev <send_interface> 2>/dev/null
 sudo ip neighbor add <receiver_ip> lladdr <receiver_mac> dev <send_interface> nud noarp
 ```
-#### UDP kernel parameter configuration
+#### Recomended UDP kernel parameter configuration 
 ```zsh
 # Adjust UDP buffer size
 sudo sysctl -w net.core.rmem_max=134217728  # Set maximum receive buffer to 128 MB
@@ -72,9 +76,13 @@ sudo sysctl -w net.core.netdev_max_backlog=65535
 ## Use
 1. Start receiver first
 ```zsh
+go build -o cmd/flute_receiver/flute_receiver_linux ./cmd/flute_receiver
+
 ./cmd/flute/flute_sender -dir <Directory containing files to send> -oti <"OTI Encoding ID: 0=NoCode, 1=RaptorQ, 2=Reed-Solomon"> -concurrent <Maximum number of concurrent file sends> -ip <Destination IP address>
 ```
 2. Then start sender
 ```zsh
+go build -o cmd/flute_sender/flute_sender ./cmd/flute_sender
+
 ./cmd/flute/flute_receiver -dir <Directory containing files to send> -ip <Destination IP address>
 ```
