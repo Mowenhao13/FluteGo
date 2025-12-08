@@ -12,13 +12,13 @@ import (
 	"FluteGo/pkg/encoder"
 	"FluteGo/pkg/meta"
 	pool "FluteGo/pkg/pool"
+	"FluteGo/pkg/utils"
 	"context"
 	"encoding/binary"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync/atomic"
 
 	// "runtime"
@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/edsrzf/mmap-go"
-	"golang.org/x/sys/unix"
 	"golang.org/x/time/rate"
 )
 
@@ -408,19 +407,9 @@ func (s *Sender) Start(ctx context.Context) error {
 	// 跟踪内存映射数据以便后续取消映射
 	mmappedData := make([][]byte, s.chunkCount)
 	defer func() {
-		if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
-			for _, d := range mmappedData {
-				if d != nil {
-					unix.Munmap(d)
-				}
-			}
-		}
-		if runtime.GOOS == "windows" {
-			for _, d := range mmappedData {
-				if d != nil {
-					dat := mmap.MMap(d)
-					dat.Unmap()
-				}
+		for _, d := range mmappedData {
+			if d != nil {
+				utils.UnMmap(d)
 			}
 		}
 	}()
@@ -450,19 +439,12 @@ func (s *Sender) Start(ctx context.Context) error {
 
 		// 创建内存映射
 		var data []byte 
-		if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
-			data, err = unix.Mmap(s.fd, offset, int(length), unix.PROT_READ, unix.MAP_SHARED)
-			if err != nil {
-				return nil, 0, fmt.Errorf("mmap failed: %w", err)
-			}
+		dat, err := mmap.MapRegion(s.inputFile, int(length), mmap.RDONLY, 0, offset)
+		if err != nil {
+			return nil, 0, fmt.Errorf("mmap failed: %w", err)
 		}
-		if runtime.GOOS == "windows" {
-			dat, err := mmap.MapRegion(s.inputFile, int(length), mmap.RDONLY, 0, offset)
-			if err != nil {
-				return nil, 0, fmt.Errorf("mmap failed: %w", err)
-			}
-			data = []byte(dat)
-		}
+		data = []byte(dat)
+		
 
 		mmappedData[chunkIdx] = data
 		return data, int(length), nil

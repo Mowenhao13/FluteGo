@@ -2,20 +2,19 @@ package encoder
 
 import (
 	constant "FluteGo/constant"
+	"FluteGo/pkg/utils"
 	"context"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/edsrzf/mmap-go"
 	rs "github.com/klauspost/reedsolomon"
-	"golang.org/x/sys/unix"
 )
 
 type RsEncoder struct {
@@ -246,21 +245,15 @@ func (e *RsEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 
 		sz := int(instat.Size())
 
-		var shardData []byte 
+
 		offset := 0
-		if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
-			shardData, err = unix.Mmap(int(f.Fd()), int64(offset), sz, unix.PROT_READ, unix.MAP_SHARED)
-			if err != nil {
-				return fmt.Errorf("mmap failed for shard %s: %w", fn.Name(), err)
-			}
-		} 
-		if runtime.GOOS == "windows" {
-			shardDat, err := mmap.MapRegion(f, sz, mmap.RDONLY, 0, int64(offset))
-			if err != nil {
-				return fmt.Errorf("mmap failed for shard %s: %w", fn.Name(), err)
-			}
-			shardData = []byte(shardDat)
+		
+		shardDat, err := mmap.MapRegion(f, sz, mmap.RDONLY, 0, int64(offset))
+		if err != nil {
+			return fmt.Errorf("mmap failed for shard %s: %w", fn.Name(), err)
 		}
+		shardData := []byte(shardDat)
+	
 
 		if len(shardData) != sz {
 			return fmt.Errorf("mmap size mismatch for shard %s: expected %d, got %d", fn.Name(), sz, len(shardData))
@@ -292,13 +285,7 @@ func (e *RsEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 			}
 		}
 
-		if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
-			unix.Munmap(shardData)
-		}
-		if runtime.GOOS == "windows" {
-			shardData := mmap.MMap(shardData)
-			shardData.Unmap()
-		}
+		utils.UnMmap(shardData)
 	}
 
 	return nil

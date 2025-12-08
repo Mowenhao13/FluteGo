@@ -19,6 +19,8 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
+
+	"github.com/edsrzf/mmap-go"
 )
 
 // globalPeakHeapAlloc 记录全局堆内存分配的峰值（单位：字节）
@@ -232,4 +234,9 @@ func CopyFile(src, dst string) (int64, error) {
 	// 执行文件复制操作
 	nBytes, err := io.Copy(destination, source)
 	return nBytes, err
+}
+
+func UnMmap(data []byte) error {
+	dat := mmap.MMap(data)
+	return dat.Unmap()
 }
