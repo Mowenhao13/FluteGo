@@ -52,7 +52,6 @@ const (
 	RsWithConcurrentStreamReads  = true
 	RsWithConcurrentStreamWrites = true
 	RsWithConcurrentStreams      = true
-	RsWithLeopardGF              = true
 	RsWithInversionCache         = true
 
 	RsTmpSendOutDir              = "../tmp/rs_send/"
