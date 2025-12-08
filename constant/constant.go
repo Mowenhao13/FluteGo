@@ -22,8 +22,8 @@ const (
 
 // Sender param
 const (
-	SendFileDir = "cmd/send_files/"
-	SaveFileDir = "cmd/received_files/"
+	SendFileDir = "/home/Halllo/Projects/Flute_test_v1/Flute_test/cmd/send_files/"
+	SaveFileDir = "/home/Halllo/Projects/Flute_test_v2/cmd/received_files/"
 
 	SendRedundancyRatio      = 1.05
 	DefaultSendRateLimitMbps = 1000 // default send rate limit; 0 disables throttling
@@ -37,7 +37,7 @@ const (
 	SourceIP        = "192.168.1.102"
 	SourceMAC       = "10:7c:61:10:a5:47"
 	SourceInterface = "enp3s0"
-	DestIP          = "192.168.1.103"
+	DestIP          = "192.168.1.102"
 	DestMAC         = "88:a2:9e:3f:be:2c"
 	DestInterface   = "eth0"
 )
@@ -52,7 +52,6 @@ const (
 	RsWithConcurrentStreamReads  = true
 	RsWithConcurrentStreamWrites = true
 	RsWithConcurrentStreams      = true
-	RsWithLeopardGF              = true
 	RsWithInversionCache         = true
 
 	RsTmpSendOutDir              = "../tmp/rs_send/"

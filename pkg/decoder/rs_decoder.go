@@ -37,7 +37,6 @@ type RsExtraParam struct {
 	WithConcurrentStreams      bool // 同时启用读写并发
 
 	// 高级编码技术
-	WithLeopardGF      bool // Leopard GF算法（大分片优化）
 	WithInversionCache bool // 逆矩阵缓存（多次解码优化）
 }
 
@@ -54,7 +53,6 @@ func loadExtraParams() RsExtraParam {
 		WithConcurrentStreamWrites: constant.RsWithConcurrentStreamWrites,
 		WithConcurrentStreams:      constant.RsWithConcurrentStreams,
 
-		WithLeopardGF:      constant.RsWithLeopardGF,
 		WithInversionCache: constant.RsWithInversionCache,
 	}
 }
@@ -190,7 +188,6 @@ func (r *RsDecoder) decode() error {
 		rs.WithConcurrentStreamReads(r.RsExtraParam.WithConcurrentStreamReads),
 		rs.WithConcurrentStreamWrites(r.RsExtraParam.WithConcurrentStreamWrites),
 		rs.WithConcurrentStreams(r.RsExtraParam.WithConcurrentStreams),
-		rs.WithLeopardGF(r.RsExtraParam.WithLeopardGF),
 		rs.WithInversionCache(r.RsExtraParam.WithInversionCache),
 	)
 	if err != nil {
