@@ -1,13 +1,13 @@
 package main
 
 import (
-	"flag"
 	"FluteGo/constant"
 	"FluteGo/pkg/meta"
 	"FluteGo/pkg/oti"
 	"FluteGo/pkg/pool"
 	sender "FluteGo/pkg/sender"
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -23,10 +23,10 @@ var globalPool *pool.GlobalConnectionPool
 var sendFileIndex uint32
 
 var (
-	sendFileDir = flag.String("dir", constant.SendFileDir, "Directory containing files to send")
-	otiID      = flag.Int("oti", 0, "OTI Encoding ID: 0=NoCode, 1=RaptorQ, 2=Reed-Solomon")
+	sendFileDir        = flag.String("dir", constant.SendFileDir, "Directory containing files to send")
+	otiID              = flag.Int("oti", 1, "OTI Encoding ID: 0=NoCode, 1=RaptorQ, 2=Reed-Solomon")
 	maxConcurrentSends = flag.Int("concurrent", constant.MaxConcurrentSends, "Maximum number of concurrent file sends")
-	destIP      = flag.String("ip", constant.DestIP, "Destination IP address")
+	destIP             = flag.String("ip", constant.DestIP, "Destination IP address")
 )
 
 func main() {
@@ -52,6 +52,7 @@ func main() {
 		log.Printf("Failed to read directory: %v", err)
 	}
 
+	fdtID := uint8(1)
 	var sendFileList []*os.File
 	for _, file := range files {
 		if !file.IsDir() {
@@ -69,7 +70,6 @@ func main() {
 		return
 	}
 
-	fdtID := uint8(0)
 	var o oti.Oti
 
 	switch *otiID {
@@ -80,7 +80,7 @@ func main() {
 		o = oti.NewRaptorQ(1400)
 		log.Printf("Using OTI: RaptorQ (Not implemented, defaulting to Reed-Solomon)")
 	case 2:
-		o = oti.NewReedSolomon(12, 4)	
+		o = oti.NewReedSolomon(12, 4)
 		log.Printf("Using OTI: Reed-Solomon")
 	default:
 		log.Printf("Invalid OTI ID %d, defaulting to Reed-Solomon", *otiID)
@@ -103,7 +103,7 @@ func main() {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 1
 	}
-	
+
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
 
@@ -188,9 +188,16 @@ func SendFile(mt *meta.MetaPkt) error {
 
 	metaData := mt.Serialize()
 
+	log.Printf("[SendFile] Meta connection: %s (Mode: %d, FdtID: %d)",
+		metaConn.Conn.RemoteAddr(), metaConn.Mode, metaConn.FdtID)
+	log.Printf("[SendFile] Sending metadata: %d bytes to %s", len(metaData), metaConn.Conn.RemoteAddr())
+
 	if _, err := metaConn.Conn.Write(metaData); err != nil {
+		log.Printf("[SendFile] Failed to send metadata: %v", err)
 		return err
 	}
+
+	log.Printf("[SendFile] Metadata sent successfully")
 
 	log.Printf("Sender will be started after %d seconds\n", constant.StartSendWait)
 	time.Sleep(constant.StartSendWait * time.Second)
