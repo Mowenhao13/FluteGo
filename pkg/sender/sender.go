@@ -32,14 +32,18 @@ import (
 
 // Sender 发送端核心结构
 // 功能说明：
-//   负责文件数据的读取、编码、分片和网络发送
+//
+//	负责文件数据的读取、编码、分片和网络发送
+//
 // 核心特性：
 //   - 支持多种前向纠错编码算法
 //   - 内存映射文件读取，提高大文件处理性能
 //   - 速率限制控制，避免网络拥塞
 //   - 符号级交织发送，抵抗突发性丢包
+//
 // 设计模式：
-//   使用工作池和连接池优化资源利用
+//
+//	使用工作池和连接池优化资源利用
 type Sender struct {
 	fdtID     uint8
 	config    encoder.EncoderConfig
@@ -50,10 +54,14 @@ type Sender struct {
 	chunkCount uint32
 	fd         int
 
-	totalSent            int64
-	totalPackets         int64
-	totalFiles           uint16
-	startTime            time.Time
+	totalSent    int64
+	totalPackets int64
+	totalFiles   uint16
+	startTime    time.Time
+	// Per-file send timing
+	sendStarted          int32
+	sendStart            time.Time
+	sendEnd              time.Time
 	rateLimiter          *rate.Limiter
 	rateLimitBytesPerSec int
 	sentChunkBytes       int64
@@ -61,18 +69,26 @@ type Sender struct {
 
 // initEncoderConfig 初始化编码器配置
 // 功能说明：
-//   根据元数据包中的传输选项信息（OTI）构建编码器配置
+//
+//	根据元数据包中的传输选项信息（OTI）构建编码器配置
+//
 // 参数：
-//   mt - 元数据包，包含文件信息和传输参数
+//
+//	mt - 元数据包，包含文件信息和传输参数
+//
 // 返回值：
-//   encoder.EncoderConfig - 初始化完成的编码器配置
+//
+//	encoder.EncoderConfig - 初始化完成的编码器配置
+//
 // 配置解析逻辑：
-//   1. 确定编码算法类型
-//   2. 计算分块大小和对齐
-//   3. 设置RS码的参数（数据分片、校验分片）
-//   4. 配置冗余比率和最大包大小
+//  1. 确定编码算法类型
+//  2. 计算分块大小和对齐
+//  3. 设置RS码的参数（数据分片、校验分片）
+//  4. 配置冗余比率和最大包大小
+//
 // 特殊处理：
-//   对于Reed-Solomon编码，需要特殊处理符号大小
+//
+//	对于Reed-Solomon编码，需要特殊处理符号大小
 func initEncoderConfig(mt *meta.MetaPkt) encoder.EncoderConfig {
 	// 获取编码器类型
 	encoderType := mt.Oti.FECEncodingID
@@ -101,10 +117,10 @@ func initEncoderConfig(mt *meta.MetaPkt) encoder.EncoderConfig {
 	}
 
 	// 前向纠错参数
-	dataShards := mt.Oti.DataShards // Reed-Solomon
-	parityShards := mt.Oti.ParityShards // Reed-Solomon
+	dataShards := mt.Oti.DataShards                 // Reed-Solomon
+	parityShards := mt.Oti.ParityShards             // Reed-Solomon
 	redundancyRatio := constant.SendRedundancyRatio // RaptorQ
-	maxPacketSize := mt.MaxPacketSize 
+	maxPacketSize := mt.MaxPacketSize
 
 	// 构建编码器配置
 	encoderConfig := encoder.EncoderConfig{
@@ -122,14 +138,21 @@ func initEncoderConfig(mt *meta.MetaPkt) encoder.EncoderConfig {
 
 // InitSender 从元数据包初始化发送端
 // 功能说明：
-//   将元数据包转换为发送端配置，创建发送端实例
+//
+//	将元数据包转换为发送端配置，创建发送端实例
+//
 // 参数：
-//   mt - 元数据包，包含完整的文件传输描述
+//
+//	mt - 元数据包，包含完整的文件传输描述
+//
 // 返回值：
-//   *Sender - 初始化的发送端实例
-//   error - 初始化过程中的错误
+//
+//	*Sender - 初始化的发送端实例
+//	error - 初始化过程中的错误
+//
 // 路径解析：
-//   尝试两种路径格式：直接文件路径和目录+文件名组合
+//
+//	尝试两种路径格式：直接文件路径和目录+文件名组合
 func InitSender(mt *meta.MetaPkt) (*Sender, error) {
 	inputFilePath := mt.File.SendPath
 	if _, err := os.Stat(inputFilePath); os.IsNotExist(err) {
@@ -142,22 +165,30 @@ func InitSender(mt *meta.MetaPkt) (*Sender, error) {
 
 // NewSender 创建新的发送端实例
 // 功能说明：
-//   初始化发送端的所有组件，包括文件句柄、编码器、速率限制器等
+//
+//	初始化发送端的所有组件，包括文件句柄、编码器、速率限制器等
+//
 // 参数：
-//   inputFilePath - 输入文件的完整路径
-//   config - 编码器配置参数
-//   fdtID - 文件数据传输标识符
-//   totalFiles - 总文件数（用于计算速率限制）
+//
+//	inputFilePath - 输入文件的完整路径
+//	config - 编码器配置参数
+//	fdtID - 文件数据传输标识符
+//	totalFiles - 总文件数（用于计算速率限制）
+//
 // 返回值：
-//   *Sender - 创建成功的发送端实例
-//   error - 创建过程中的错误
+//
+//	*Sender - 创建成功的发送端实例
+//	error - 创建过程中的错误
+//
 // 关键步骤：
-//   1. 打开并验证输入文件
-//   2. 调整分块大小为内存页对齐
-//   3. 创建指定类型的编码器
-//   4. 构建速率限制器
+//  1. 打开并验证输入文件
+//  2. 调整分块大小为内存页对齐
+//  3. 创建指定类型的编码器
+//  4. 构建速率限制器
+//
 // 错误处理：
-//   文件不存在、文件为空、分块大小无效等情况
+//
+//	文件不存在、文件为空、分块大小无效等情况
 func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, totalFiles uint16) (*Sender, error) {
 	// 打开输入文件
 	file, err := os.Open(inputFilePath)
@@ -204,7 +235,7 @@ func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, 
 
 	// 计算总分块数
 	chunkCount := uint32((info.Size() + int64(chunkSize) - 1) / int64(chunkSize))
-	
+
 	// 构建速率限制器
 	rateLimiter, rateBytesPerSec, rateMbps := buildRateLimiter(config.MaxPacketSize, totalFiles)
 	if rateLimiter != nil {
@@ -230,19 +261,25 @@ func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, 
 
 // buildRateLimiter 构建速率限制器
 // 功能说明：
-//   根据配置的最大包大小和总文件数计算发送速率限制
+//
+//	根据配置的最大包大小和总文件数计算发送速率限制
+//
 // 参数：
-//   maxPacketSize - 最大数据包大小（字节）
-//   totalFiles - 总并发文件数
+//
+//	maxPacketSize - 最大数据包大小（字节）
+//	totalFiles - 总并发文件数
+//
 // 返回值：
-//   *rate.Limiter - 速率限制器实例
-//   int - 每秒字节数限制
-//   float64 - Mbps速率限制
+//
+//	*rate.Limiter - 速率限制器实例
+//	int - 每秒字节数限制
+//	float64 - Mbps速率限制
+//
 // 算法逻辑：
-//   1. 计算每个文件的平均速率
-//   2. 转换为每秒字节数
-//   3. 设置合适的突发大小
-//   4. 考虑包大小对突发大小的影响
+//  1. 计算每个文件的平均速率
+//  2. 转换为每秒字节数
+//  3. 设置合适的突发大小
+//  4. 考虑包大小对突发大小的影响
 func buildRateLimiter(maxPacketSize, totalFiles uint16) (*rate.Limiter, int, float64) {
 	// 计算每个文件的速率限制
 	//TODO: change totalFiles to currSendingFiles
@@ -283,23 +320,31 @@ func buildRateLimiter(maxPacketSize, totalFiles uint16) (*rate.Limiter, int, flo
 
 // writeSymbol 写入单个符号到网络
 // 功能说明：
-//   将编码后的数据符号封装为网络包并发送
+//
+//	将编码后的数据符号封装为网络包并发送
+//
 // 参数：
-//   conn - UDP连接包装器
-//   bufPool - 缓冲区池，用于复用内存
-//   chunkIdx - 分块索引
-//   symbolID - 符号标识符
-//   symbolData - 符号数据
+//
+//	conn - UDP连接包装器
+//	bufPool - 缓冲区池，用于复用内存
+//	chunkIdx - 分块索引
+//	symbolID - 符号标识符
+//	symbolData - 符号数据
+//
 // 返回值：
-//   error - 发送过程中的错误
+//
+//	error - 发送过程中的错误
+//
 // 核心流程：
-//   1. 从缓冲区池获取缓冲区
-//   2. 构建数据包头部（序列号）
-//   3. 复制符号数据
-//   4. 通过UDP连接发送
-//   5. 更新发送统计信息
+//  1. 从缓冲区池获取缓冲区
+//  2. 构建数据包头部（序列号）
+//  3. 复制符号数据
+//  4. 通过UDP连接发送
+//  5. 更新发送统计信息
+//
 // 特殊处理：
-//   对于Reed-Solomon编码，序列号有特殊的编码方式
+//
+//	对于Reed-Solomon编码，序列号有特殊的编码方式
 func (s *Sender) writeSymbol(conn *pool.UDPConnWrapper, bufPool *sync.Pool, chunkIdx uint32, symbolID uint32, symbolData []byte) error {
 	// 从缓冲区池获取缓冲区
 	buf := bufPool.Get().([]byte)
@@ -311,7 +356,7 @@ func (s *Sender) writeSymbol(conn *pool.UDPConnWrapper, bufPool *sync.Pool, chun
 
 	// 构建序列号
 	var seqNum uint64
-	
+
 	// 如果编码器配置指示使用Reed-Solomon（数据+校验分片）
 	// RS编码器的回调函数将分片索引作为第一个参数传递
 	// 接收端期望序列号格式为：高32位=分片索引，低32位=符号索引
@@ -347,6 +392,11 @@ func (s *Sender) writeSymbol(conn *pool.UDPConnWrapper, bufPool *sync.Pool, chun
 	// 标记连接已使用
 	conn.MarkSent()
 
+	// 标记发送开始（第一次成功写）
+	if atomic.CompareAndSwapInt32(&s.sendStarted, 0, 1) {
+		s.sendStart = time.Now()
+		log.Printf("fdtID(%d): send started at %s", s.fdtID, s.sendStart.Format(time.RFC3339Nano))
+	}
 	// 返还缓冲区到池中
 	bufPool.Put(buf[:cap(buf)])
 
@@ -359,17 +409,24 @@ func (s *Sender) writeSymbol(conn *pool.UDPConnWrapper, bufPool *sync.Pool, chun
 
 // Start 启动数据传输
 // 功能说明：
-//   启动文件数据的读取、编码和网络发送过程
+//
+//	启动文件数据的读取、编码和网络发送过程
+//
 // 参数：
-//   ctx - 上下文，用于传递取消信号和控制流程
+//
+//	ctx - 上下文，用于传递取消信号和控制流程
+//
 // 返回值：
-//   error - 发送过程中的错误
+//
+//	error - 发送过程中的错误
+//
 // 核心流程：
-//   1. 从连接池获取UDP连接
-//   2. 初始化缓冲区池
-//   3. 设置内存映射数据提供器
-//   4. 创建发送回调函数
-//   5. 调用编码器进行编码和发送
+//  1. 从连接池获取UDP连接
+//  2. 初始化缓冲区池
+//  3. 设置内存映射数据提供器
+//  4. 创建发送回调函数
+//  5. 调用编码器进行编码和发送
+//
 // 关键技术：
 //   - 内存映射：提高大文件读取性能
 //   - 符号级交织：抵抗突发丢包
@@ -383,9 +440,10 @@ func (s *Sender) Start(ctx context.Context) error {
 	}
 
 	// 获取文件传输连接
-	_, conns, err := p.GetGlobalFileConn(s.fdtID)
-	if err != nil {
-		return fmt.Errorf("failed to get connections for fdtID %d: %w", s.fdtID, err)
+	var getErr error
+	_, conns, getErr := p.GetGlobalFileConn(s.fdtID)
+	if getErr != nil {
+		return fmt.Errorf("failed to get connections for fdtID %d: %w", s.fdtID, getErr)
 	}
 
 	if len(conns) == 0 {
@@ -393,7 +451,7 @@ func (s *Sender) Start(ctx context.Context) error {
 	}
 
 	// 使用第一个连接（简化实现，实际可轮询）
-	//TODO: Add multi connections support 
+	//TODO: Add multi connections support
 	conn := conns[0]
 
 	// 初始化缓冲区池
@@ -438,13 +496,12 @@ func (s *Sender) Start(ctx context.Context) error {
 		}
 
 		// 创建内存映射
-		var data []byte 
+		var data []byte
 		dat, err := mmap.MapRegion(s.inputFile, int(length), mmap.RDONLY, 0, offset)
 		if err != nil {
 			return nil, 0, fmt.Errorf("mmap failed: %w", err)
 		}
 		data = []byte(dat)
-		
 
 		mmappedData[chunkIdx] = data
 		return data, int(length), nil
@@ -464,5 +521,20 @@ func (s *Sender) Start(ctx context.Context) error {
 	})
 
 	// 启动编码和发送过程
-	return s.encoder.Encode(ctx, s.chunkCount, provider, callback)
+	var err error
+	err = s.encoder.Encode(ctx, s.chunkCount, provider, callback)
+
+	// 标记发送结束并记录时间（如果曾经开始过）
+	if atomic.LoadInt32(&s.sendStarted) == 1 {
+		s.sendEnd = time.Now()
+		dur := s.sendEnd.Sub(s.sendStart)
+		totalBytes := atomic.LoadInt64(&s.totalSent)
+		mbps := 0.0
+		if dur.Seconds() > 0 {
+			mbps = (float64(totalBytes) * 8.0 / dur.Seconds()) / 1e6
+		}
+		log.Printf("fdtID(%d): send finished at %s, duration=%s", s.fdtID, s.sendEnd.Format(time.RFC3339Nano), dur.String())
+		log.Printf("fdtID(%d): bytes sent=%d, duration=%s, throughput=%.2f Mbps", s.fdtID, totalBytes, dur.String(), mbps)
+	}
+	return err
 }
