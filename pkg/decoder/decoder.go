@@ -62,7 +62,7 @@ func NewDecoder(config DecoderConfig, output OutputHandler) (BaseDecoder, error)
 		}
 		return dec, nil
 	case DecoderReedSolomon:
-		dec, err := NewRsDecoder(config)
+		dec, err := NewRsDecoder(config, output)
 		if err != nil {
 			return nil, err
 		}

@@ -20,6 +20,7 @@ type RsDecoder struct {
 	receivedBytes []int64
 	fileLocks     []sync.Mutex
 	decoded       bool // 防止重复解码
+	output        OutputHandler
 }
 
 type RsExtraParam struct {
@@ -57,7 +58,9 @@ func loadExtraParams() RsExtraParam {
 	}
 }
 
-func NewRsDecoder(config DecoderConfig) (*RsDecoder, error) {
+// NewRsDecoder creates a Reed-Solomon decoder. It accepts an OutputHandler
+// which will be invoked for each decoded chunk once reconstruction/join is done.
+func NewRsDecoder(config DecoderConfig, output OutputHandler) (*RsDecoder, error) {
 	totalShards := int(config.DataShards + config.ParityShards)
 	recvDir := filepath.Dir(constant.RsTmpRecvInDir)
 	if err := os.MkdirAll(recvDir, 0755); err != nil {
@@ -110,7 +113,7 @@ func NewRsDecoder(config DecoderConfig) (*RsDecoder, error) {
 	}
 
 	rsExtraParam := loadExtraParams()
-	return &RsDecoder{
+	d := &RsDecoder{
 		Config:        config,
 		RsExtraParam:  rsExtraParam,
 		inputs:        inputs,
@@ -118,7 +121,12 @@ func NewRsDecoder(config DecoderConfig) (*RsDecoder, error) {
 		receivedBytes: make([]int64, totalShards),
 		fileLocks:     make([]sync.Mutex, totalShards),
 		decoded:       false,
-	}, nil
+		output:        output,
+	}
+	// Attach output handler by storing it in Config.FName or using closure? We'll
+	// perform callbacks in decode() where we have access to output.
+	_ = d
+	return d, nil
 }
 
 func (r *RsDecoder) openInput() ([]io.Reader, int64, error) {
@@ -379,6 +387,39 @@ func (r *RsDecoder) decode() error {
 	}
 
 	log.Printf("✓ File successfully decoded and written to: %s", outputPath)
+
+	// If output handler provided, invoke per-chunk callbacks
+	if r.output != nil {
+		// Open the output file and stream per-chunk to callback
+		of, err := os.Open(outputPath)
+		if err != nil {
+			return fmt.Errorf("open output for callbacks: %w", err)
+		}
+		defer of.Close()
+
+		chunkSize := int64(r.Config.ChunkSize)
+		if chunkSize <= 0 {
+			chunkSize = int64(constant.DefaultChunkSize)
+		}
+		totalChunks := int64((outSize + chunkSize - 1) / chunkSize)
+
+		for i := int64(0); i < totalChunks; i++ {
+			offset := i * chunkSize
+			readLen := chunkSize
+			if offset+readLen > outSize {
+				readLen = outSize - offset
+			}
+			buf := make([]byte, readLen)
+			if _, err := of.ReadAt(buf, offset); err != nil && err != io.EOF {
+				return fmt.Errorf("read output chunk %d: %w", i, err)
+			}
+			// Invoke callback (chunkIdx is uint32)
+			if err := r.output.OnDecodedData(buf, offset, uint32(i)); err != nil {
+				log.Printf("warning: output handler OnDecodedData returned error for chunk %d: %v", i, err)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -423,18 +464,6 @@ func (r *RsDecoder) AddSymbol(chunkID uint32, symbolID uint32, data []byte) erro
 		}
 	}
 	return nil
-}
-
-func (r *RsDecoder) checkComplete() bool {
-	allComplete := true
-	for i, received := range r.receivedBytes {
-		if received < r.expectedSizes[i] {
-			allComplete = false
-			break
-		}
-	}
-
-	return allComplete
 }
 
 func (r *RsDecoder) canDecode() bool {
