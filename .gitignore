@@ -7,8 +7,6 @@ cmd/received_files/
 tmp/
 test/tmp/
 test/tmp_recv/
-test/
-controller/
 # Memory profiles
 *.pprof
 
