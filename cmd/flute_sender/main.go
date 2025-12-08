@@ -69,7 +69,7 @@ func main() {
 		return
 	}
 
-	fdtID := uint8(1)
+	fdtID := uint8(0)
 	var o oti.Oti
 
 	switch *otiID {
