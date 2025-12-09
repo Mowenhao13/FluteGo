@@ -13,7 +13,7 @@ const (
 )
 
 func main() {
-	pool.InitGlobalConnectionPool(20, 100*time.Second, 1)
+	pool.InitGlobalConnectionPool(20, 100*time.Second, 1, "192.168.1.102")
 	globalPool := pool.GetGlobalPool()
 	if globalPool == nil {
 		log.Panic("Pool not initizalized\n")

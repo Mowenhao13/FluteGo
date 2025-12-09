@@ -1,3 +1,10 @@
+/*
+ * 软件著作权声明：
+ * 本文件包含的代码是 FluteGo 软件的组成部分
+ * 版权所有 (C) 2025
+ * 保留所有权利。
+ */
+
 package decoder
 
 import (
@@ -11,6 +18,11 @@ import (
 	raptorq "github.com/xssnick/raptorq"
 )
 
+// RqDecoder 封装了 RaptorQ 解码流程及状态。
+//
+// # 工作方式
+//
+// 维护多个 chunk decoder 实例，对应当前正在恢复的 chunk，支持异步接收符号、判断齐全并回调输出。
 type RqDecoder struct {
 	Config          DecoderConfig
 	output          OutputHandler
@@ -19,6 +31,18 @@ type RqDecoder struct {
 	engine          *raptorq.RaptorQ
 }
 
+// rqChunkDecoder 负责一块 chunk 的符号收集和解码。
+//
+// # 字段
+//
+//   - `decoder`: RaptorQ 解码器实例。
+//   - `received`: 已接收符号数量。
+//   - `expected`: 期望符号数量。
+//   - `chunkSize`: 本 chunk 的实际字节长度。
+//   - `startSeq`: 起始序列号。
+//   - `decoded`: 是否已经解码完成。
+//   - `lastUsed`: 上次接收时间。
+//   - `mutex`: 同步多 goroutine 访问。
 type rqChunkDecoder struct {
 	decoder   *raptorq.Decoder
 	received  int        // 已接收符号数
@@ -30,12 +54,22 @@ type rqChunkDecoder struct {
 	mutex     sync.Mutex // 保护decoder状态
 }
 
+// calRequiredSymbols 根据 chunk 大小和冗余比例估算所需符号数量。
+//
+// # 参数
+//
+//   - `actualChunkSize`: 当前 chunk 实际大小。
+//
+// # 返回值
+//
+//	需要接收的符号数量（uint16）。
 func (r *RqDecoder) calRequiredSymbols(actualChunkSize uint32) uint16 {
 	baseSymbols := uint16((actualChunkSize + uint32(r.Config.SymbolSize) - 1) / uint32(r.Config.SymbolSize))
 	return uint16(float64(baseSymbols) * r.Config.RedundancyRatio)
 }
 
 // max chunkSize = 4096 MB
+// calChunkSize 计算 chunk 索引对应的实际字节长度，最后一个 chunk 可能小于固定大小。
 func (r *RqDecoder) calChunkSize(chunkIdx uint32) uint32 {
 	startOffset := uint64(chunkIdx) * uint64(r.Config.ChunkSize)
 	if startOffset >= r.Config.FileSize {
@@ -49,6 +83,16 @@ func (r *RqDecoder) calChunkSize(chunkIdx uint32) uint32 {
 	return r.Config.ChunkSize
 }
 
+// getrqChunkDecoder 获取或初始化某个 chunk 对应的 RaptorQ 解码器。
+//
+// # 参数
+//
+//   - `chunkIdx`: chunk 索引。
+//
+// # 错误
+//
+//   - chunk 超出文件范围。
+//   - chunk 已经解码完成。
 func (r *RqDecoder) getrqChunkDecoder(chunkIdx uint32) (*rqChunkDecoder, error) {
 	actualChunkSize := r.calChunkSize(chunkIdx)
 	if actualChunkSize <= 0 {
@@ -104,6 +148,16 @@ func (r *RqDecoder) getrqChunkDecoder(chunkIdx uint32) (*rqChunkDecoder, error) 
 	return newrqChunkDecoder, nil
 }
 
+// NewRqDecoder 初始化一个支持 sliding window 的 RaptorQ 解码器。
+//
+// # 参数
+//
+//   - `config`: 解码上下文配置。
+//   - `output`: chunk 解码完成后的回调。
+//
+// # 返回值
+//
+//	返回构建好的 `RqDecoder` 实例与可能的错误。
 func NewRqDecoder(config DecoderConfig, output OutputHandler) (*RqDecoder, error) {
 	if config.ChunkSize > 1024*1024*1024 { // 最大1GB per chunk
 		return nil, fmt.Errorf("chunk大小超过限制: %d", config.ChunkSize)
@@ -118,6 +172,9 @@ func NewRqDecoder(config DecoderConfig, output OutputHandler) (*RqDecoder, error
 	}, nil
 }
 
+// AddSymbol 接收一个符号，填充相应 chunk 并尝试触发解码。
+//
+// 成功解码后会通过 OutputHandler 回调完整 chunk 数据。
 func (r *RqDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) error {
 	dec, err := r.getrqChunkDecoder(chunkIdx)
 	if err != nil {
@@ -179,6 +236,11 @@ func (r *RqDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 }
 
 // 清理已解码的 decoder（供 Receiver 调用）
+// CleanupDecoded 清理已解码或闲置过久的 chunk。
+//
+// # 返回值
+//
+//	清理的 chunk 数量。
 func (r *RqDecoder) CleanupDecoded() int {
 	cleaned := 0
 	r.RqChunkDecoders.Range(func(key, value interface{}) bool {
@@ -194,6 +256,12 @@ func (r *RqDecoder) CleanupDecoded() int {
 }
 
 // 获取解码统计信息
+// GetStats 获取当前 chunk 解码统计信息。
+//
+// # 返回值
+//
+//	`decoded`: 已完成解码的 chunk 数
+//	`total`: 当前活动 chunk 总数
 func (r *RqDecoder) GetStats() (decoded, total int) {
 	r.RqChunkDecoders.Range(func(key, value interface{}) bool {
 		total++
@@ -206,10 +274,12 @@ func (r *RqDecoder) GetStats() (decoded, total int) {
 	return decoded, total
 }
 
+// SetFileSize 更新解码器感知到的文件总大小。
 func (r *RqDecoder) SetFileSize(fileSize uint64) {
 	r.Config.FileSize = fileSize
 }
 
+// Close 释放 RqDecoder 关联的资源。
 func (r *RqDecoder) Close() error {
 	r.RqChunkDecoders.Range(func(key, value interface{}) bool {
 		if dec := value.(*rqChunkDecoder); dec.decoder != nil {
@@ -221,6 +291,7 @@ func (r *RqDecoder) Close() error {
 	return nil
 }
 
+// Decode 目前为占位实现，RaptorQ 解码在 AddSymbol 中实时完成。
 func (r *RqDecoder) Decode() error {
 	// RaptorQ 解码是增量进行的，在 AddSymbol 中完成解码逻辑
 	return nil

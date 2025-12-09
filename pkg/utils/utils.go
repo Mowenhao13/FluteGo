@@ -4,6 +4,12 @@
  * 版权所有 (C) 2025
  * 保留所有权利。
  */
+/*
+ * 软件著作权声明：
+ * 本文件包含的代码是 FluteGo 软件的组成部分
+ * 版权所有 (C) 2025
+ * 保留所有权利。
+ */
 
 package utils
 
@@ -27,16 +33,25 @@ import (
 // 通过原子操作保证并发访问的安全性
 var globalPeakHeapAlloc uint64 // 全局峰值内存记录
 
-
-// CalculateMd5 计算文件的MD5哈希值
-// 参数：
-//   file - 要计算哈希的文件指针
-// 返回值：
-//   string - 计算得到的32位十六进制MD5哈希值
-//   error - 如果计算过程中发生错误，则返回错误信息
-// 注意事项：
-//   1. 函数会自动将文件指针重置到文件开头
-//   2. 计算完成后文件指针不会重置，调用方需自行处理
+// CalculateMd5 计算文件的 MD5 哈希值。
+//
+// # 描述
+//
+//	读取整个文件并计算其 MD5，适合对传输文件进行完整性校验。
+//
+// # 参数
+//
+//   - `file`: 需要计算哈希的文件对象
+//
+// # 返回值
+//
+//   - `string`: 32 位十六进制的 MD5 值
+//   - `error`: 计算过程中发生的任何错误
+//
+// # 注意
+//
+//  1. 函数内部会将文件指针重置到开头
+//  2. 函数不会在结束时恢复指针位置
 func CalculateMd5(file *os.File) (string, error) {
 	file.Seek(0, io.SeekStart)
 	hash := md5.New()
@@ -47,21 +62,25 @@ func CalculateMd5(file *os.File) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-// EnsureStaticARP 配置或移除静态ARP条目
-// 功能说明：
-//   在指定的网络接口上创建永久静态ARP条目，将IP地址映射到指定的MAC地址
-// 参数：
-//   enable - 启用或禁用静态ARP配置
-//   ip     - 目标IP地址
-//   mac    - 目标MAC地址
-//   iface  - 网络接口名称
-//   role   - ARP条目的描述信息（用于日志输出）
-// 返回值：
-//   error - 配置成功返回nil，否则返回错误信息
-// 实现原理：
-//   通过执行"ip neigh replace"命令创建永久静态ARP条目
-// 使用场景：
-//   在需要固定IP-MAC映射的网络环境中使用，如防止ARP欺骗攻击
+// EnsureStaticARP 配置或移除静态 ARP 条目。
+//
+// # 描述
+//
+//	使用系统命令将 IP 和 MAC 永久绑定，以确保接收端与发送端在链路层不被篡改。
+//
+// # 参数
+//
+//   - `enable`: 是否启用静态 ARP
+//   - `ip`, `mac`, `iface`: 要绑定的 IP, MAC 与网卡
+//   - `role`: 日志中记录的角色描述
+//
+// # 返回值
+//
+//   - `error`: 失败时返回具体错误
+//
+// # 实现
+//
+//	通过执行 `ip neigh replace` 命令设置永久 ARP 映射
 func EnsureStaticARP(enable bool, ip, mac, iface, role string) error {
 	// 如果禁用静态ARP，直接返回
 	if !enable {
@@ -88,14 +107,16 @@ func EnsureStaticARP(enable bool, ip, mac, iface, role string) error {
 	return nil
 }
 
-// CreateUDPListener 创建UDP监听套接字
-// 功能说明：
-//   在指定的本地地址和端口上创建UDP监听套接字
-// 参数：
-//   sourceAddr - 监听地址，格式为"IP:Port"或":Port"
-// 返回值：
-//   *net.UDPConn - 创建成功的UDP连接对象
-//   error - 创建失败时返回错误信息
+// CreateUDPListener 在指定地址上创建 UDP 监听套接字。
+//
+// # 参数
+//
+//   - `sourceAddr`: 本地监听地址（`IP:Port` 或 `:Port`）。
+//
+// # 返回值
+//
+//   - `*net.UDPConn`: 成功创建的监听连接
+//   - `error`: 解析地址或监听失败时返回错误
 func CreateUDPListener(sourceAddr string) (*net.UDPConn, error) {
 	addr, err := net.ResolveUDPAddr("udp", sourceAddr)
 	if err != nil {
@@ -110,14 +131,16 @@ func CreateUDPListener(sourceAddr string) (*net.UDPConn, error) {
 	return conn, nil
 }
 
-// CreateUDPConnection 创建UDP连接套接字
-// 功能说明：
-//   创建连接到指定远程地址的UDP套接字
-// 参数：
-//   destAddr - 目标地址，格式为"IP:Port"
-// 返回值：
-//   *net.UDPConn - 创建成功的UDP连接对象
-//   error - 创建失败时返回错误信息
+// CreateUDPConnection 建立到指定远程地址的 UDP 连接。
+//
+// # 参数
+//
+//   - `destAddr`: 目标地址（`IP:Port`）。
+//
+// # 返回值
+//
+//   - `*net.UDPConn`: 已连接的 UDP 套接字
+//   - `error`: 解析地址或拨号失败时返回错误
 func CreateUDPConnection(destAddr string) (*net.UDPConn, error) {
 	udpAddr, err := net.ResolveUDPAddr("udp", destAddr)
 	if err != nil {
@@ -132,14 +155,15 @@ func CreateUDPConnection(destAddr string) (*net.UDPConn, error) {
 	return conn, nil
 }
 
-// UpdatePeakMemory 更新峰值内存使用量
-// 功能说明：
-//   读取当前堆内存分配情况，更新全局峰值内存记录
-// 实现原理：
-//   1. 通过runtime.ReadMemStats获取内存统计信息
-//   2. 使用原子操作更新全局峰值，确保线程安全
-// 线程安全：
-//   使用atomic.CompareAndSwapUint64实现无锁的原子更新
+// UpdatePeakMemory 记录当前堆内存分配的峰值。
+//
+// # 描述
+//
+//	读取 `runtime.ReadMemStats` 中的堆分配值，并通过原子操作更新全局峰值。
+//
+// # 线程安全
+//
+//	使用 `atomic.CompareAndSwapUint64` 进行无锁更新。
 func UpdatePeakMemory() {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
@@ -159,19 +183,24 @@ func UpdatePeakMemory() {
 	}
 }
 
-// GetContentType 检测文件的内容类型（MIME类型）
-// 功能说明：
-//   通过读取文件的前512字节，检测文件的MIME类型
-// 参数：
-//   file - 要检测的文件指针
-// 返回值：
-//   string - 检测到的MIME类型字符串
-// 实现原理：
-//   基于http.DetectContentType实现，遵循MIME类型检测标准
-// 注意事项：
-//   1. 函数会自动重置文件指针
-//   2. 对于无法识别的类型，返回"application/octet-stream"
-//   3. 只读取前512字节，适合大多数文件类型检测
+// GetContentType 检测文件的内容类型（MIME 类型）。
+//
+// # 参数
+//
+//   - `file`: 待检测文件
+//
+// # 返回值
+//
+//   - `string`: 识别出的 MIME 类型
+//
+// # 实现
+//
+//	使用 `http.DetectContentType` 检测前 512 字节，并在无法检测时默认返回 `application/octet-stream`。
+//
+// # 注意
+//
+//  1. 函数会在开始和结束时将文件指针复位
+//  2. 支持大多数常见文件类型
 func GetContentType(file *os.File) string {
 	// 重置文件指针到开头
 	file.Seek(0, 0)
@@ -181,7 +210,7 @@ func GetContentType(file *os.File) string {
 	n, err := file.Read(buffer)
 	if err != nil && err != io.EOF {
 		// 默认类型
-		return "application/octet-stream" 
+		return "application/octet-stream"
 	}
 
 	// 重置文件指针到开头（避免影响后续操作）
@@ -192,20 +221,23 @@ func GetContentType(file *os.File) string {
 	return contentType
 }
 
-// CopyFile 复制文件
-// 功能说明：
-//   将源文件完整复制到目标路径
-// 参数：
-//   src - 源文件路径
-//   dst - 目标文件路径
-// 返回值：
-//   int64 - 实际复制的字节数
-//   error - 复制过程中的错误信息
-// 错误处理：
-//   1. 源文件不存在或无权限访问
-//   2. 源文件不是普通文件（如目录、设备文件等）
-//   3. 目标文件创建失败或无写入权限
-//   4. 复制过程中发生I/O错误
+// CopyFile 将源文件复制到目标路径。
+//
+// # 参数
+//
+//   - `src`: 源路径
+//   - `dst`: 目标路径
+//
+// # 返回值
+//
+//   - `int64`: 实际复制的字节数
+//   - `error`: I/O 或权限错误
+//
+// # 错误情境
+//
+//  1. 源文件不存在或非普通文件
+//  2. 无法创建目标文件
+//  3. 复制过程中发生 I/O 错误
 func CopyFile(src, dst string) (int64, error) {
 	// 检查源文件是否存在及其类型
 	sourceFileStat, err := os.Stat(src)
@@ -236,6 +268,15 @@ func CopyFile(src, dst string) (int64, error) {
 	return nBytes, err
 }
 
+// UnMmap 释放内存映射区域。
+//
+// # 参数
+//
+//   - `data`: 通过 mmap 创建的字节切片
+//
+// # 返回值
+//
+//	`error`: 无法解除映射时返回错误
 func UnMmap(data []byte) error {
 	dat := mmap.MMap(data)
 	return dat.Unmap()

@@ -4,6 +4,12 @@
  * 版权所有 (C) 2025
  * 保留所有权利。
  */
+/*
+ * 软件著作权声明：
+ * 本文件包含的代码是 FluteGo 软件的组成部分
+ * 版权所有 (C) 2025
+ * 保留所有权利。
+ */
 
 package system
 
@@ -416,18 +422,15 @@ func (s *ReceiverSystem) StartMetaProgram() {
 	}()
 }
 
-// StartFileProgram 启动文件接收程序
-// 功能说明：
+// StartFileProgram 启动文件接收管线。
 //
-//	启动多个接收工作协程，从元数据通道获取任务并处理
+// # 描述
 //
-// 并发控制：
+//	初始化固定数量的 receiverWorker，以并行方式消费 `metaChan` 中的元数据包。
 //
-//	通过constant.ReceiverWorkers控制工作协程数量
+// # 并发控制
 //
-// 工作模式：
-//
-//	每个工作协程独立处理元数据包，实现并行文件接收
+//	通过常量 `constant.ReceiverWorkers` 控制工作协程数量。
 func (s *ReceiverSystem) StartFileProgram() {
 	log.Printf("Using %d receiverWorkers", constant.ReceiverWorkers)
 	for i := 0; i < constant.ReceiverWorkers; i++ {
@@ -436,23 +439,21 @@ func (s *ReceiverSystem) StartFileProgram() {
 	}
 }
 
-// receiverWorker 接收工作协程
-// 功能说明：
+// receiverWorker 循环读取元数据包并派发接收任务。
 //
-//	从元数据通道获取任务，处理文件接收请求
+// # 参数
 //
-// 参数：
+//   - `id`: 工作协程 ID
 //
-//	id - 工作协程标识符，用于日志和调试
+// # 处理流程
 //
-// 处理流程：
-//  1. 监听上下文取消信号
-//  2. 从元数据通道获取任务
-//  3. 调用processMeta处理元数据
+//  1. 监听系统上下文
+//  2. 从 `metaChan` 读取 `MetaPkt`
+//  3. 调用 `processMeta` 启动接收
 //
-// 退出条件：
+// # 退出条件
 //
-//	上下文被取消或元数据通道关闭
+//	上下文取消或 `metaChan` 关闭
 func (s *ReceiverSystem) receiverWorker(id int) {
 	defer s.wg.Done()
 
@@ -469,20 +470,18 @@ func (s *ReceiverSystem) receiverWorker(id int) {
 	}
 }
 
-// processMeta 处理元数据包
-// 功能说明：
+// processMeta 验证元数据后创建接收任务。
 //
-//	解析并验证元数据包，启动文件接收任务
+// # 步骤
 //
-// 关键逻辑：
-//  1. 基于FdtID进行去重，避免重复接收
-//  2. 通过工作池控制并发任务数量
-//  3. 为每个任务启动独立的接收协程
+//  1. 使用 `targets` 去重
+//  2. 将任务送入 `workerPool`，保证并发限制
+//  3. 在独立协程中调用 `runReceiver`
 //
-// 参数：
+// # 参数
 //
-//	mainCtx  - 主上下文，用于传递取消信号
-//	metaPkt  - 接收到的元数据包
+//   - `mainCtx`: 主上下文
+//   - `metaPkt`: 待处理的元数据包
 func (s *ReceiverSystem) processMeta(mainCtx context.Context, metaPkt *meta.MetaPkt) {
 	// 基于FdtID去重
 	if _, loaded := s.targets.LoadOrStore(metaPkt.File.FdtID, true); loaded {
@@ -490,40 +489,34 @@ func (s *ReceiverSystem) processMeta(mainCtx context.Context, metaPkt *meta.Meta
 	}
 
 	// 通过工作池控制并发
-	select {
-	case s.workerPool <- struct{}{}:
-		s.wg.Add(1)
-		go func(ctx context.Context, task *meta.MetaPkt) {
-			defer s.wg.Done()
-			defer func() { <-s.workerPool }()
+	s.workerPool <- struct{}{}
+	s.wg.Add(1)
+	go func(ctx context.Context, task *meta.MetaPkt) {
+		defer s.wg.Done()
+		defer func() { <-s.workerPool }()
 
-			atomic.AddInt32(&s.activeReceivers, 1)
-			defer atomic.AddInt32(&s.activeReceivers, -1)
+		atomic.AddInt32(&s.activeReceivers, 1)
+		defer atomic.AddInt32(&s.activeReceivers, -1)
 
-			s.runReceiver(ctx, task)
-		}(mainCtx, metaPkt)
-	}
+		s.runReceiver(ctx, task)
+	}(mainCtx, metaPkt)
 }
 
-// runReceiver 运行文件接收器
-// 功能说明：
+// runReceiver 执行单个文件的接收生命周期。
 //
-//	执行单个文件的完整接收流程
+// # 描述
 //
-// 核心流程：
-//  1. 创建文件接收上下文
-//  2. 建立连接池
-//  3. 初始化接收器
-//  4. 启动报告转发
-//  5. 开始文件接收
+//	为当前 `MetaPkt` 构建上下文、创建连接、初始化 `Receiver`，并在完成时上报状态。
 //
-// 错误处理：
+// # 核心步骤
 //
-//	记录错误并更新文件状态
+//  1. 使用 `fdtID` 和 `fileSize` 构建上下文
+//  2. 启用报告通道桥接 `receiver.Report`
+//  3. 启动文件接收器 `Receiver.Start`
 //
-// 资源管理：
+// # 错误与资源
 //
-//	确保连接和通道的正确释放
+//	错误通过 `reportError` 上报；所有通道与连接都会在返回前关闭
 func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt) {
 	fdtID := task.File.FdtID
 	ctx := context.WithValue(mainCtx, fdtIDKey, fdtID)

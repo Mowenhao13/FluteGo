@@ -1,10 +1,37 @@
+/*
+ * 软件著作权声明：
+ * 本文件包含的代码是 FluteGo 软件的组成部分
+ * 版权所有 (C) 2025
+ * 保留所有权利。
+ */
+
 package decoder
 
 import (
 	"time"
 )
 
-// Chunk level save callback function
+// OutputHandler 定义 chunk 级写入回调接口，供解码器在完成一个 chunk 解码后通知上层写入逻辑。
+//
+// # 描述
+//
+// 解码器在完全恢复一个 chunk 的所有符号后，会调用该接口的 `OnDecodedData` 方法，
+// 以便将 chunk 数据传递给文件写入循环或其他处理者。
+//
+// # 方法
+//
+//   - `OnDecodedData(data []byte, offset int64, chunkIdx uint32) error`
+//   - `data`: 解码完成后的 chunk 数据
+//   - `offset`: 写入文件的起始偏移
+//   - `chunkIdx`: chunk 索引
+//
+// # 返回值
+//
+//   - `error`: 写入失败时返回具体错误，调用方应当决定是否重试或终止整个传输。
+//
+// # 参考
+//
+//	RFC 5052 / RFC 5510 中对解码回调的典型处理方式。
 type OutputHandler interface {
 	OnDecodedData(data []byte, offset int64, chunkIdx uint32) error
 }
@@ -53,6 +80,23 @@ type BaseDecoder interface {
 	Close() error
 }
 
+// NewDecoder 根据配置和输出处理器创建对应的解码器实例。
+//
+// # 参数
+//
+//   - `config`: `DecoderConfig`
+//     定义了当前文件传输的大小、chunk 尺寸、FEC 参数等关键信息。
+//   - `output`: `OutputHandler`
+//     解码完成的 chunk 数据将通过该接口回调到写入逻辑中。
+//
+// # 返回值
+//
+//	返回一个实现了 `BaseDecoder` 接口的解码器实例，以及创建过程中可能出现的错误。
+//
+// # 错误
+//
+//   - 配置参数不合法时可能返回特定错误。
+//   - 初始化底层解码器（RaptorQ/RS/NoCode）失败时会返回对应错误。
 func NewDecoder(config DecoderConfig, output OutputHandler) (BaseDecoder, error) {
 	switch config.Type {
 	case DecoderRaptorQ:
