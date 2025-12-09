@@ -14,6 +14,7 @@
 package utils
 
 import (
+	"FluteGo/constant"
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
@@ -280,4 +281,19 @@ func CopyFile(src, dst string) (int64, error) {
 func UnMmap(data []byte) error {
 	dat := mmap.MMap(data)
 	return dat.Unmap()
+}
+
+func SelectSendFileDir() string {
+	if runtime.GOOS == "windows" {
+		return constant.SendFileDir_win
+	}
+
+	return constant.SendFileDir_unix
+}
+
+func SelectSaveFileDir() string {
+	if runtime.GOOS == "windows" {
+		return constant.SaveFileDir_win
+	}
+	return constant.SaveFileDir_unix
 }

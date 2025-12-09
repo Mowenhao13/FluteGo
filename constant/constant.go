@@ -22,9 +22,12 @@ const (
 
 // Sender param
 const (
-	SendFileDir = "/home/Halllo/Projects/Flute_test_v1/Flute_test/cmd/send_files/"
-	SaveFileDir = "/home/Halllo/Projects/Flute_test_v2/cmd/received_files/"
-
+	SendFileDir_unix         = "cmd/send_files/"
+	SaveFileDir_unix         = "cmd/received_files/"
+	SendFileDir_win_t        = "C:\\Users\\mowen\\Desktop\\FluteGo\\FluteGo\\cmd\\send_files\\"
+	SaveFileDir_win_t        = "C:\\Users\\mowen\\Desktop\\FluteGo\\FluteGo\\cmd\\received_files\\"
+	SendFileDir_win          = "cmd\\send_files\\"
+	SaveFileDir_win          = "cmd\\received_files\\"
 	SendRedundancyRatio      = 1.05
 	DefaultSendRateLimitMbps = 1000 // default send rate limit; 0 disables throttling
 	WindowsSize              = 30
@@ -37,7 +40,7 @@ const (
 	SourceIP        = "192.168.1.102"
 	SourceMAC       = "10:7c:61:10:a5:47"
 	SourceInterface = "enp3s0"
-	DestIP          = "192.168.1.102"
+	DestIP          = "192.168.1.103"
 	DestMAC         = "88:a2:9e:3f:be:2c"
 	DestInterface   = "eth0"
 )
@@ -54,8 +57,8 @@ const (
 	RsWithConcurrentStreams      = true
 	RsWithInversionCache         = true
 
-	RsTmpSendOutDir              = "../tmp/rs_send/"
-	RsTmpRecvInDir               = "../tmp/rs_recv/"
+	RsTmpSendOutDir = "../tmp/rs_send/"
+	RsTmpRecvInDir  = "../tmp/rs_recv/"
 )
 
 // system param
@@ -65,6 +68,6 @@ const (
 
 // Oti param
 const (
-	MaxNoCodeChunkSize = 32 * 1024
+	MaxNoCodeChunkSize  = 32 * 1024
 	MaxRaptorQChunkSize = 32 * 1024
 )
