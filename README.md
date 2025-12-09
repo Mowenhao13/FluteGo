@@ -75,14 +75,6 @@ sudo sysctl -w net.core.netdev_max_backlog=65535
 ```
 ## Use
 1. Start receiver first
-```zsh
-go build -o cmd/flute_receiver/flute_receiver_linux ./cmd/flute_receiver
 
-./cmd/flute/flute_sender -dir <Directory containing files to send> -oti <"OTI Encoding ID: 0=NoCode, 1=RaptorQ, 2=Reed-Solomon"> -concurrent <Maximum number of concurrent file sends> -ip <Destination IP address>
-```
 2. Then start sender
-```zsh
-go build -o cmd/flute_sender/flute_sender ./cmd/flute_sender
 
-./cmd/flute/flute_receiver -dir <Directory containing files to send> -ip <Destination IP address>
-```
