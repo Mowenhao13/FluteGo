@@ -18,7 +18,6 @@ import (
 	"FluteGo/pkg/encoder"
 	"FluteGo/pkg/meta"
 	pool "FluteGo/pkg/pool"
-	"FluteGo/pkg/utils"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -102,6 +101,7 @@ func initEncoderConfig(mt *meta.MetaPkt) encoder.EncoderConfig {
 	// 基础文件信息
 	fileSize := mt.File.TransferLen
 	chunkSize := mt.Oti.MaximumChunkSize
+	log.Printf("OTI MaximumChunkSize: %d", chunkSize)
 	if chunkSize == 0 {
 		chunkSize = uint32(constant.DefaultChunkSize)
 	}
@@ -222,15 +222,12 @@ func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, 
 		return nil, fmt.Errorf("invalid chunk size: %d", config.ChunkSize)
 	}
 
-	// 分块大小内存页对齐
-	pageSize := os.Getpagesize()
-	if chunkSize%pageSize != 0 {
-		chunkSize = ((chunkSize + pageSize - 1) / pageSize) * pageSize
-	}
 	config.ChunkSize = uint32(chunkSize)
 	config.FileSize = uint64(info.Size())
 	config.Fd = int(file.Fd())
 	config.FName = inputFilePath
+
+	log.Printf("Sender initialized with ChunkSize: %d, FileSize: %d, ChunkCount: %d", config.ChunkSize, config.FileSize, (info.Size()+int64(chunkSize)-1)/int64(chunkSize))
 
 	// 创建编码器实例
 	enc, err := encoder.NewEncoder(config)
@@ -468,25 +465,17 @@ func (s *Sender) Start(ctx context.Context) error {
 		},
 	}
 
-	// 跟踪内存映射数据以便后续取消映射
-	mmappedData := make([][]byte, s.chunkCount)
-	defer func() {
-		for _, d := range mmappedData {
-			if d != nil {
-				utils.UnMmap(d)
-			}
-		}
-	}()
+	// 映射整个文件
+	mappedData, mapErr := mmap.Map(s.inputFile, mmap.RDONLY, 0)
+	if mapErr != nil {
+		return fmt.Errorf("mmap file failed: %w", mapErr)
+	}
+	defer mappedData.Unmap()
 
 	// 数据提供器函数 - 通过内存映射提供分块数据
 	provider := func(chunkIdx uint32) ([]byte, int, error) {
 		if chunkIdx >= s.chunkCount {
 			return nil, 0, fmt.Errorf("chunk index out of bounds")
-		}
-
-		// 如果已内存映射，直接返回
-		if mmappedData[chunkIdx] != nil {
-			return mmappedData[chunkIdx], len(mmappedData[chunkIdx]), nil
 		}
 
 		// 计算文件偏移
@@ -501,16 +490,7 @@ func (s *Sender) Start(ctx context.Context) error {
 			length = s.fileSize - offset
 		}
 
-		// 创建内存映射
-		var data []byte
-		dat, err := mmap.MapRegion(s.inputFile, int(length), mmap.RDONLY, 0, offset)
-		if err != nil {
-			return nil, 0, fmt.Errorf("mmap failed: %w", err)
-		}
-		data = []byte(dat)
-
-		mmappedData[chunkIdx] = data
-		return data, int(length), nil
+		return mappedData[offset : offset+length], int(length), nil
 	}
 
 	// 创建发送回调函数
