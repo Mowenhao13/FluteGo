@@ -42,13 +42,12 @@ type MetaPkt struct {
 //   - `oti`: 前向纠错表示
 //   - `basePort`, `numPorts`: 用于传输的端口集合
 //   - `fdtID`: 当前文件 FDT ID
-//   - `saveDir`: 接收端保存目录
 //
 // # 返回值
 //
 //	初始化好的 `MetaPkt` 以及可能的错误（如文件描述创建失败）。
-func InitMetaPkt(file *os.File, oti oti.Oti, basePort int, numPorts uint16, fdtID uint8, saveDir string) (*MetaPkt, error) {
-	fd, err := filedesc.GetFileDesc(file, fdtID, saveDir)
+func InitMetaPkt(file *os.File, oti oti.Oti, basePort int, numPorts uint16, fdtID uint8) (*MetaPkt, error) {
+	fd, err := filedesc.GetFileDesc(file, fdtID)
 	if err != nil {
 		return nil, err
 	}
@@ -86,11 +85,6 @@ func (mt *MetaPkt) Serialize() []byte {
 	sendPath := []byte(file.SendPath)
 	binary.Write(buf, binary.BigEndian, uint16(len(sendPath)))
 	buf.Write(sendPath)
-
-	// SaveDir 长度 + 内容
-	saveDir := []byte(file.SaveDir)
-	binary.Write(buf, binary.BigEndian, uint16(len(saveDir)))
-	buf.Write(saveDir)
 
 	// Name 长度 + 内容
 	name := []byte(file.Name)
@@ -163,19 +157,6 @@ func DeserializeMetaPkt(data []byte) (*MetaPkt, error) {
 			return nil, err
 		}
 		mt.File.SendPath = string(path)
-	}
-
-	// SaveDir
-	var saveDirLen uint16
-	if err := binary.Read(buf, binary.BigEndian, &saveDirLen); err != nil {
-		return nil, err
-	}
-	if saveDirLen > 0 {
-		dir := make([]byte, saveDirLen)
-		if _, err := io.ReadFull(buf, dir); err != nil {
-			return nil, err
-		}
-		mt.File.SaveDir = string(dir)
 	}
 
 	// Name
@@ -302,7 +283,6 @@ func (m *MetaPkt) ShowPktInfo() {
 	fmt.Printf("File content type: %s\n", m.File.ContentType)
 	fmt.Printf("File md5sum: %s\n", m.File.Md5)
 	fmt.Printf("File send path: %s\n", m.File.SendPath)
-	fmt.Printf("File save dir: %s\n", m.File.SaveDir)
 
 	fmt.Printf("Oti id: %d\n", m.Oti.FECEncodingID)
 	fmt.Printf("BasePort: %d\n", m.BasePort)
