@@ -6,16 +6,18 @@ import (
 	"FluteGo/pkg/oti"
 	"FluteGo/pkg/pool"
 	sender "FluteGo/pkg/sender"
+	"FluteGo/pkg/utils"
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"runtime"
 	"runtime/pprof"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -23,10 +25,10 @@ var globalPool *pool.GlobalConnectionPool
 var sendFileIndex uint32
 
 var (
-	sendFileDir        = flag.String("dir", constant.SendFileDir, "Directory containing files to send")
-	otiID              = flag.Int("oti", 2, "OTI Encoding ID: 0=NoCode, 1=RaptorQ, 2=Reed-Solomon")
-	maxConcurrentSends = flag.Int("concurrent", constant.MaxConcurrentSends, "Maximum number of concurrent file sends")
-	destIP             = flag.String("ip", constant.DestIP, "Destination IP address")
+	sendFileDir        string
+	otiID              uint8
+	maxConcurrentSends uint8
+	destIP             string
 )
 
 func main() {
@@ -34,6 +36,8 @@ func main() {
 	memProfile, err := os.Create("sender_mem_profile.pprof")
 	if err != nil {
 		log.Printf("Failed to create memory profile: %v", err)
+		fmt.Println("按回车键退出...")
+		fmt.Scanln()
 	}
 	defer memProfile.Close()
 
@@ -41,24 +45,68 @@ func main() {
 	runtime.GC()
 	if err := pprof.WriteHeapProfile(memProfile); err != nil {
 		log.Printf("Failed to write initial heap profile: %v", err)
+		fmt.Println("按回车键退出...")
+		fmt.Scanln()
 	}
 
 	// 记录开始时的内存状态
 	var memStatsStart, memStatsEnd runtime.MemStats
 	runtime.ReadMemStats(&memStatsStart)
 
-	files, err := os.ReadDir(constant.SendFileDir)
+	// 解析Input参数
+	fmt.Println("Enter dest IP, example: 192.168.1.103:3400")
+	fmt.Scanln(&destIP)
+	if destIP == "" {
+		destIP = constant.DestIP
+		fmt.Printf("Using default dest ip: %s\n", destIP)
+	}
+
+	exePath, err := os.Executable()
+	if err != nil {
+		fmt.Printf("获取可执行文件路径失败: %v\n", err)
+		fmt.Println("按回车键退出...")
+		fmt.Scanln()
+		return
+	}
+
+	fmt.Println("\nEnter directory containing files to send, example: cmd/send_files")
+	fmt.Printf("Current base file: %s\n", exePath)
+	fmt.Scanln(&sendFileDir)
+	if sendFileDir == "" {
+		sendFileDir = utils.SelectSendFileDir()
+		log.Printf("Using default send file directory: %s", sendFileDir)
+	}
+
+	fmt.Println("Enter OTI ID (0: NoCode, 1: RaptorQ, 2: Reed-Solomon), default is 2")
+	fmt.Scanln(&otiID)
+	if otiID < 0 || otiID > 2 {
+		otiID = 2
+		log.Printf("Invalid OTI ID %d, defaulting to Reed-Solomon", otiID)
+	}
+
+	fmt.Println("Enter max concurrent sends (default 1)")
+	fmt.Scanln(&maxConcurrentSends)
+	if maxConcurrentSends == 0 {
+		maxConcurrentSends = 1
+		log.Printf("Invalid max concurrent sends %d, defaulting to 1", maxConcurrentSends)
+	}
+
+	files, err := os.ReadDir(sendFileDir)
 	if err != nil {
 		log.Printf("Failed to read directory: %v", err)
+		fmt.Println("按回车键退出...")
+		fmt.Scanln()
 	}
 
 	fdtID := uint8(1)
 	var sendFileList []*os.File
 	for _, file := range files {
 		if !file.IsDir() {
-			f, err := os.Open(*sendFileDir + file.Name())
+			f, err := os.Open(sendFileDir + file.Name())
 			if err != nil {
 				log.Printf("Failed to open file: %v", err)
+				fmt.Println("按回车键退出...")
+				fmt.Scanln()
 			}
 			defer f.Close()
 			sendFileList = append(sendFileList, f)
@@ -66,13 +114,15 @@ func main() {
 	}
 
 	if len(sendFileList) == 0 {
-		log.Printf("No files found in %s", *sendFileDir)
+		log.Printf("No files found in %s", sendFileDir)
+		fmt.Println("按回车键退出...")
+		fmt.Scanln()
 		return
 	}
 
 	var o oti.Oti
 
-	switch *otiID {
+	switch otiID {
 	case 0:
 		o = oti.NewNoCode(1400)
 		log.Printf("Using OTI: NoCode")
@@ -83,23 +133,29 @@ func main() {
 		o = oti.NewReedSolomon(12, 4)
 		log.Printf("Using OTI: Reed-Solomon")
 	default:
-		log.Printf("Invalid OTI ID %d, defaulting to Reed-Solomon", *otiID)
+		log.Printf("Invalid OTI ID %d, defaulting to Reed-Solomon", otiID)
 	}
 
-	pool.InitGlobalConnectionPool(100, constant.MaxMetaConnTimeout, 0, *destIP)
+	pool.InitGlobalConnectionPool(100, constant.MaxMetaConnTimeout, 0, destIP)
 	globalPool = pool.GetGlobalPool()
 	if globalPool == nil {
-		log.Panic("Pool not initialized\n")
+		log.Printf("Pool not initialized\n")
+		fmt.Println("按回车键退出...")
+		fmt.Scanln()
+		return
 	}
 
 	_, errs := globalPool.InitMetaConn()
 	if len(errs) > 0 {
-		log.Panic("Failed to create MetaPkt connection\n")
+		log.Printf("Failed to create MetaPkt connection\n")
+		fmt.Println("按回车键退出...")
+		fmt.Scanln()
+		return
 	}
 
 	defer globalPool.CloseMetaConn()
 
-	maxConcurrent := *maxConcurrentSends
+	maxConcurrent := maxConcurrentSends
 	if maxConcurrent <= 0 {
 		maxConcurrent = 1
 	}
@@ -129,14 +185,18 @@ func main() {
 			}
 			if len(conns) == 0 {
 				log.Printf("No data connections available for fdtID %d, skip file", fid)
+				fmt.Println("按回车键退出...")
+				fmt.Scanln()
 				return
 			}
 			defer globalPool.CloseFileConn(fid)
 
 			basePort := portFromConn(conns[0].Conn)
-			metaPkt, err := meta.InitMetaPkt(f, o, basePort, uint16(numPorts), fid, constant.SaveFileDir)
+			metaPkt, err := meta.InitMetaPkt(f, o, basePort, uint16(numPorts), fid)
 			if err != nil {
 				log.Printf("Failed to init MetaPkt: %v", err)
+				fmt.Println("按回车键退出...")
+				fmt.Scanln()
 				return
 			}
 			metaPkt.TotalFiles = uint16(totalFiles)
@@ -146,6 +206,9 @@ func main() {
 			metaPkt.ShowPktInfo()
 			if err := SendFile(metaPkt); err != nil {
 				log.Printf("Failed to send file(fdtID: %d): %v", fid, err)
+				fmt.Println("按回车键退出...")
+				fmt.Scanln()
+				return
 			}
 		}(i, file, currFdtID)
 
@@ -159,10 +222,12 @@ func main() {
 	// 写入最终的内存profile
 	if err := pprof.WriteHeapProfile(memProfile); err != nil {
 		log.Printf("Failed to write final heap profile: %v", err)
+		fmt.Println("按回车键退出...")
+		fmt.Scanln()
 	}
 
 	// 输出详细的内存分析结果
-	log.Printf("=== 内存性能分析结果 ===")
+	log.Printf("=== 本次发送会话内存性能分析结果 ===")
 	log.Printf("总分配内存: %v bytes", memStatsEnd.TotalAlloc-memStatsStart.TotalAlloc)
 	log.Printf("峰值堆内存: %v bytes, %v MB", memStatsEnd.HeapAlloc, memStatsEnd.HeapAlloc/(1024*1024))
 	log.Printf("系统申请内存 (Sys): %d MB", memStatsEnd.Sys/(1024*1024))
@@ -170,6 +235,20 @@ func main() {
 	log.Printf("垃圾回收次数: %v", memStatsEnd.NumGC-memStatsStart.NumGC)
 	log.Printf("内存分配次数: %v", memStatsEnd.Mallocs-memStatsStart.Mallocs)
 	log.Printf("堆对象数量: %v", memStatsEnd.HeapObjects)
+
+	ctxx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGABRT, syscall.SIGALRM)
+
+	go func() {
+		<-sigChan
+		cancel()
+	}()
+
+	<-ctxx.Done()
+	fmt.Println("Exit program")
 }
 
 func portFromConn(conn *net.UDPConn) int {

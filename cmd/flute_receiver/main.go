@@ -3,8 +3,9 @@ package main
 import (
 	"FluteGo/constant"
 	"FluteGo/pkg/system"
+	"FluteGo/pkg/utils"
 	"context"
-	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -15,8 +16,8 @@ import (
 )
 
 var (
-	saveFileDir = flag.String("dir", constant.SaveFileDir, "Directory to receive files")
-	destIP      = flag.String("ip", constant.DestIP, "Destination IP address")
+	saveFileDir string
+	destIP      string
 )
 
 func main() {
@@ -24,6 +25,8 @@ func main() {
 	memProfile, err := os.Create("receiver_mem_profile.pprof")
 	if err != nil {
 		log.Printf("Failed to create memory profile: %v", err)
+		fmt.Println("按回车键退出...")
+		fmt.Scanln()
 	}
 	defer memProfile.Close()
 
@@ -31,20 +34,38 @@ func main() {
 	runtime.GC()
 	if err := pprof.WriteHeapProfile(memProfile); err != nil {
 		log.Printf("Failed to write initial heap profile: %v", err)
+		fmt.Println("按回车键退出...")
+		fmt.Scanln()
 	}
+
+	fmt.Println("Enter dest IP, example: 192.168.1.103:3400")
+	fmt.Scanln(&destIP)
+	if destIP == "" {
+		destIP = constant.DestIP
+		fmt.Printf("Using default dest ip: %s\n", destIP)
+	}
+
+	fmt.Println("\nEnter save file dir, example: ./received_files/")
+	fmt.Scanln(&saveFileDir)
+	if saveFileDir == "" {
+		saveFileDir = utils.SelectSaveFileDir()
+	}
+	fmt.Printf("Files will be saved to: %s\n", saveFileDir)
 
 	// 记录开始时的内存状态
 	var memStatsStart, memStatsEnd runtime.MemStats
 	runtime.ReadMemStats(&memStatsStart)
-	
+
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Println("Starting Receiver System...")
 
 	// 1. Initialize System
 	// Use default max workers (0 = auto)
-	sys, err := system.InitReceiverSystem(0, *destIP, *saveFileDir)
+	sys, err := system.InitReceiverSystem(0, destIP, saveFileDir)
 	if err != nil {
 		log.Fatalf("Failed to initialize system: %v", err)
+		fmt.Println("按回车键退出...")
+		fmt.Scanln()
 	}
 
 	// Handle OS signals for graceful shutdown
@@ -110,10 +131,12 @@ func main() {
 	// 写入最终的内存profile
 	if err := pprof.WriteHeapProfile(memProfile); err != nil {
 		log.Printf("Failed to write final heap profile: %v", err)
+		fmt.Println("按回车键退出...")
+		fmt.Scanln()
 	}
 
 	// 输出详细的内存分析结果
-	log.Printf("=== 内存性能分析结果 ===")
+	log.Printf("=== 本次接收会话内存性能分析结果 ===")
 	log.Printf("总分配内存: %v bytes", memStatsEnd.TotalAlloc-memStatsStart.TotalAlloc)
 	log.Printf("峰值堆内存: %v bytes, %v MB", memStatsEnd.HeapAlloc, memStatsEnd.HeapAlloc/(1024*1024))
 	log.Printf("系统申请内存 (Sys): %d MB", memStatsEnd.Sys/(1024*1024))
@@ -121,4 +144,18 @@ func main() {
 	log.Printf("垃圾回收次数: %v", memStatsEnd.NumGC-memStatsStart.NumGC)
 	log.Printf("内存分配次数: %v", memStatsEnd.Mallocs-memStatsStart.Mallocs)
 	log.Printf("堆对象数量: %v", memStatsEnd.HeapObjects)
+
+	ctxx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGABRT, syscall.SIGALRM)
+
+	go func() {
+		<-sigChan
+		cancel()
+	}()
+
+	<-ctxx.Done()
+	fmt.Println("Exit program")
 }
