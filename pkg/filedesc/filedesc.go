@@ -17,7 +17,6 @@ import (
 //
 //   - `FdtID`: 文件传输唯一标识符
 //   - `SendPath`: 发送端文件路径
-//   - `SaveDir`: 接收端目标目录
 //   - `Name`: 文件名
 //   - `TransferLen`: 文件传输大小
 //   - `ContentType`: MIME 类型
@@ -25,7 +24,6 @@ import (
 type FileDesc struct {
 	FdtID       uint8
 	SendPath    string
-	SaveDir     string
 	Name        string
 	TransferLen uint64
 	ContentType string
@@ -38,7 +36,6 @@ type FileDesc struct {
 //
 //   - `file`: 必须可读的文件
 //   - `fdtID`: 当前文件的传输标识
-//   - `saveDir`: 接收端保存目录
 //
 // # 返回值
 //
@@ -51,7 +48,7 @@ type FileDesc struct {
 //  2. 计算 MD5
 //  3. 检测内容类型
 //  4. 构建并返回描述结构
-func GetFileDesc(file *os.File, fdtID uint8, saveDir string) (*FileDesc, error) {
+func GetFileDesc(file *os.File, fdtID uint8) (*FileDesc, error) {
 	info, err := file.Stat()
 	if err != nil {
 		return nil, err
@@ -69,7 +66,6 @@ func GetFileDesc(file *os.File, fdtID uint8, saveDir string) (*FileDesc, error) 
 	fd := &FileDesc{
 		FdtID:       fdtID,
 		SendPath:    file.Name(),
-		SaveDir:     saveDir,
 		Name:        info.Name(),
 		TransferLen: uint64(info.Size()),
 		ContentType: utils.GetContentType(file),
