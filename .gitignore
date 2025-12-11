@@ -5,7 +5,6 @@ cmd/received_files/
 
 # Temporary directories
 tmp/
-test/
 
 # Memory profiles
 *.pprof
