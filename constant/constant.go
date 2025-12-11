@@ -17,7 +17,7 @@ const (
 // Receiver param
 const (
 	RecvRedundancyRatio = 1.01
-	DefaultChunkSize    = 10 * 1024 // 50KB chunks
+	DefaultChunkSize    = 32 * 1024 // 32KB chunks
 )
 
 // Sender param
@@ -37,10 +37,10 @@ const (
 
 // Arp param
 const (
-	SourceIP        = "192.168.1.102"
+	SourceIP        = "127.0.0.1"
 	SourceMAC       = "10:7c:61:10:a5:47"
 	SourceInterface = "enp3s0"
-	DestIP          = "192.168.1.103"
+	DestIP          = "127.0.0.1"
 	DestMAC         = "88:a2:9e:3f:be:2c"
 	DestInterface   = "eth0"
 )
