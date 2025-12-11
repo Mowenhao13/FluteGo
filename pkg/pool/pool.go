@@ -780,8 +780,20 @@ func (g *GlobalConnectionPool) optimizeConnection(Conn *net.UDPConn) {
 //  1. 连接最后使用时间不超过30秒
 //  2. 连接健康状态为true
 func (g *GlobalConnectionPool) isConnectionValid(wrapper *UDPConnWrapper) bool {
+	// 获取最后活动时间（取LastUsed和LastSent的较晚者）
+	lastUsed := atomic.LoadInt64(&wrapper.LastUsed)
+	lastSentNano := atomic.LoadInt64(&wrapper.LastSent)
+
+	lastActivity := time.Unix(lastUsed, 0)
+	if lastSentNano > 0 {
+		lastSent := time.Unix(0, lastSentNano)
+		if lastSent.After(lastActivity) {
+			lastActivity = lastSent
+		}
+	}
+
 	// 检查连接是否超时（30秒未使用）
-	if time.Since(time.Unix(atomic.LoadInt64(&wrapper.LastUsed), 0)) > 30*time.Second {
+	if time.Since(lastActivity) > 30*time.Second {
 		return false
 	}
 
@@ -966,6 +978,7 @@ func (g *GlobalConnectionPool) CloseMetaConn() {
 //  3. 关闭所有网络连接
 //  4. 从连接池中移除
 func (g *GlobalConnectionPool) CloseFileConn(fdtID uint8) {
+	log.Printf("Closing file conn for fdtID %d", fdtID)
 	if value, ok := g.FileConns.Load(fdtID); ok {
 		wrappers := value.([]*UDPConnWrapper)
 
@@ -1141,8 +1154,8 @@ func (g *GlobalConnectionPool) idleSenderMonitor() {
 				if last == 0 {
 					return true
 				}
-				if time.Since(time.Unix(0, last)) > 3*time.Second {
-					log.Printf("idle close %s", key)
+				if time.Since(time.Unix(0, last)) > 60*time.Second {
+					log.Printf("idle close %s (last sent %v ago)", key, time.Since(time.Unix(0, last)))
 					g.closeWrapperIdle(wrapper)
 				}
 				return true
