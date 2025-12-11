@@ -28,6 +28,8 @@ import (
 	"sync/atomic"
 
 	"github.com/edsrzf/mmap-go"
+	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 )
 
 // globalPeakHeapAlloc 记录全局堆内存分配的峰值（单位：字节）
@@ -296,4 +298,58 @@ func SelectSaveFileDir() string {
 		return constant.SaveFileDir_win
 	}
 	return constant.SaveFileDir_unix
+}
+
+func isWiredInterface(name string) bool {
+	// 常见有线接口命名模式
+	wiredPatterns := []string{
+		"eth", "enp", "ens", "eno", "em", "p",
+	}
+
+	for _, pattern := range wiredPatterns {
+		if strings.HasPrefix(name, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func SetNetLink(dstIP, dstMac string) error {
+	links, err := netlink.LinkList()
+	if err != nil {
+		return fmt.Errorf("Failed to get interfaces list: %v", err)
+	}
+	
+	var ifaceName string 
+	var link netlink.Link
+	for _, lk := range links {
+		attrs := lk.Attrs()
+		if lk.Type() == "device" {
+			if isWiredInterface(attrs.Name) {
+				ifaceName = attrs.Name
+				link = lk 
+				break 
+			}
+		}
+	}
+
+	err = netlink.LinkSetARPOff(link)
+	if err != nil {
+		return fmt.Errorf("Failed to set netlink %s arp off: %v", ifaceName, err)
+	}
+
+	neighMac, err := net.ParseMAC(dstMac)
+	neigh := &netlink.Neigh{
+		LinkIndex:    link.Attrs().Index,
+		Family:       unix.AF_INET,
+		State:        netlink.NUD_PERMANENT,
+		IP:           net.ParseIP(dstIP),
+		HardwareAddr: neighMac,
+	}
+
+	if err := netlink.NeighAdd(neigh); err != nil {
+		return fmt.Errorf("Failed to add neighbor for netlink %s: %v", ifaceName, err)
+	}
+
+	return nil
 }

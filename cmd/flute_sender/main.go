@@ -29,6 +29,7 @@ var (
 	otiID              uint8
 	maxConcurrentSends uint8
 	destIP             string
+	destMac     string 
 )
 
 func main() {
@@ -56,9 +57,19 @@ func main() {
 	// 解析Input参数
 	fmt.Println("Enter dest IP, example: 192.168.1.103:3400")
 	fmt.Scanln(&destIP)
+	// testing
 	if destIP == "" {
 		destIP = constant.DestIP
 		fmt.Printf("Using default dest ip: %s\n", destIP)
+	}
+
+	fmt.Println("Enter dest mac, example: 00:11:22:33:44:55")
+	fmt.Scanln(&destMac)
+	if destMac == "" {
+		fmt.Println("获取接收方MAC地址失败")
+		fmt.Println("按回车键退出...")
+		fmt.Scanln()
+		return
 	}
 
 	exePath, err := os.Executable()
@@ -89,6 +100,12 @@ func main() {
 	if maxConcurrentSends == 0 {
 		maxConcurrentSends = 1
 		log.Printf("Invalid max concurrent sends %d, defaulting to 1", maxConcurrentSends)
+	}
+
+	if err := utils.SetNetLink(destIP, destMac); err != nil {
+		fmt.Printf("无法建立单向连接: %v", err)
+		fmt.Println("按回车键退出...")
+		fmt.Scanln()
 	}
 
 	files, err := os.ReadDir(sendFileDir)
