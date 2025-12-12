@@ -145,17 +145,17 @@ func main() {
 	log.Printf("内存分配次数: %v", memStatsEnd.Mallocs-memStatsStart.Mallocs)
 	log.Printf("堆对象数量: %v", memStatsEnd.HeapObjects)
 
-	ctxx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// ctxx, cancel := context.WithCancel(context.Background())
+	// defer cancel()
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGABRT, syscall.SIGALRM)
+	// sigChan := make(chan os.Signal, 1)
+	// signal.Notify(sigChan, syscall.SIGABRT, syscall.SIGALRM)
 
-	go func() {
-		<-sigChan
-		cancel()
-	}()
+	// go func() {
+	// 	<-sigChan
+	// 	cancel()
+	// }()
 
-	<-ctxx.Done()
-	fmt.Println("Exit program")
+	// <-ctxx.Done()
+	// fmt.Println("Exit program")
 }
