@@ -542,15 +542,15 @@ func (s *Sender) Start(ctx context.Context) error {
 		if dur.Seconds() > 0 {
 			mbps = (float64(totalBytes) * 8.0 / dur.Seconds()) / 1e6
 		}
-		log.Printf("fdtID(%d): send finished at %s, duration=%s", s.fdtID, s.sendEnd.Format(time.RFC3339Nano), dur.String())
-		log.Printf("fdtID(%d): bytes sent=%d, duration=%s, throughput=%.2f Mbps", s.fdtID, totalBytes, dur.String(), mbps)
+		fmt.Printf("fdtID(%d): send finished at %s, duration=%s\n", s.fdtID, s.sendEnd.Format(time.RFC3339Nano), dur.String())
+		fmt.Printf("fdtID(%d): bytes sent=%d, duration=%s, throughput=%.2f Mbps\n", s.fdtID, totalBytes, dur.String(), mbps)
 
 		// 计算有效传输速率 (Goodput)
 		goodput := 0.0
 		if dur.Seconds() > 0 {
 			goodput = (float64(s.fileSize) * 8.0 / dur.Seconds()) / 1e6
 		}
-		log.Printf("fdtID(%d): file size=%d, effective rate (goodput)=%.2f Mbps", s.fdtID, s.fileSize, goodput)
+		fmt.Printf("fdtID(%d): file size=%d, effective rate (goodput)=%.2f Mbps\n", s.fdtID, s.fileSize, goodput)
 	}
 	return err
 }

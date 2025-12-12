@@ -488,10 +488,10 @@ func (r *RsDecoder) AddSymbol(chunkID uint32, symbolID uint32, data []byte) erro
 	}
 	r.receivedBytes[chunkID] += int64(nWritten)
 
-	log.Printf("Shard %d received: %d/%d bytes (%.1f%%)",
-		chunkID, r.receivedBytes[chunkID], r.expectedSizes[chunkID],
-		(float64(r.receivedBytes[chunkID])/float64(r.expectedSizes[chunkID]))*100,
-	)
+	// log.Printf("Shard %d received: %d/%d bytes (%.1f%%)",
+	// 	chunkID, r.receivedBytes[chunkID], r.expectedSizes[chunkID],
+	// 	(float64(r.receivedBytes[chunkID])/float64(r.expectedSizes[chunkID]))*100,
+	// )
 
 	// Check if we have enough shards to decode
 	if r.canDecode() {

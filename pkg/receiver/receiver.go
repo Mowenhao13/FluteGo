@@ -416,10 +416,10 @@ func (r *Receiver) OnDecodedData(data []byte, offset int64, chunkIdx uint32) err
 				if dur.Seconds() > 0 {
 					mbps = (float64(bytesWritten) * 8.0 / dur.Seconds()) / 1e6
 				}
-				log.Printf("文件接收完成 (fdtID=%d): %d/%d chunks, duration=%s", r.fdtID, finished, r.expectedChunks, dur.String())
-				log.Printf("fdtID(%d): bytes received=%d, duration=%s, throughput=%.2f Mbps", r.fdtID, bytesWritten, dur.String(), mbps)
+				fmt.Printf("File transfer completed (fdtID=%d): %d/%d chunks, duration=%s\n", r.fdtID, finished, r.expectedChunks, dur.String())
+				fmt.Printf("fdtID(%d): bytes received=%d, duration=%s, throughput=%.2f Mbps\n", r.fdtID, bytesWritten, dur.String(), mbps)
 			} else {
-				log.Printf("文件接收完成 (fdtID=%d): %d/%d chunks", r.fdtID, finished, r.expectedChunks)
+				fmt.Printf("File transfer completed (fdtID=%d): %d/%d chunks\n", r.fdtID, finished, r.expectedChunks)
 			}
 		})
 	}

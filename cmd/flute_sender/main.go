@@ -239,7 +239,7 @@ func main() {
 	}
 	wg.Wait()
 
-	log.Printf("All files have been processed.\n")
+	fmt.Printf("All files have been processed.\n")
 
 	runtime.ReadMemStats(&memStatsEnd)
 
@@ -251,14 +251,14 @@ func main() {
 	}
 
 	// 输出详细的内存分析结果
-	log.Printf("=== 本次发送会话内存性能分析结果 ===")
-	log.Printf("总分配内存: %v bytes", memStatsEnd.TotalAlloc-memStatsStart.TotalAlloc)
-	log.Printf("峰值堆内存: %v bytes, %v MB", memStatsEnd.HeapAlloc, memStatsEnd.HeapAlloc/(1024*1024))
-	log.Printf("系统申请内存 (Sys): %d MB", memStatsEnd.Sys/(1024*1024))
-	log.Printf("堆空闲内存 (HeapIdle): %d MB", memStatsEnd.HeapIdle/(1024*1024))
-	log.Printf("垃圾回收次数: %v", memStatsEnd.NumGC-memStatsStart.NumGC)
-	log.Printf("内存分配次数: %v", memStatsEnd.Mallocs-memStatsStart.Mallocs)
-	log.Printf("堆对象数量: %v", memStatsEnd.HeapObjects)
+	fmt.Printf("=== Memory Profile Results for Current Receive Session ===\n")
+	fmt.Printf("Total Allocated Memory: %v bytes\n", memStatsEnd.TotalAlloc-memStatsStart.TotalAlloc)
+	fmt.Printf("Peak Heap Memory: %v bytes, %v MB\n", memStatsEnd.HeapAlloc, memStatsEnd.HeapAlloc/(1024*1024))
+	fmt.Printf("System Memory (Sys): %d MB\n", memStatsEnd.Sys/(1024*1024))
+	fmt.Printf("Heap Idle Memory: %d MB\n", memStatsEnd.HeapIdle/(1024*1024))
+	fmt.Printf("Garbage Collection Count: %v\n", memStatsEnd.NumGC-memStatsStart.NumGC)
+	fmt.Printf("Memory Allocation Count: %v\n", memStatsEnd.Mallocs-memStatsStart.Mallocs)
+	fmt.Printf("Heap Objects Count: %v\n", memStatsEnd.HeapObjects)
 
 	ctxx, cancel := context.WithCancel(context.Background())
 	defer cancel()

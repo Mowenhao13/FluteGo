@@ -314,8 +314,8 @@ func (e *RsEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 			symbolIdx := i / int(e.Config.SymbolSize)
 			symData := shardData[start:end]
 			// 添加调试日志
-			log.Printf("DEBUG: Calling callback with shardIdx=%d, symbolIdx=%d, shardSize=%d, dataLen=%d",
-				shardIdx, symbolIdx, sz, len(symData))
+			// log.Printf("DEBUG: Calling callback with shardIdx=%d, symbolIdx=%d, shardSize=%d, dataLen=%d",
+			// 	shardIdx, symbolIdx, sz, len(symData))
 			if err := callback(uint32(shardIdx), uint32(symbolIdx), uint32(sz), symData); err != nil {
 				return fmt.Errorf("callback failed for shard %d symbol %d: %w", shardIdx, symbolIdx, err)
 			}
