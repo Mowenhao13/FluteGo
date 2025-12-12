@@ -61,7 +61,7 @@ func InitMetaPkt(file *os.File, oti oti.Oti, basePort int, numPorts uint16, fdtI
 		Oti:           oti,
 		BasePort:      basePort,
 		NumPorts:      numPorts,
-		MaxPacketSize: constant.MaxPacketSize,
+		MaxPacketSize: constant.MAX_PACKET_SIZE,
 	}, nil
 }
 

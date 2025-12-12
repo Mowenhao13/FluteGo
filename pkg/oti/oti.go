@@ -167,6 +167,6 @@ func NewReedSolomon(dataShards, parityShards uint8) Oti {
 		FECInstanceID: 2,
 		DataShards:    dataShards,
 		ParityShards:  parityShards,
-		SymbolSize:    uint16(constant.MaxPacketSize),
+		SymbolSize:    uint16(constant.MAX_PACKET_SIZE),
 	}
 }

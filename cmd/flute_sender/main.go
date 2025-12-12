@@ -181,7 +181,7 @@ func main() {
 	var wg sync.WaitGroup
 
 	totalFiles := len(sendFileList)
-	currentBasePort := constant.BaseFilePort
+	currentBasePort := constant.BASE_FILE_PORT
 
 	for i, file := range sendFileList {
 		sem <- struct{}{}
@@ -189,7 +189,7 @@ func main() {
 		fdtID++
 
 		fileBasePort := currentBasePort
-		currentBasePort += constant.NumPorts
+		currentBasePort += constant.NUM_PORTS
 
 		wg.Add(1)
 
@@ -197,7 +197,7 @@ func main() {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			numPorts := uint8(constant.NumPorts)
+			numPorts := uint8(constant.NUM_PORTS)
 			conns, connErrs := globalPool.CreateFileConn(fid, numPorts, portBase)
 			if len(connErrs) > 0 {
 				for _, cErr := range connErrs {
@@ -279,7 +279,7 @@ func portFromConn(wsck *pool.WinSocket) int {
 	if wsck.Addr != nil {
 		return wsck.Addr.Port
 	}
-	return constant.BaseFilePort
+	return constant.BASE_FILE_PORT
 }
 
 func sendData(wsck *pool.WinSocket, data []byte) error {

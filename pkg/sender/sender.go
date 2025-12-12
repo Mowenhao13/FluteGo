@@ -115,11 +115,11 @@ func initEncoderConfig(mt *meta.MetaPkt) encoder.EncoderConfig {
 		if mt.MaxPacketSize > 0 {
 			symbolSize = uint16(mt.MaxPacketSize)
 		} else if symbolSize <= 1 {
-			symbolSize = uint16(constant.MaxPacketSize)
+			symbolSize = uint16(constant.MAX_PACKET_SIZE)
 		}
 	} else {
 		if symbolSize == 0 {
-			symbolSize = uint16(constant.MaxPacketSize)
+			symbolSize = uint16(constant.MAX_PACKET_SIZE)
 		}
 	}
 
