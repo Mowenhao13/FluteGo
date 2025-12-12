@@ -2,16 +2,9 @@ package constant
 
 // UDP Param
 const (
-	MaxPacketSize = 1400
-	BaseFilePort  = 3400
-	MetaPort      = 3399
-	NumPorts      = 1
-)
-
-// Pool param
-const (
-	MaxConcurrentSends = 1
-	MaxMetaConnTimeout = 500 // in seconds
+	MAX_PACKET_SIZE = 1400
+	BASE_FILE_PORT  = 3400
+	NUM_PORTS       = 1
 )
 
 // Receiver param
