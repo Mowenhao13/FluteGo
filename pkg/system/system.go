@@ -4,12 +4,6 @@
  * 版权所有 (C) 2025
  * 保留所有权利。
  */
-/*
- * 软件著作权声明：
- * 本文件包含的代码是 FluteGo 软件的组成部分
- * 版权所有 (C) 2025
- * 保留所有权利。
- */
 
 package system
 
@@ -26,6 +20,9 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 // ReceiverSystem 接收端系统
@@ -52,8 +49,8 @@ type ReceiverSystem struct {
 	activeReceivers int32
 	maxWorkers      int32
 
-	recvPool    *pool.GlobalConnectionPool
-	metaConn    *pool.UDPConnWrapper
+	recvPool    *pool.ConnPool
+	metaConn    *pool.WinSocket
 	targets     sync.Map
 	curReceived sync.Map
 
@@ -153,8 +150,8 @@ func InitReceiverSystem(maxWorkers int32, destIP string, saveDir string) (*Recei
 	}
 
 	// 初始化全局连接池
-	pool.InitGlobalConnectionPool(int(maxWorkers), constant.MaxMetaConnTimeout, 1, destIP)
-	s.recvPool = pool.GetGlobalPool()
+	pool.InitConnPool(destIP, constant.POOL_RECV)
+	s.recvPool = pool.GetConnPool()
 	if s.recvPool == nil {
 		return nil, fmt.Errorf("pool not initialized")
 	}
@@ -344,21 +341,33 @@ func (s *ReceiverSystem) StartMetaProgram() {
 		defer s.wg.Done()
 		defer close(s.metaChan)
 
-		metaConns, merr := s.recvPool.InitMetaConn()
-		if len(metaConns) == 0 {
+		metaConn, merr := s.recvPool.InitMetaConn()
+		if metaConn == nil {
 			err := fmt.Errorf("Failed to initialize meta connections\n")
 			s.reportError(s.ctx, uint8(errs.LevelFatal), err, 0)
 			return
 		}
-		if len(merr) == 1 {
-			err := merr[0]
-			s.reportError(s.ctx, uint8(errs.LevelFatal), err, 0)
+		if merr != nil {
+			s.reportError(s.ctx, uint8(errs.LevelFatal), merr, 0)
 			return
 		}
 
-		s.metaConn = metaConns[0]
-		log.Printf("[MetaReceiver] Meta receiver listening on %s (Mode: %d)",
-			s.metaConn.Conn.LocalAddr(), s.metaConn.Mode)
+		s.metaConn = metaConn
+		log.Printf("[MetaReceiver] Meta receiver listening on %s",
+			s.metaConn.Addr.IP.String())
+
+		buf := make([]byte, constant.META_BUF)
+
+		var wsaBuf windows.WSABuf
+		wsaBuf.Len = uint32(len(buf))
+		wsaBuf.Buf = &buf[0]
+		var bytesRecvd uint32
+
+		from := s.metaConn.From.FromAny
+		fromLen := s.metaConn.FromLen
+		flags := s.metaConn.Flags
+		// 设置接收超时
+		windows.SetsockoptInt(s.metaConn.Socket, windows.SOL_SOCKET, windows.SO_RCVTIMEO, constant.MTEA_TIMEOUT)
 
 		// 主接收循环
 		for {
@@ -368,8 +377,10 @@ func (s *ReceiverSystem) StartMetaProgram() {
 			default:
 			}
 
+			fromLen = int32(unsafe.Sizeof(*from))
+
 			// 从UDP读取数据
-			n, _, err := s.metaConn.Conn.ReadFromUDP(s.metaConn.Buffer)
+			err := windows.WSARecvFrom(s.metaConn.Socket, &wsaBuf, 1, &bytesRecvd, &flags, from, &fromLen, nil, nil)
 			if err != nil {
 				select {
 				case <-s.ctx.Done():
@@ -379,20 +390,28 @@ func (s *ReceiverSystem) StartMetaProgram() {
 					if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
 						return
 					}
+					if err == windows.WSAETIMEDOUT {
+						continue
+					}
+					if err == windows.WSAENOTSOCK {
+						return
+					}
+					if err == windows.WSAEINTR {
+						return
+					}
 					log.Printf("Meta read error: %v", err)
 					continue
 				}
 			}
 
-			if n == 0 {
+			if bytesRecvd == 0 {
 				continue
 			}
 
-			log.Printf("[MetaReceiver] Received %d bytes from sender", n)
-
+			log.Printf("[MetaReceiver] Received %d bytes from sender", bytesRecvd)
 			// 复制数据以避免缓冲区竞争条件
-			data := make([]byte, n)
-			copy(data, s.metaConn.Buffer[:n])
+			data := make([]byte, bytesRecvd)
+			copy(data, buf[:bytesRecvd])
 
 			// 解析元数据包
 			mt, merr := meta.DeserializeMetaPkt(data)
@@ -547,7 +566,7 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 	}()
 
 	// 为文件创建连接
-	conns, _ := s.recvPool.CreateNewFileConnWithBasePort(fdtID, uint8(task.NumPorts), task.BasePort)
+	conns, _ := s.recvPool.CreateFileConn(fdtID, uint8(task.NumPorts), task.BasePort)
 	if len(conns) == 0 {
 		err := fmt.Errorf("failed to create connections for fdtID %d", fdtID)
 		s.reportError(ctx, uint8(errs.LevelError), err, fdtID)

@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/edsrzf/mmap-go"
+	"golang.org/x/sys/windows"
 	"golang.org/x/time/rate"
 )
 
@@ -348,7 +349,7 @@ func buildRateLimiter(maxPacketSize, totalFiles uint16) (*rate.Limiter, int, flo
 // 特殊处理：
 //
 //	对于Reed-Solomon编码，序列号有特殊的编码方式
-func (s *Sender) writeSymbol(conn *pool.UDPConnWrapper, bufPool *sync.Pool, chunkIdx uint32, symbolID uint32, symbolData []byte) error {
+func (s *Sender) writeSymbol(wsck *pool.WinSocket, bufPool *sync.Pool, chunkIdx uint32, symbolID uint32, symbolData []byte) error {
 	// 从缓冲区池获取缓冲区
 	buf := bufPool.Get().([]byte)
 	needed := 8 + len(symbolData)
@@ -371,31 +372,35 @@ func (s *Sender) writeSymbol(conn *pool.UDPConnWrapper, bufPool *sync.Pool, chun
 	binary.BigEndian.PutUint64(buf[:8], seqNum)
 	copy(buf[8:], symbolData)
 
-	// 检查连接有效性
-	if conn == nil || conn.Conn == nil {
-		bufPool.Put(buf[:cap(buf)])
-		return fmt.Errorf("no connection available to write chunk %d symbol %d", chunkIdx, symbolID)
-	}
+	var wsaBuf windows.WSABuf
+	var byteSent uint32
+
+	wsaBuf.Len = uint32(len(buf))
+	wsaBuf.Buf = &buf[0]
 
 	// 发送数据
-	n, err := conn.Conn.Write(buf)
+	err := windows.WSASendTo(wsck.Socket, &wsaBuf, 1, &byteSent, wsck.Flags, wsck.To.ToAny, wsck.To.ToLen, nil, nil)
 	if err != nil {
 		bufPool.Put(buf[:cap(buf)])
 		return fmt.Errorf("write failed: chunk %d symbol %d: %w", chunkIdx, symbolID, err)
 	}
 
 	// 记录发送日志
-	if s.config.DataShards > 0 && s.config.ParityShards > 0 {
-		// RS模式：chunkIdx 保存分片索引
-		log.Printf("Write symbol for shard %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, n, len(symbolData))
-	} else {
-		log.Printf("Write symbol for chunk %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, n, len(symbolData))
+	//TODO: Remove logging
+	if chunkIdx%5000 == 0 {
+		if s.config.DataShards > 0 && s.config.ParityShards > 0 {
+			// RS模式：chunkIdx 保存分片索引
+			log.Printf("Write symbol for shard %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, byteSent, len(symbolData))
+		} else {
+			log.Printf("Write symbol for chunk %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, byteSent, len(symbolData))
+		}
 	}
 
 	// 标记连接已使用
-	conn.MarkSent()
+	wsck.MarkSent()
 
 	// 标记发送开始（第一次成功写）
+	//TODO: Remove logging
 	if atomic.CompareAndSwapInt32(&s.sendStarted, 0, 1) {
 		s.sendStart = time.Now()
 		log.Printf("fdtID(%d): send started at %s", s.fdtID, s.sendStart.Format(time.RFC3339Nano))
@@ -405,7 +410,7 @@ func (s *Sender) writeSymbol(conn *pool.UDPConnWrapper, bufPool *sync.Pool, chun
 
 	// 更新统计信息
 	atomic.AddInt64(&s.totalPackets, 1)
-	atomic.AddInt64(&s.totalSent, int64(len(symbolData)))
+	atomic.AddInt64(&s.totalSent, int64(len(symbolData))+8)
 
 	return nil
 }
@@ -437,14 +442,14 @@ func (s *Sender) writeSymbol(conn *pool.UDPConnWrapper, bufPool *sync.Pool, chun
 //   - 缓冲区池：减少内存分配开销
 func (s *Sender) Start(ctx context.Context) error {
 	// 获取全局连接池
-	p := pool.GetGlobalPool()
+	p := pool.GetConnPool()
 	if p == nil {
 		return fmt.Errorf("connection pool not initialized")
 	}
 
 	// 获取文件传输连接
 	var getErr error
-	_, conns, getErr := p.GetGlobalFileConn(s.fdtID)
+	_, conns, getErr := p.GetFileConn(s.fdtID)
 	if getErr != nil {
 		return fmt.Errorf("failed to get connections for fdtID %d: %w", s.fdtID, getErr)
 	}
@@ -456,6 +461,24 @@ func (s *Sender) Start(ctx context.Context) error {
 	// 使用第一个连接（简化实现，实际可轮询）
 	//TODO: Add multi connections support
 	conn := conns[0]
+
+	// Calculate and log total symbols
+	var totalSymbols int64
+	if s.config.Type == encoder.EncoderReedSolomon {
+		totalSymbols = int64(s.chunkCount) * int64(s.config.DataShards+s.config.ParityShards)
+	} else {
+		// For RaptorQ and NoCode
+		symSize := int64(s.config.SymbolSize)
+		if symSize == 0 {
+			symSize = 1
+		}
+		symbolsPerChunk := (int64(s.config.ChunkSize) + symSize - 1) / symSize
+		if s.config.Type == encoder.EncoderRaptorQ {
+			symbolsPerChunk = int64(float64(symbolsPerChunk) * s.config.RedundancyRatio)
+		}
+		totalSymbols = int64(s.chunkCount) * symbolsPerChunk
+	}
+	log.Printf("fdtID(%d): Total symbols to send: %d", s.fdtID, totalSymbols)
 
 	// 初始化缓冲区池
 	bufPool := &sync.Pool{
@@ -521,6 +544,13 @@ func (s *Sender) Start(ctx context.Context) error {
 		}
 		log.Printf("fdtID(%d): send finished at %s, duration=%s", s.fdtID, s.sendEnd.Format(time.RFC3339Nano), dur.String())
 		log.Printf("fdtID(%d): bytes sent=%d, duration=%s, throughput=%.2f Mbps", s.fdtID, totalBytes, dur.String(), mbps)
+
+		// 计算有效传输速率 (Goodput)
+		goodput := 0.0
+		if dur.Seconds() > 0 {
+			goodput = (float64(s.fileSize) * 8.0 / dur.Seconds()) / 1e6
+		}
+		log.Printf("fdtID(%d): file size=%d, effective rate (goodput)=%.2f Mbps", s.fdtID, s.fileSize, goodput)
 	}
 	return err
 }

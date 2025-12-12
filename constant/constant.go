@@ -71,3 +71,25 @@ const (
 	MaxNoCodeChunkSize  = 32 * 1024
 	MaxRaptorQChunkSize = 32 * 1024
 )
+
+const (
+	TX_BUF = 4 * 1024 * 1024 // 4 MB
+	RX_BUF = 4 * 1024 * 1024 // 4 MB
+)
+
+const (
+	CONN_TIMEOUT = 30 // in seconds
+)
+
+const (
+	HEALTH_CHECK_INTERVAL      = 10 // in seconds
+	IDLE_SENDER_CHECK_INTERVAL = 1  // in seconds
+	IDLE_SENDER_TIMEOUT        = 3  // in seconds
+
+	META_PORT = 3399
+	POOL_SEND = 0
+	POOL_RECV = 1
+
+	META_BUF     = 1500
+	MTEA_TIMEOUT = 120 // in seconds
+)

@@ -20,10 +20,13 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"unsafe"
 
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 // Report 定义进度报告结构
@@ -510,13 +513,13 @@ func (r *Receiver) ShowBasicInfo() {
 //   - 错误传播和上下文取消链
 func (r *Receiver) Start(ctx context.Context) error {
 	// 获取全局连接池
-	p := pool.GetGlobalPool()
+	p := pool.GetConnPool()
 	if p == nil {
 		return fmt.Errorf("connection pool not initialized")
 	}
 
 	// 获取文件传输连接
-	_, conns, err := p.GetGlobalFileConn(r.fdtID)
+	_, conns, err := p.GetFileConn(r.fdtID)
 	if err != nil {
 		return fmt.Errorf("failed to get connections for fdtID %d: %v", r.fdtID, err)
 	}
@@ -605,7 +608,7 @@ func (r *Receiver) Start(ctx context.Context) error {
 //  2. 启动多个接收工作协程
 //  3. 监听完成信号
 //  4. 清理工作协程
-func (r *Receiver) readLoop(ctx context.Context, conn *pool.UDPConnWrapper) error {
+func (r *Receiver) readLoop(ctx context.Context, wsck *pool.WinSocket) error {
 	// 初始化缓冲区池
 	bufPool := &sync.Pool{
 		New: func() interface{} {
@@ -614,7 +617,7 @@ func (r *Receiver) readLoop(ctx context.Context, conn *pool.UDPConnWrapper) erro
 	}
 
 	// 设置工作协程数量
-	workerCount := 1
+	workerCount := 16
 	if workerCount <= 0 {
 		workerCount = 1
 	}
@@ -632,7 +635,7 @@ func (r *Receiver) readLoop(ctx context.Context, conn *pool.UDPConnWrapper) erro
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r.readWorker(workerCtx, conn, bufPool, errCh)
+			r.readWorker(workerCtx, wsck, bufPool, errCh)
 		}()
 	}
 
@@ -646,14 +649,6 @@ func (r *Receiver) readLoop(ctx context.Context, conn *pool.UDPConnWrapper) erro
 
 	// 清理工作协程
 	workerCancel()
-	// 强制解除ReadFromUDP阻塞
-	conn.Conn.SetReadDeadline(time.Now())
-	wg.Wait()
-
-	// 恢复默认超时设置
-	var zero time.Time
-	conn.Conn.SetReadDeadline(zero)
-
 	return err
 }
 
@@ -665,7 +660,7 @@ func (r *Receiver) readLoop(ctx context.Context, conn *pool.UDPConnWrapper) erro
 // 参数：
 //
 //	ctx     - 工作协程上下文
-//	conn    - UDP连接
+//	wsck    - UDP连接
 //	bufPool - 缓冲区池
 //	errCh   - 错误通道
 //
@@ -680,7 +675,14 @@ func (r *Receiver) readLoop(ctx context.Context, conn *pool.UDPConnWrapper) erro
 //   - 缓冲区池复用减少内存分配
 //   - 原子操作更新统计信息
 //   - 非阻塞进度报告
-func (r *Receiver) readWorker(ctx context.Context, conn *pool.UDPConnWrapper, bufPool *sync.Pool, errCh chan<- error) {
+func (r *Receiver) readWorker(ctx context.Context, wsck *pool.WinSocket, bufPool *sync.Pool, errCh chan<- error) {
+	// 准备WSARecvFrom参数
+	var bytesRecvd uint32
+	var flags uint32
+	var from windows.RawSockaddrAny
+	var fromLen int32 = int32(unsafe.Sizeof(from))
+	var wsaBuf windows.WSABuf
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -690,15 +692,28 @@ func (r *Receiver) readWorker(ctx context.Context, conn *pool.UDPConnWrapper, bu
 
 		// 从缓冲区池获取缓冲区
 		buf := bufPool.Get().([]byte)
-		n, _, err := conn.Conn.ReadFromUDP(buf)
+		wsaBuf.Len = uint32(cap(buf))
+		wsaBuf.Buf = &buf[0]
+
+		// 重置参数
+		flags = 0
+		fromLen = int32(unsafe.Sizeof(from))
+
+		// 使用WSARecvFrom接收数据
+		err := windows.WSARecvFrom(wsck.Socket, &wsaBuf, 1, &bytesRecvd, &flags, &from, &fromLen, nil, nil)
+		n := int(bytesRecvd)
+
+		// 更新最后活动时间，防止被连接池回收
+		atomic.StoreInt64(&wsck.LastUsed, time.Now().Unix())
 
 		// 更新接收统计
 		atomic.AddInt64(&r.totalReceived, int64(n))
-		pool.GetGlobalPool().AddReceived(uint64(n))
+		pool.GetConnPool().AddReceived(uint64(n))
 
 		if err != nil {
 			bufPool.Put(buf)
-			if os.IsTimeout(err) {
+			// 检查是否是超时 (WSAETIMEDOUT = 10060)
+			if err == windows.WSAETIMEDOUT {
 				// 接收超时，记录当前状态
 				currWritten := int(atomic.LoadInt64(&r.currWritten))
 				log.Printf("接收超时，已接收: %d MB, 待写入: %d MB, 丢包: %d",
@@ -707,6 +722,15 @@ func (r *Receiver) readWorker(ctx context.Context, conn *pool.UDPConnWrapper, bu
 					r.totalDropped)
 				continue
 			}
+			// 检查是否是WSAEWOULDBLOCK (10035)
+			if err == windows.WSAEWOULDBLOCK {
+				continue
+			}
+			// 忽略因Socket关闭导致的错误
+			if err == windows.WSAEINTR || err == windows.WSAENOTSOCK {
+				return
+			}
+
 			select {
 			case errCh <- err:
 			default:
@@ -775,7 +799,7 @@ func (r *Receiver) readWorker(ctx context.Context, conn *pool.UDPConnWrapper, bu
 		bufPool.Put(buf)
 
 		// 更新连接最后使用时间
-		atomic.StoreInt64(&conn.LastUsed, time.Now().Unix())
+		atomic.StoreInt64(&wsck.LastUsed, time.Now().Unix())
 
 		// 发送进度报告
 		if ch, ok := GetReportChan(ctx); ok {

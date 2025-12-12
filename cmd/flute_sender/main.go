@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"runtime"
@@ -19,9 +18,11 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
-var globalPool *pool.GlobalConnectionPool
+var globalPool *pool.ConnPool
 var sendFileIndex uint32
 
 var (
@@ -29,7 +30,6 @@ var (
 	otiID              uint8
 	maxConcurrentSends uint8
 	destIP             string
-	destMac     string 
 )
 
 func main() {
@@ -55,7 +55,7 @@ func main() {
 	runtime.ReadMemStats(&memStatsStart)
 
 	// 解析Input参数
-	fmt.Println("Enter dest IP, example: 192.168.1.103:3400")
+	fmt.Println("Enter dest IP, example: 127.0.0.1")
 	fmt.Scanln(&destIP)
 	// testing
 	if destIP == "" {
@@ -63,14 +63,14 @@ func main() {
 		fmt.Printf("Using default dest ip: %s\n", destIP)
 	}
 
-	fmt.Println("Enter dest mac, example: 00:11:22:33:44:55")
-	fmt.Scanln(&destMac)
-	if destMac == "" {
-		fmt.Println("获取接收方MAC地址失败")
-		fmt.Println("按回车键退出...")
-		fmt.Scanln()
-		return
-	}
+	// fmt.Println("Enter dest mac, example: 00:11:22:33:44:55")
+	// fmt.Scanln(&destMac)
+	// if destMac == "" {
+	// 	fmt.Println("获取接收方MAC地址失败")
+	// 	fmt.Println("按回车键退出...")
+	// 	fmt.Scanln()
+	// 	return
+	// }
 
 	exePath, err := os.Executable()
 	if err != nil {
@@ -88,11 +88,11 @@ func main() {
 		log.Printf("Using default send file directory: %s", sendFileDir)
 	}
 
-	fmt.Println("Enter OTI ID (0: NoCode, 1: RaptorQ, 2: Reed-Solomon), default is 2")
+	fmt.Println("Enter OTI ID (0: NoCode, 1: RaptorQ, 2: Reed-Solomon), default is 0")
 	fmt.Scanln(&otiID)
 	if otiID < 0 || otiID > 2 {
-		otiID = 2
-		log.Printf("Invalid OTI ID %d, defaulting to Reed-Solomon", otiID)
+		otiID = 0
+		log.Printf("Invalid OTI ID %d, defaulting to No-code", otiID)
 	}
 
 	fmt.Println("Enter max concurrent sends (default 1)")
@@ -102,11 +102,11 @@ func main() {
 		log.Printf("Invalid max concurrent sends %d, defaulting to 1", maxConcurrentSends)
 	}
 
-	if err := utils.SetNetLink(destIP, destMac); err != nil {
-		fmt.Printf("无法建立单向连接: %v", err)
-		fmt.Println("按回车键退出...")
-		fmt.Scanln()
-	}
+	// if err := utils.SetNetLink(destIP, destMac); err != nil {
+	// 	fmt.Printf("无法建立单向连接: %v", err)
+	// 	fmt.Println("按回车键退出...")
+	// 	fmt.Scanln()
+	// }
 
 	files, err := os.ReadDir(sendFileDir)
 	if err != nil {
@@ -145,7 +145,7 @@ func main() {
 		log.Printf("Using OTI: NoCode")
 	case 1:
 		o = oti.NewRaptorQ(1400)
-		log.Printf("Using OTI: RaptorQ (Not implemented, defaulting to Reed-Solomon)")
+		log.Printf("Using OTI: RaptorQ")
 	case 2:
 		o = oti.NewReedSolomon(12, 4)
 		log.Printf("Using OTI: Reed-Solomon")
@@ -153,8 +153,8 @@ func main() {
 		log.Printf("Invalid OTI ID %d, defaulting to Reed-Solomon", otiID)
 	}
 
-	pool.InitGlobalConnectionPool(100, constant.MaxMetaConnTimeout, 0, destIP)
-	globalPool = pool.GetGlobalPool()
+	pool.InitConnPool(destIP, 0)
+	globalPool = pool.GetConnPool()
 	if globalPool == nil {
 		log.Printf("Pool not initialized\n")
 		fmt.Println("按回车键退出...")
@@ -162,8 +162,8 @@ func main() {
 		return
 	}
 
-	_, errs := globalPool.InitMetaConn()
-	if len(errs) > 0 {
+	_, err = globalPool.InitMetaConn()
+	if err != nil {
 		log.Printf("Failed to create MetaPkt connection\n")
 		fmt.Println("按回车键退出...")
 		fmt.Scanln()
@@ -181,18 +181,24 @@ func main() {
 	var wg sync.WaitGroup
 
 	totalFiles := len(sendFileList)
+	currentBasePort := constant.BaseFilePort
+
 	for i, file := range sendFileList {
 		sem <- struct{}{}
 		currFdtID := fdtID
 		fdtID++
+
+		fileBasePort := currentBasePort
+		currentBasePort += constant.NumPorts
+
 		wg.Add(1)
 
-		go func(idx int, f *os.File, fid uint8) {
+		go func(idx int, f *os.File, fid uint8, portBase int) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
 			numPorts := uint8(constant.NumPorts)
-			conns, connErrs := globalPool.CreateNewFileConn(fid, numPorts)
+			conns, connErrs := globalPool.CreateFileConn(fid, numPorts, portBase)
 			if len(connErrs) > 0 {
 				for _, cErr := range connErrs {
 					if cErr != nil {
@@ -208,7 +214,8 @@ func main() {
 			}
 			defer globalPool.CloseFileConn(fid)
 
-			basePort := portFromConn(conns[0].Conn)
+			// Use the intended destination port as basePort for metadata
+			basePort := portBase
 			metaPkt, err := meta.InitMetaPkt(f, o, basePort, uint16(numPorts), fid)
 			if err != nil {
 				log.Printf("Failed to init MetaPkt: %v", err)
@@ -227,7 +234,7 @@ func main() {
 				fmt.Scanln()
 				return
 			}
-		}(i, file, currFdtID)
+		}(i, file, currFdtID, fileBasePort)
 
 	}
 	wg.Wait()
@@ -268,12 +275,19 @@ func main() {
 	fmt.Println("Exit program")
 }
 
-func portFromConn(conn *net.UDPConn) int {
-	addr := conn.RemoteAddr()
-	if udpAddr, ok := addr.(*net.UDPAddr); ok {
-		return udpAddr.Port
+func portFromConn(wsck *pool.WinSocket) int {
+	if wsck.Addr != nil {
+		return wsck.Addr.Port
 	}
 	return constant.BaseFilePort
+}
+
+func sendData(wsck *pool.WinSocket, data []byte) error {
+	var wsaBuf windows.WSABuf
+	var byteSent uint32
+	wsaBuf.Len = uint32(len(data))
+	wsaBuf.Buf = &data[0]
+	return windows.WSASendTo(wsck.Socket, &wsaBuf, 1, &byteSent, wsck.Flags, wsck.To.ToAny, wsck.To.ToLen, nil, nil)
 }
 
 func SendFile(mt *meta.MetaPkt) error {
@@ -285,10 +299,10 @@ func SendFile(mt *meta.MetaPkt) error {
 	metaData := mt.Serialize()
 
 	log.Printf("[SendFile] Meta connection: %s (Mode: %d, FdtID: %d)",
-		metaConn.Conn.RemoteAddr(), metaConn.Mode, metaConn.FdtID)
-	log.Printf("[SendFile] Sending metadata: %d bytes to %s", len(metaData), metaConn.Conn.RemoteAddr())
+		metaConn.Addr, globalPool.Mode, metaConn.FdtID)
+	log.Printf("[SendFile] Sending metadata: %d bytes to %s", len(metaData), metaConn.Addr)
 
-	if _, err := metaConn.Conn.Write(metaData); err != nil {
+	if err := sendData(metaConn, metaData); err != nil {
 		log.Printf("[SendFile] Failed to send metadata: %v", err)
 		return err
 	}

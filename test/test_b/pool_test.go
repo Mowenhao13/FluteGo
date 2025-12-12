@@ -1,45 +1,23 @@
-/*
- * 软件著作权声明：
- * 本文件包含的代码是 FluteGo 软件的组成部分
- * 版权所有 (C) 2025
- * 保留所有权利。
- */
-/*
- * 软件著作权声明：
- * 本文件包含的代码是 FluteGo 软件的组成部分
- * 版权所有 (C) 2025
- * 保留所有权利。
- */
-
-package pool
+package test
 
 import (
 	"FluteGo/pkg/utils"
 	"fmt"
-	"net"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"FluteGo/constant"
 
-	"unsafe"
-
 	"golang.org/x/sys/windows"
 )
 
-type To struct {
-	ToAny *windows.RawSockaddrAny
-	ToLen int32
-}
-
-type From struct {
-	FromAny *windows.RawSockaddrAny
-	FromLen int32
-}
+const (
+	DEST_IP = "127.0.0.1"
+)
 
 type WinSocket struct {
-	Addr      *net.UDPAddr
 	Socket    windows.Handle
 	LastUsed  int64
 	LastSent  int64
@@ -47,9 +25,6 @@ type WinSocket struct {
 	FdtID     uint8
 	Mu        sync.RWMutex
 	SentData  uint32
-	Flags     uint32
-	To
-	From
 }
 
 type ConnPool struct {
@@ -100,80 +75,27 @@ func GetConnPool() *ConnPool {
 }
 
 func (p *ConnPool) createNewConn(ip string, port int) (*WinSocket, error) {
-	var sck windows.Handle
-	var err error
-
-	if p.Mode == constant.POOL_SEND {
-		// Sender binds to random port
-		sck, err = utils.CreateSocket("0.0.0.0", 0)
-	} else {
-		// Receiver binds to listening port
-		sck, err = utils.CreateSocket(ip, port)
-	}
-
+	var wsck *WinSocket
+	sck, err := utils.CreateSocket(ip, port)
 	if err != nil {
 		return nil, err
 	}
 
 	if p.Mode == constant.POOL_SEND {
-		windows.Shutdown(sck, windows.SHUT_RD)
+		windows.Shutdown(wsck.Socket, windows.SHUT_RD)
 	}
 	if p.Mode == constant.POOL_RECV {
-		windows.Shutdown(sck, windows.SHUT_WR)
+		windows.Shutdown(wsck.Socket, windows.SHUT_WR)
 	}
 
-	nPort := uint16(port)
-	ipAddr := net.ParseIP(ip).To4()
-	addr := &net.UDPAddr{
-		IP:   ipAddr,
-		Port: int(nPort),
-	}
-
-	sendTo := To{
-		ToAny: &windows.RawSockaddrAny{},
-		ToLen: 0,
-	}
-	recvFrom := From{
-		FromAny: &windows.RawSockaddrAny{},
-		FromLen: 0,
-	}
-	flags := uint32(0)
-
-	if p.Mode == constant.POOL_SEND {
-		to := windows.RawSockaddrInet4{
-			Family: windows.AF_INET,
-			Port:   (nPort<<8)&0xff00 | (nPort>>8)&0x00ff,
-		}
-		copy(to.Addr[:], ipAddr)
-
-		toAny := (*windows.RawSockaddrAny)(unsafe.Pointer(&to))
-		toLen := int32(unsafe.Sizeof(to))
-
-		// const MSG_DONTWAIT = 0x40 // send mode
-
-		// if p.Mode == constant.POOL_SEND {
-		// 	flags |= MSG_DONTWAIT
-		// }
-		sendTo.ToAny = toAny
-		sendTo.ToLen = toLen
-	}
-
-	// For POOL_RECV, we use the default initialized recvFrom (RawSockaddrAny)
-	// which is large enough to hold any address.
-	// We don't need to initialize it with local address.
-
-	wsck := &WinSocket{
-		Addr:      addr,
+	wsck = &WinSocket{
 		Socket:    sck,
 		LastUsed:  time.Now().Unix(),
 		IsHealthy: true,
-		Flags:     flags,
-		To:        sendTo,
-		From:      recvFrom,
 	}
 
-	addrKey := fmt.Sprintf("%s:%d", ip, port)
-	p.Conns.Store(addrKey, wsck)
+	addr := fmt.Sprintf("%s:%d", ip, port)
+	p.Conns.Store(addr, wsck)
 
 	atomic.AddInt32(&stats.TotalConns, 1)
 	atomic.AddInt32(&stats.ActiveConns, 1)
@@ -267,11 +189,6 @@ func (p *ConnPool) CreateFileConn(fdtID uint8, numConn uint8, basePort int) ([]*
 		wsck.FdtID = fdtID
 		conns = append(conns, wsck)
 	}
-
-	if len(conns) > 0 {
-		p.FileConns.Store(fdtID, conns)
-	}
-
 	return conns, errs
 }
 
@@ -526,4 +443,49 @@ func (p *ConnPool) ShowInfo() {
 
 func (p *ConnPool) Stop() {
 	close(p.StopChan)
+}
+
+func TestAllocatePorts(t *testing.T) {
+	InitConnPool(DEST_IP, constant.POOL_SEND)
+
+	connPool := GetConnPool()
+	numPorts := 5
+	basePort := 3400
+	ip := "127.0.0.1"
+
+	for i := 0; i < 3; i++ {
+		for j := 0; j < numPorts; j++ {
+			port := basePort + i*numPorts + j
+			connPool.Get(ip, port)
+		}
+	}
+
+	activeConns := connPool.GetStats().ActiveConns
+	t.Logf("Active conns before: %d", activeConns)
+
+	for i := 0; i < 3; i++ {
+		for j := 0; j < numPorts; j++ {
+			port := basePort + i*numPorts + j
+			connPool.closeConn(ip, port)
+		}
+	}
+
+	activeConns = connPool.GetStats().ActiveConns
+	t.Logf("Active conns now: %d", activeConns)
+}
+
+func TestFilePorts(t *testing.T) {
+	InitConnPool(DEST_IP, constant.POOL_SEND)
+	connPool := GetConnPool()
+
+	for fdtID := uint8(0); fdtID < uint8(5); fdtID++ {
+		_, _, err := connPool.GetFileConn(fdtID)
+		if err != nil {
+			connPool.CreateFileConn(fdtID, 10, int(constant.META_PORT)+int(fdtID))
+		}
+	}
+
+	connPool.ShowInfo()
+	connPool.CloseAllConns()
+	connPool.ShowInfo()
 }
