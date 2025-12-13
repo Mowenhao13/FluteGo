@@ -198,6 +198,34 @@ func main() {
 	totalFiles := len(sendFileList)
 	currentBasePort := constant.BASE_FILE_PORT
 
+	// Setup global progress bar if concurrent sending is enabled
+	var globalBar *progressbar.ProgressBar
+	var globalBarMu sync.Mutex
+	fileProgress := make(map[uint8]int64)
+
+	if maxConcurrentSends > 1 {
+		var totalSessionSize int64
+		for _, f := range sendFileList {
+			info, _ := f.Stat()
+			totalSessionSize += info.Size()
+		}
+
+		globalBar = progressbar.NewOptions64(
+			totalSessionSize,
+			progressbar.OptionSetDescription("[Total Progress]"),
+			progressbar.OptionSetWriter(os.Stderr),
+			progressbar.OptionShowBytes(true),
+			progressbar.OptionSetWidth(15),
+			progressbar.OptionThrottle(65*time.Millisecond),
+			progressbar.OptionShowCount(),
+			progressbar.OptionOnCompletion(func() {
+				fmt.Fprint(os.Stderr, "\n")
+			}),
+			progressbar.OptionSpinnerType(14),
+			progressbar.OptionFullWidth(),
+		)
+	}
+
 	for i, file := range sendFileList {
 		sem <- struct{}{}
 		currFdtID := fdtID
@@ -246,36 +274,71 @@ func main() {
 			transferringFiles.Store(fid, metaPkt.File.Name)
 			defer transferringFiles.Delete(fid)
 
-			// Create progress bar
-			bar := progressbar.NewOptions64(
-				int64(metaPkt.File.TransferLen),
-				progressbar.OptionSetDescription(fmt.Sprintf("[%s]", metaPkt.File.Name)),
-				progressbar.OptionSetWriter(os.Stderr),
-				progressbar.OptionShowBytes(true),
-				progressbar.OptionSetWidth(15),
-				progressbar.OptionThrottle(65*time.Millisecond),
-				progressbar.OptionShowCount(),
-				progressbar.OptionOnCompletion(func() {
-					fmt.Fprint(os.Stderr, "\n")
-				}),
-				progressbar.OptionSpinnerType(14),
-				progressbar.OptionFullWidth(),
-			)
+			var onOverhead func(int64)
+			var onProgress func(int64)
+			var localBar *progressbar.ProgressBar
+
+			if maxConcurrentSends > 1 {
+				// Use global bar
+				onOverhead = func(overhead int64) {
+					// globalBar is thread-safe for ChangeMax64
+					globalBar.ChangeMax64(globalBar.GetMax64() + overhead)
+				}
+				onProgress = func(sent int64) {
+					globalBarMu.Lock()
+					defer globalBarMu.Unlock()
+					delta := sent - fileProgress[fid]
+					if delta > 0 {
+						fileProgress[fid] = sent
+						globalBar.Add64(delta)
+					}
+				}
+			} else {
+				// Use local bar
+				localBar = progressbar.NewOptions64(
+					int64(metaPkt.File.TransferLen),
+					progressbar.OptionSetDescription(fmt.Sprintf("[%s]", metaPkt.File.Name)),
+					progressbar.OptionSetWriter(os.Stderr),
+					progressbar.OptionShowBytes(true),
+					progressbar.OptionSetWidth(15),
+					progressbar.OptionThrottle(65*time.Millisecond),
+					progressbar.OptionShowCount(),
+					progressbar.OptionOnCompletion(func() {
+						fmt.Fprint(os.Stderr, "\n")
+					}),
+					progressbar.OptionSpinnerType(14),
+					progressbar.OptionFullWidth(),
+				)
+				onOverhead = func(overhead int64) {
+					localBar.ChangeMax64(localBar.GetMax64() + overhead)
+				}
+				onProgress = func(sent int64) {
+					localBar.Set64(sent)
+				}
+			}
 
 			metaPkt.ShowPktInfo()
-			if err := SendFile(metaPkt, limiter, bar); err != nil {
+			if err := SendFile(metaPkt, limiter, onOverhead, onProgress, int(maxConcurrentSends)); err != nil {
 				log.Printf("Failed to send file(fdtID: %d): %v", fid, err)
-				bar.Finish()
+				if localBar != nil {
+					localBar.Finish()
+				}
 				fmt.Println("按回车键退出...")
 				fmt.Scanln()
 				return
 			}
-			bar.Finish()
+			if localBar != nil {
+				localBar.Finish()
+			}
 		}(i, file, currFdtID, fileBasePort)
 
 	}
 
 	wg.Wait()
+
+	if globalBar != nil {
+		globalBar.Finish()
+	}
 
 	time.Sleep(500 * time.Millisecond)
 	fmt.Printf("All files have been processed.\n")
@@ -326,7 +389,7 @@ func sendData(wsck *pool.WinSocket, data []byte) error {
 	return err
 }
 
-func SendFile(mt *meta.MetaPkt, limiter *rate.Limiter, bar *progressbar.ProgressBar) error {
+func SendFile(mt *meta.MetaPkt, limiter *rate.Limiter, onOverhead func(int64), onProgress func(int64), maxConcurrentSends int) error {
 	metaConn, err := globalPool.GetMetaConn()
 	if err != nil {
 		return err
@@ -348,23 +411,23 @@ func SendFile(mt *meta.MetaPkt, limiter *rate.Limiter, bar *progressbar.Progress
 	log.Printf("Sender will be started after %d seconds\n", constant.START_SEND_WAIT)
 	time.Sleep(constant.START_SEND_WAIT * time.Second)
 
-	sender, err := sender.InitSender(mt, limiter)
+	sender, err := sender.InitSender(mt, limiter, maxConcurrentSends)
 	if err != nil {
 		return fmt.Errorf("Failed to init sender: %v", err)
 	}
 
-	if bar != nil {
-		// Update bar total with actual bytes to send (including overhead)
+	if onOverhead != nil {
 		totalBytes := sender.GetTotalBytesToSend()
-		bar.ChangeMax64(totalBytes)
-		sender.SetProgressCallback(func(sent int64) {
-			bar.Set64(sent)
-		})
+		// Calculate overhead: totalBytes - originalFileSize
+		// Note: mt.File.TransferLen is the original file size
+		overhead := totalBytes - int64(mt.File.TransferLen)
+		onOverhead(overhead)
+	}
+
+	if onProgress != nil {
+		sender.SetProgressCallback(onProgress)
 	}
 
 	err = sender.Start(context.Background())
-	if err == nil && bar != nil {
-		bar.Finish()
-	}
 	return err
 }
