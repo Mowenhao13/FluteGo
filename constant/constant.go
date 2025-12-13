@@ -71,13 +71,13 @@ const (
 )
 
 const (
-	CONN_TIMEOUT = 30 // in seconds
+	CONN_TIMEOUT = 120 // in seconds
 )
 
 const (
 	HEALTH_CHECK_INTERVAL      = 10 // in seconds
-	IDLE_SENDER_CHECK_INTERVAL = 1  // in seconds
-	IDLE_SENDER_TIMEOUT        = 3  // in seconds
+	IDLE_SENDER_CHECK_INTERVAL = 5  // in seconds
+	IDLE_SENDER_TIMEOUT        = 60 // in seconds
 
 	META_PORT = 3399
 	POOL_SEND = 0
