@@ -140,14 +140,14 @@ func (p *ConnPool) createNewConn(ip string, port int) (*WinSocket, error) {
 	flags := uint32(0)
 
 	if p.Mode == constant.POOL_SEND {
-		to := windows.RawSockaddrInet4{
+		to := &windows.RawSockaddrInet4{
 			Family: windows.AF_INET,
 			Port:   (nPort<<8)&0xff00 | (nPort>>8)&0x00ff,
 		}
 		copy(to.Addr[:], ipAddr)
 
-		toAny := (*windows.RawSockaddrAny)(unsafe.Pointer(&to))
-		toLen := int32(unsafe.Sizeof(to))
+		toAny := (*windows.RawSockaddrAny)(unsafe.Pointer(to))
+		toLen := int32(unsafe.Sizeof(*to))
 
 		// const MSG_DONTWAIT = 0x40 // send mode
 

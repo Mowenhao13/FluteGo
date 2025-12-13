@@ -24,6 +24,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 
 	// "runtime"
@@ -322,55 +323,26 @@ func buildRateLimiter(maxPacketSize, totalFiles uint16) (*rate.Limiter, int, flo
 	return limiter, bytesPerSec, limitMbps
 }
 
-// writeSymbol 写入单个符号到网络
-// 功能说明：
-//
-//	将编码后的数据符号封装为网络包并发送
-//
-// 参数：
-//
-//	conn - UDP连接包装器
-//	bufPool - 缓冲区池，用于复用内存
-//	chunkIdx - 分块索引
-//	symbolID - 符号标识符
-//	symbolData - 符号数据
-//
-// 返回值：
-//
-//	error - 发送过程中的错误
-//
-// 核心流程：
-//  1. 从缓冲区池获取缓冲区
-//  2. 构建数据包头部（序列号）
-//  3. 复制符号数据
-//  4. 通过UDP连接发送
-//  5. 更新发送统计信息
-//
-// 特殊处理：
-//
-//	对于Reed-Solomon编码，序列号有特殊的编码方式
-func (s *Sender) writeSymbol(wsck *pool.WinSocket, bufPool *sync.Pool, chunkIdx uint32, symbolID uint32, symbolData []byte) error {
-	// 从缓冲区池获取缓冲区
-	buf := bufPool.Get().([]byte)
-	needed := 8 + len(symbolData)
-	if cap(buf) < needed {
-		buf = make([]byte, needed)
-	}
-	buf = buf[:needed]
+type sendTask struct {
+	chunkIdx uint32
+	symbolID uint32
+	buf      []byte
+}
+
+// processSendTask 异步处理发送任务
+func (s *Sender) processSendTask(wsck *pool.WinSocket, bufPool *sync.Pool, task sendTask) {
+	buf := task.buf
+	chunkIdx := task.chunkIdx
+	symbolID := task.symbolID
 
 	// 构建序列号
 	var seqNum uint64
-
-	// 如果编码器配置指示使用Reed-Solomon（数据+校验分片）
-	// RS编码器的回调函数将分片索引作为第一个参数传递
-	// 接收端期望序列号格式为：高32位=分片索引，低32位=符号索引
 	if s.config.DataShards > 0 && s.config.ParityShards > 0 {
 		seqNum = (uint64(chunkIdx) << 32) | uint64(symbolID)
 	} else {
 		seqNum = uint64(chunkIdx)*uint64(s.config.ChunkSize) + uint64(symbolID)
 	}
 	binary.BigEndian.PutUint64(buf[:8], seqNum)
-	copy(buf[8:], symbolData)
 
 	var wsaBuf windows.WSABuf
 	var byteSent uint32
@@ -381,18 +353,17 @@ func (s *Sender) writeSymbol(wsck *pool.WinSocket, bufPool *sync.Pool, chunkIdx 
 	// 发送数据
 	err := windows.WSASendTo(wsck.Socket, &wsaBuf, 1, &byteSent, wsck.Flags, wsck.To.ToAny, wsck.To.ToLen, nil, nil)
 	if err != nil {
+		log.Printf("write failed: chunk %d symbol %d: %v", chunkIdx, symbolID, err)
 		bufPool.Put(buf[:cap(buf)])
-		return fmt.Errorf("write failed: chunk %d symbol %d: %w", chunkIdx, symbolID, err)
+		return
 	}
 
 	// 记录发送日志
-	//TODO: Remove logging
 	if chunkIdx%5000 == 0 {
 		if s.config.DataShards > 0 && s.config.ParityShards > 0 {
-			// RS模式：chunkIdx 保存分片索引
-			log.Printf("Write symbol for shard %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, byteSent, len(symbolData))
+			log.Printf("Write symbol for shard %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, byteSent, len(buf)-8)
 		} else {
-			log.Printf("Write symbol for chunk %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, byteSent, len(symbolData))
+			log.Printf("Write symbol for chunk %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, byteSent, len(buf)-8)
 		}
 	}
 
@@ -400,7 +371,6 @@ func (s *Sender) writeSymbol(wsck *pool.WinSocket, bufPool *sync.Pool, chunkIdx 
 	wsck.MarkSent()
 
 	// 标记发送开始（第一次成功写）
-	//TODO: Remove logging
 	if atomic.CompareAndSwapInt32(&s.sendStarted, 0, 1) {
 		s.sendStart = time.Now()
 		log.Printf("fdtID(%d): send started at %s", s.fdtID, s.sendStart.Format(time.RFC3339Nano))
@@ -410,9 +380,7 @@ func (s *Sender) writeSymbol(wsck *pool.WinSocket, bufPool *sync.Pool, chunkIdx 
 
 	// 更新统计信息
 	atomic.AddInt64(&s.totalPackets, 1)
-	atomic.AddInt64(&s.totalSent, int64(len(symbolData))+8)
-
-	return nil
+	atomic.AddInt64(&s.totalSent, int64(len(buf)))
 }
 
 // Start 启动数据传输
@@ -488,6 +456,21 @@ func (s *Sender) Start(ctx context.Context) error {
 		},
 	}
 
+	workerCount := runtime.NumCPU()
+	// 创建发送任务通道
+	taskChan := make(chan sendTask, 2048)
+	var wgSender sync.WaitGroup
+	wgSender.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		// 启动发送工作协程
+		go func() {
+			defer wgSender.Done()
+			for task := range taskChan {
+				s.processSendTask(conn, bufPool, task)
+			}
+		}()
+	}
+
 	// 映射整个文件
 	mappedData, mapErr := mmap.Map(s.inputFile, mmap.RDONLY, 0)
 	if mapErr != nil {
@@ -525,13 +508,33 @@ func (s *Sender) Start(ctx context.Context) error {
 				return fmt.Errorf("rate limit wait failed: %w", err)
 			}
 		}
-		// 发送符号
-		return s.writeSymbol(conn, bufPool, chunkIdx, symbolID, symbolData)
+
+		// 从池中获取缓冲区并复制数据
+		buf := bufPool.Get().([]byte)
+		needed := 8 + len(symbolData)
+		if cap(buf) < needed {
+			buf = make([]byte, needed)
+		}
+		buf = buf[:needed]
+		copy(buf[8:], symbolData)
+
+		// 发送到通道
+		select {
+		case taskChan <- sendTask{chunkIdx: chunkIdx, symbolID: symbolID, buf: buf}:
+		case <-ctx.Done():
+			bufPool.Put(buf[:cap(buf)])
+			return ctx.Err()
+		}
+		return nil
 	})
 
 	// 启动编码和发送过程
 	var err error
 	err = s.encoder.Encode(ctx, s.chunkCount, provider, callback)
+
+	// 关闭通道并等待发送完成
+	close(taskChan)
+	wgSender.Wait()
 
 	// 标记发送结束并记录时间（如果曾经开始过）
 	if atomic.LoadInt32(&s.sendStarted) == 1 {
@@ -542,15 +545,16 @@ func (s *Sender) Start(ctx context.Context) error {
 		if dur.Seconds() > 0 {
 			mbps = (float64(totalBytes) * 8.0 / dur.Seconds()) / 1e6
 		}
-		fmt.Printf("fdtID(%d): send finished at %s, duration=%s\n", s.fdtID, s.sendEnd.Format(time.RFC3339Nano), dur.String())
-		fmt.Printf("fdtID(%d): bytes sent=%d, duration=%s, throughput=%.2f Mbps\n", s.fdtID, totalBytes, dur.String(), mbps)
+		log.Printf("fdtID(%d): send finished at %s, duration=%s", s.fdtID, s.sendEnd.Format(time.RFC3339Nano), dur.String())
+		log.Printf("fdtID(%d): bytes sent=%d, duration=%s, throughput=%.2f Mbps", s.fdtID, totalBytes, dur.String(), mbps)
+		log.Printf("fdtID(%d): total chunks sent=%d", s.fdtID, s.chunkCount)
 
 		// 计算有效传输速率 (Goodput)
 		goodput := 0.0
 		if dur.Seconds() > 0 {
 			goodput = (float64(s.fileSize) * 8.0 / dur.Seconds()) / 1e6
 		}
-		fmt.Printf("fdtID(%d): file size=%d, effective rate (goodput)=%.2f Mbps\n", s.fdtID, s.fileSize, goodput)
+		log.Printf("fdtID(%d): file size=%d, effective rate (goodput)=%.2f Mbps", s.fdtID, s.fileSize, goodput)
 	}
 	return err
 }

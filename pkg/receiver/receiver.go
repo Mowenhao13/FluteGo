@@ -275,7 +275,7 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 		expectedMd5:    expectedMd5,
 		finishChan:     make(chan struct{}),
 		OnComplete:     nil,
-		dataChan:       make(chan *WriteRequest, 20000), // 初始化缓冲通道（增大以容纳重组后大量回调）
+		dataChan:       make(chan *WriteRequest, 30000), // 初始化缓冲通道（增大以容纳重组后大量回调）
 		writeRequestPool: sync.Pool{
 			New: func() interface{} {
 				return &WriteRequest{}
@@ -385,8 +385,8 @@ func (r *Receiver) OnDecodedData(data []byte, offset int64, chunkIdx uint32) err
 	case r.dataChan <- req:
 		queued = true
 	default:
-		// queue full, wait briefly up to 500ms
-		timer := time.NewTimer(500 * time.Millisecond)
+		// queue full, wait briefly up to 3000ms
+		timer := time.NewTimer(5000 * time.Millisecond)
 		select {
 		case r.dataChan <- req:
 			queued = true
@@ -766,12 +766,10 @@ func (r *Receiver) readWorker(ctx context.Context, wsck *pool.WinSocket, bufPool
 
 			// 提交给解码器
 			if err := r.decoder.AddSymbol(chunkIdx, symbolIdx, buf[8:n]); err != nil {
-				select {
-				case errCh <- err:
-				default:
-				}
+				// 仅记录错误，不退出接收循环
+				// log.Printf("Error processing chunk %d: %v", chunkIdx, err)
 				bufPool.Put(buf)
-				return
+				continue
 			}
 		} else if r.config.Type == decoder.DecoderReedSolomon {
 			// 解析RS编码序列号
@@ -787,12 +785,10 @@ func (r *Receiver) readWorker(ctx context.Context, wsck *pool.WinSocket, bufPool
 
 			// 提交给解码器
 			if err := r.decoder.AddSymbol(shardIdx, symbolIdx, buf[8:n]); err != nil {
-				select {
-				case errCh <- err:
-				default:
-				}
+				// 仅记录错误，不退出接收循环
+				// log.Printf("Error processing shard %d: %v", shardIdx, err)
 				bufPool.Put(buf)
-				return
+				continue
 			}
 		}
 		// 返还缓冲区

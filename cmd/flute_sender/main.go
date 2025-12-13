@@ -90,7 +90,7 @@ func main() {
 
 	fmt.Println("Enter OTI ID (0: NoCode, 1: RaptorQ, 2: Reed-Solomon), default is 0")
 	fmt.Scanln(&otiID)
-	if otiID < 0 || otiID > 2 {
+	if otiID > 2 {
 		otiID = 0
 		log.Printf("Invalid OTI ID %d, defaulting to No-code", otiID)
 	}

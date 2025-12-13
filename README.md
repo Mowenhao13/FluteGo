@@ -82,29 +82,30 @@ sudo sysctl -w net.core.netdev_max_backlog=65535
 1. No-code
 ```txt
 // sender
-fdtID(1): send finished at 2025-12-13T01:11:37.0970134+08:00, duration=20.8879553s
-fdtID(1): bytes sent=2623265565, duration=20.8879553s, throughput=1004.70 Mbps
-fdtID(1): file size=2607984405, effective rate (goodput)=998.85 Mbps
+fdtID(1): send finished at 2025-12-13T16:46:00.5466809+08:00, duration=14.8905013s
+fdtID(1): bytes sent=2623265565, duration=14.8905013s, throughput=1409.36 Mbps
+fdtID(1): total chunks sent=79590
+fdtID(1): file size=2607984405, effective rate (goodput)=1401.15 Mbps
 
-Total Allocated Memory: 48970936 bytes
-Peak Heap Memory: 1797600 bytes, 1 MB
-System Memory (Sys): 13 MB
-Heap Idle Memory: 5 MB
-Garbage Collection Count: 23
-Memory Allocation Count: 1950042
-Heap Objects Count: 892
+Total Allocated Memory: 61161192 bytes
+Peak Heap Memory: 2115048 bytes, 2 MB
+System Memory (Sys): 34 MB
+Heap Idle Memory: 19 MB
+Garbage Collection Count: 63
+Memory Allocation Count: 2041224
+Heap Objects Count: 1495
 
 // receiver
-File transfer completed (fdtID=1): 79590/79590 chunks, duration=20.8884996s
-fdtID(1): bytes received=2607951637, duration=20.8884996s, throughput=998.81 Mbps
+File transfer completed (fdtID=1): 79590/79590 chunks, duration=14.8915486s
+fdtID(1): bytes received=2607841280, duration=14.8915486s, throughput=1400.98 Mbps
 
-Total Allocated Memory: 66895867632 bytes
-Peak Heap Memory: 2771680 bytes, 2 MB
-System Memory (Sys): 255 MB
-Heap Idle Memory: 239 MB
-Garbage Collection Count: 16515
-Memory Allocation Count: 15622947
-Heap Objects Count: 2297
+Total Allocated Memory: 66861540040 bytes
+Peak Heap Memory: 7269576 bytes, 6 MB
+System Memory (Sys): 138 MB
+Heap Idle Memory: 118 MB
+Garbage Collection Count: 13188
+Memory Allocation Count: 15615392
+Heap Objects Count: 3668
 ```
 
 2. RaptorQ
