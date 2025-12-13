@@ -276,6 +276,11 @@ func (p *ConnPool) CreateFileConn(fdtID uint8, numConn uint8, basePort int) ([]*
 }
 
 func (p *ConnPool) isHealthyConn(wsck *WinSocket) bool {
+	// Meta connection (FdtID 0) should not timeout
+	if wsck.FdtID == 0 {
+		return true
+	}
+
 	// 获取最后活动时间（取LastUsed和LastSent的较晚者）
 	lastUsed := atomic.LoadInt64(&wsck.LastUsed)
 	lastSentNano := atomic.LoadInt64(&wsck.LastSent)
@@ -289,6 +294,7 @@ func (p *ConnPool) isHealthyConn(wsck *WinSocket) bool {
 	}
 
 	if time.Since(lastAct) > constant.CONN_TIMEOUT*time.Second {
+		// log.Printf("Connection timeout: FdtID=%d, LastAct=%s, Timeout=%d", wsck.FdtID, lastAct.Format(time.RFC3339), constant.CONN_TIMEOUT)
 		wsck.IsHealthy = false
 	}
 
@@ -321,8 +327,8 @@ func (p *ConnPool) healthCheck() {
 						healthyWsck = append(healthyWsck, w)
 					} else {
 						w.Mu.Lock()
-						defer w.Mu.Unlock()
 						windows.Closesocket(w.Socket)
+						w.Mu.Unlock()
 						atomic.AddInt32(&stats.TotalConns, -1)
 						atomic.AddInt32(&stats.DestoryedConns, 1)
 						atomic.AddInt32(&stats.ActiveConns, -1)
@@ -435,6 +441,7 @@ func (p *ConnPool) CloseFileConn(fdtID uint8) error {
 		for _, w := range wscks {
 			w.Mu.Lock()
 			if w.IsHealthy {
+				// log.Printf("Closing file connection: FdtID=%d", fdtID)
 				w.IsHealthy = false
 				windows.Closesocket(w.Socket)
 				atomic.AddInt32(&stats.TotalConns, -1)
@@ -467,6 +474,7 @@ func (p *ConnPool) closeIdle(wsck *WinSocket) {
 	wsck.Mu.Lock()
 	defer wsck.Mu.Unlock()
 	if wsck.IsHealthy {
+		// log.Printf("Closing idle connection: FdtID=%d", wsck.FdtID)
 		wsck.IsHealthy = false
 		windows.Closesocket(wsck.Socket)
 		atomic.AddInt32(&stats.TotalConns, -1)
@@ -488,6 +496,10 @@ func (p *ConnPool) idleSenderMonitor() {
 		case <-ticker.C:
 			p.Conns.Range(func(key, value interface{}) bool {
 				wsck := value.(*WinSocket)
+				// Skip Meta connection
+				if wsck.FdtID == 0 {
+					return true
+				}
 				if atomic.LoadUint32(&wsck.SentData) == 0 {
 					return true
 				}

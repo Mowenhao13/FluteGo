@@ -334,10 +334,10 @@ func (r *Receiver) startWriterLoop() {
 				// 更新写入统计
 				atomic.AddInt64(&r.currWritten, int64(len(req.Data)))
 
-				// 每1000个分块记录一次日志
-				if req.ChunkIdx%1000 == 0 {
-					log.Printf("fdtID(%d) writer#%d: chunk %d 写入完成: %d bytes", req.FdtID, id, req.ChunkIdx, len(req.Data))
-				}
+				// // 每1000个分块记录一次日志
+				// if req.ChunkIdx%1000 == 0 {
+				// 	log.Printf("fdtID(%d) writer#%d: chunk %d 写入完成: %d bytes", req.FdtID, id, req.ChunkIdx, len(req.Data))
+				// }
 
 				// 回收写入请求对象
 				req.Data = nil

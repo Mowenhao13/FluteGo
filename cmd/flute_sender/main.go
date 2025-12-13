@@ -19,17 +19,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/schollz/progressbar/v3"
 	"golang.org/x/sys/windows"
+	"golang.org/x/time/rate"
 )
 
 var globalPool *pool.ConnPool
 var sendFileIndex uint32
 
 var (
-	sendFileDir        string
+	fPath              string
 	otiID              uint8
 	maxConcurrentSends uint8
 	destIP             string
+	transferringFiles  sync.Map // 用于存储当前正在传输的文件
 )
 
 func main() {
@@ -63,29 +66,71 @@ func main() {
 		fmt.Printf("Using default dest ip: %s\n", destIP)
 	}
 
-	// fmt.Println("Enter dest mac, example: 00:11:22:33:44:55")
-	// fmt.Scanln(&destMac)
-	// if destMac == "" {
-	// 	fmt.Println("获取接收方MAC地址失败")
-	// 	fmt.Println("按回车键退出...")
-	// 	fmt.Scanln()
-	// 	return
-	// }
-
-	exePath, err := os.Executable()
-	if err != nil {
-		fmt.Printf("获取可执行文件路径失败: %v\n", err)
-		fmt.Println("按回车键退出...")
-		fmt.Scanln()
-		return
+	fmt.Println("\nEnter directory containing files or single file path to send, example: cmd/send_files")
+	fmt.Scanln(&fPath)
+	if fPath == "" {
+		fPath = utils.SelectSendFileDir()
+		log.Printf("Using default send file directory: %s", fPath)
 	}
 
-	fmt.Println("\nEnter directory containing files to send, example: cmd/send_files")
-	fmt.Printf("Current base file: %s\n", exePath)
-	fmt.Scanln(&sendFileDir)
-	if sendFileDir == "" {
-		sendFileDir = utils.SelectSendFileDir()
-		log.Printf("Using default send file directory: %s", sendFileDir)
+	info, err := os.Stat(fPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Printf("Path does not exist: %s", fPath)
+			fmt.Println("按回车键退出...")
+			fmt.Scanln()
+			return
+		} else {
+			log.Printf("Failed to access path: %v", err)
+			fmt.Println("按回车键退出...")
+			fmt.Scanln()
+			return
+		}
+	}
+
+	var sendFileList []*os.File
+
+	if info.IsDir() {
+		log.Printf("Sending files from directory: %s", fPath)
+
+		files, err := os.ReadDir(fPath)
+		if err != nil {
+			log.Printf("Failed to read directory: %v", err)
+			fmt.Println("按回车键退出...")
+			fmt.Scanln()
+		}
+
+		utils.ListDir(fPath)
+
+		for _, file := range files {
+			if !file.IsDir() {
+				f, err := os.Open(fPath + file.Name())
+				if err != nil {
+					log.Printf("Failed to open file: %v", err)
+					fmt.Println("按回车键退出...")
+					fmt.Scanln()
+				}
+				defer f.Close()
+				sendFileList = append(sendFileList, f)
+			}
+		}
+
+		if len(sendFileList) == 0 {
+			log.Printf("No files found in %s", fPath)
+			fmt.Println("按回车键退出...")
+			fmt.Scanln()
+			return
+		}
+
+	} else {
+		log.Printf("Sending single file: %s", fPath)
+		f, err := os.Open(fPath)
+		if err != nil {
+			log.Printf("Failed to open file: %v", err)
+			fmt.Println("按回车键退出...")
+			fmt.Scanln()
+		}
+		sendFileList = append(sendFileList, f)
 	}
 
 	fmt.Println("Enter OTI ID (0: NoCode, 1: RaptorQ, 2: Reed-Solomon), default is 0")
@@ -102,40 +147,7 @@ func main() {
 		log.Printf("Invalid max concurrent sends %d, defaulting to 1", maxConcurrentSends)
 	}
 
-	// if err := utils.SetNetLink(destIP, destMac); err != nil {
-	// 	fmt.Printf("无法建立单向连接: %v", err)
-	// 	fmt.Println("按回车键退出...")
-	// 	fmt.Scanln()
-	// }
-
-	files, err := os.ReadDir(sendFileDir)
-	if err != nil {
-		log.Printf("Failed to read directory: %v", err)
-		fmt.Println("按回车键退出...")
-		fmt.Scanln()
-	}
-
 	fdtID := uint8(1)
-	var sendFileList []*os.File
-	for _, file := range files {
-		if !file.IsDir() {
-			f, err := os.Open(sendFileDir + file.Name())
-			if err != nil {
-				log.Printf("Failed to open file: %v", err)
-				fmt.Println("按回车键退出...")
-				fmt.Scanln()
-			}
-			defer f.Close()
-			sendFileList = append(sendFileList, f)
-		}
-	}
-
-	if len(sendFileList) == 0 {
-		log.Printf("No files found in %s", sendFileDir)
-		fmt.Println("按回车键退出...")
-		fmt.Scanln()
-		return
-	}
 
 	var o oti.Oti
 
@@ -176,6 +188,9 @@ func main() {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 1
 	}
+
+	// Create global rate limiter
+	limiter, _ := sender.CreateRateLimiter(constant.DefaultSendRateLimitMbps, 1500)
 
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
@@ -227,18 +242,42 @@ func main() {
 			metaPkt.CurrentFileIndex = uint16(atomic.AddUint32(&sendFileIndex, 1))
 			log.Printf("Initialized MetaPkt for file: %s, FdtID: %d", metaPkt.File.Name, metaPkt.File.FdtID)
 
+			// 记录正在传输的文件
+			transferringFiles.Store(fid, metaPkt.File.Name)
+			defer transferringFiles.Delete(fid)
+
+			// Create progress bar
+			bar := progressbar.NewOptions64(
+				int64(metaPkt.File.TransferLen),
+				progressbar.OptionSetDescription(fmt.Sprintf("[%s]", metaPkt.File.Name)),
+				progressbar.OptionSetWriter(os.Stderr),
+				progressbar.OptionShowBytes(true),
+				progressbar.OptionSetWidth(15),
+				progressbar.OptionThrottle(65*time.Millisecond),
+				progressbar.OptionShowCount(),
+				progressbar.OptionOnCompletion(func() {
+					fmt.Fprint(os.Stderr, "\n")
+				}),
+				progressbar.OptionSpinnerType(14),
+				progressbar.OptionFullWidth(),
+			)
+
 			metaPkt.ShowPktInfo()
-			if err := SendFile(metaPkt); err != nil {
+			if err := SendFile(metaPkt, limiter, bar); err != nil {
 				log.Printf("Failed to send file(fdtID: %d): %v", fid, err)
+				bar.Finish()
 				fmt.Println("按回车键退出...")
 				fmt.Scanln()
 				return
 			}
+			bar.Finish()
 		}(i, file, currFdtID, fileBasePort)
 
 	}
+
 	wg.Wait()
 
+	time.Sleep(500 * time.Millisecond)
 	fmt.Printf("All files have been processed.\n")
 
 	runtime.ReadMemStats(&memStatsEnd)
@@ -275,22 +314,19 @@ func main() {
 	fmt.Println("Exit program")
 }
 
-func portFromConn(wsck *pool.WinSocket) int {
-	if wsck.Addr != nil {
-		return wsck.Addr.Port
-	}
-	return constant.BASE_FILE_PORT
-}
-
 func sendData(wsck *pool.WinSocket, data []byte) error {
 	var wsaBuf windows.WSABuf
 	var byteSent uint32
 	wsaBuf.Len = uint32(len(data))
 	wsaBuf.Buf = &data[0]
-	return windows.WSASendTo(wsck.Socket, &wsaBuf, 1, &byteSent, wsck.Flags, wsck.To.ToAny, wsck.To.ToLen, nil, nil)
+	err := windows.WSASendTo(wsck.Socket, &wsaBuf, 1, &byteSent, wsck.Flags, wsck.To.ToAny, wsck.To.ToLen, nil, nil)
+	if err == nil {
+		wsck.MarkSent()
+	}
+	return err
 }
 
-func SendFile(mt *meta.MetaPkt) error {
+func SendFile(mt *meta.MetaPkt, limiter *rate.Limiter, bar *progressbar.ProgressBar) error {
 	metaConn, err := globalPool.GetMetaConn()
 	if err != nil {
 		return err
@@ -309,13 +345,26 @@ func SendFile(mt *meta.MetaPkt) error {
 
 	log.Printf("[SendFile] Metadata sent successfully")
 
-	log.Printf("Sender will be started after %d seconds\n", constant.StartSendWait)
-	time.Sleep(constant.StartSendWait * time.Second)
+	log.Printf("Sender will be started after %d seconds\n", constant.START_SEND_WAIT)
+	time.Sleep(constant.START_SEND_WAIT * time.Second)
 
-	sender, err := sender.InitSender(mt)
+	sender, err := sender.InitSender(mt, limiter)
 	if err != nil {
 		return fmt.Errorf("Failed to init sender: %v", err)
 	}
 
-	return sender.Start(context.Background())
+	if bar != nil {
+		// Update bar total with actual bytes to send (including overhead)
+		totalBytes := sender.GetTotalBytesToSend()
+		bar.ChangeMax64(totalBytes)
+		sender.SetProgressCallback(func(sent int64) {
+			bar.Set64(sent)
+		})
+	}
+
+	err = sender.Start(context.Background())
+	if err == nil && bar != nil {
+		bar.Finish()
+	}
+	return err
 }

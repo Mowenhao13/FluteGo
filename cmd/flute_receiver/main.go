@@ -13,6 +13,8 @@ import (
 	"runtime/pprof"
 	"syscall"
 	"time"
+
+	"github.com/schollz/progressbar/v3"
 )
 
 var (
@@ -90,6 +92,8 @@ func main() {
 		completedFiles := 0
 		totalFiles := -1
 
+		bars := make(map[uint8]*progressbar.ProgressBar)
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -101,9 +105,35 @@ func main() {
 						totalFiles = int(report.TotalFiles)
 						log.Printf("Session total files: %d", totalFiles)
 					}
+
+					bar, ok := bars[report.FdtID]
+					if !ok {
+						bar = progressbar.NewOptions64(
+							int64(report.TotalBytes),
+							progressbar.OptionSetDescription(fmt.Sprintf("[FdtID:%d]", report.FdtID)),
+							progressbar.OptionSetWriter(os.Stderr),
+							progressbar.OptionShowBytes(true),
+							progressbar.OptionSetWidth(15),
+							progressbar.OptionThrottle(65*time.Millisecond),
+							progressbar.OptionShowCount(),
+							progressbar.OptionOnCompletion(func() {
+								fmt.Fprint(os.Stderr, "\n")
+							}),
+							progressbar.OptionSpinnerType(14),
+							progressbar.OptionFullWidth(),
+						)
+						bars[report.FdtID] = bar
+					}
+					bar.Set64(int64(report.ReceivedBytes))
+
 				case 1: // Completed
 					completedFiles++
-					fmt.Printf("✅ File %d transfer COMPLETED. Total: %d bytes. Progress: %d/%d",
+					if bar, ok := bars[report.FdtID]; ok {
+						bar.Finish()
+						delete(bars, report.FdtID)
+					}
+
+					fmt.Printf("✅ File %d transfer COMPLETED. Total: %d bytes. Progress: %d/%d\n",
 						report.FdtID, report.TotalBytes, completedFiles, totalFiles)
 
 					if totalFiles > 0 && completedFiles >= totalFiles {
@@ -112,6 +142,10 @@ func main() {
 						return
 					}
 				case 2: // Error
+					if bar, ok := bars[report.FdtID]; ok {
+						bar.Finish()
+						delete(bars, report.FdtID)
+					}
 					fmt.Printf("❌ File %d transfer ERROR.\n", report.FdtID)
 				}
 			}

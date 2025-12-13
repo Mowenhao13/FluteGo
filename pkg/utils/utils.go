@@ -19,12 +19,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/edsrzf/mmap-go"
@@ -390,4 +392,38 @@ func CreateSocket(ip string, port int) (windows.Handle, error) {
 	}
 
 	return sock, nil
+}
+
+func ListDir(path string) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		log.Printf("Failed to read directory: %v", err)
+		return
+	}
+
+	fmt.Printf("\nDirectory listing for %s:\n", path)
+	fmt.Printf("%-12s %-12s %s\n", "Mode", "Size", "Name")
+	fmt.Println("----------------------------------------")
+
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		fmt.Printf("%-12s %-12d %s\n", info.Mode(), info.Size(), info.Name())
+	}
+	fmt.Println()
+}
+
+// func GetRateLimit() int {
+
+// }
+
+func GetTransferringFiles(transferringFiles sync.Map) []string {
+	var files []string
+	transferringFiles.Range(func(key, value interface{}) bool {
+		files = append(files, value.(string))
+		return true
+	})
+	return files
 }

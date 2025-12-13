@@ -25,7 +25,7 @@ const (
 	DefaultSendRateLimitMbps = 1400 // default send rate limit; 0 disables throttling
 	WindowsSize              = 30
 
-	StartSendWait = 3 // seconds to wait before starting to send data
+	START_SEND_WAIT = 1 // seconds to wait before starting to send data
 )
 
 // Arp param
@@ -84,5 +84,5 @@ const (
 	POOL_RECV = 1
 
 	META_BUF     = 1500
-	MTEA_TIMEOUT = 120 // in seconds
+	META_TIMEOUT = 120 // in seconds
 )

@@ -27,8 +27,6 @@ import (
 	"runtime"
 	"sync/atomic"
 
-	// "runtime"
-	// "strconv"
 	"sync"
 	"time"
 
@@ -72,6 +70,17 @@ type Sender struct {
 	rateLimiter          *rate.Limiter
 	rateLimitBytesPerSec int
 	sentChunkBytes       int64
+	onProgress           func(int64)
+}
+
+// SetProgressCallback 设置进度回调函数
+func (s *Sender) SetProgressCallback(cb func(int64)) {
+	s.onProgress = cb
+}
+
+// GetTotalSent 返回已发送的总字节数（线程安全）
+func (s *Sender) GetTotalSent() int64 {
+	return atomic.LoadInt64(&s.totalSent)
 }
 
 // initEncoderConfig 初始化编码器配置
@@ -103,7 +112,7 @@ func initEncoderConfig(mt *meta.MetaPkt) encoder.EncoderConfig {
 	// 基础文件信息
 	fileSize := mt.File.TransferLen
 	chunkSize := mt.Oti.MaximumChunkSize
-	log.Printf("OTI MaximumChunkSize: %d", chunkSize)
+	// log.Printf("OTI MaximumChunkSize: %d", chunkSize)
 	if chunkSize == 0 {
 		chunkSize = uint32(constant.DefaultChunkSize)
 	}
@@ -161,14 +170,14 @@ func initEncoderConfig(mt *meta.MetaPkt) encoder.EncoderConfig {
 // 路径解析：
 //
 //	尝试两种路径格式：直接文件路径和目录+文件名组合
-func InitSender(mt *meta.MetaPkt) (*Sender, error) {
+func InitSender(mt *meta.MetaPkt, limiter *rate.Limiter) (*Sender, error) {
 	inputFilePath := mt.File.SendPath
 	if _, err := os.Stat(inputFilePath); os.IsNotExist(err) {
 		inputFilePath = filepath.Join(mt.File.SendPath, mt.File.Name)
 	}
 
 	config := initEncoderConfig(mt)
-	return NewSender(inputFilePath, config, mt.File.FdtID, mt.TotalFiles)
+	return NewSender(inputFilePath, config, mt.File.FdtID, mt.TotalFiles, limiter)
 }
 
 // NewSender 创建新的发送端实例
@@ -182,6 +191,7 @@ func InitSender(mt *meta.MetaPkt) (*Sender, error) {
 //	config - 编码器配置参数
 //	fdtID - 文件数据传输标识符
 //	totalFiles - 总文件数（用于计算速率限制）
+//	limiter - 全局速率限制器（可选）
 //
 // 返回值：
 //
@@ -192,12 +202,12 @@ func InitSender(mt *meta.MetaPkt) (*Sender, error) {
 //  1. 打开并验证输入文件
 //  2. 调整分块大小为内存页对齐
 //  3. 创建指定类型的编码器
-//  4. 构建速率限制器
+//  4. 配置速率限制器
 //
 // 错误处理：
 //
 //	文件不存在、文件为空、分块大小无效等情况
-func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, totalFiles uint16) (*Sender, error) {
+func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, totalFiles uint16, limiter *rate.Limiter) (*Sender, error) {
 	// 打开输入文件
 	file, err := os.Open(inputFilePath)
 	if err != nil {
@@ -229,7 +239,7 @@ func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, 
 	config.Fd = int(file.Fd())
 	config.FName = inputFilePath
 
-	log.Printf("Sender initialized with ChunkSize: %d, FileSize: %d, ChunkCount: %d", config.ChunkSize, config.FileSize, (info.Size()+int64(chunkSize)-1)/int64(chunkSize))
+	// log.Printf("Sender initialized with ChunkSize: %d, FileSize: %d, ChunkCount: %d", config.ChunkSize, config.FileSize, (info.Size()+int64(chunkSize)-1)/int64(chunkSize))
 
 	// 创建编码器实例
 	enc, err := encoder.NewEncoder(config)
@@ -241,10 +251,22 @@ func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, 
 	// 计算总分块数
 	chunkCount := uint32((info.Size() + int64(chunkSize) - 1) / int64(chunkSize))
 
-	// 构建速率限制器
-	rateLimiter, rateBytesPerSec, rateMbps := buildRateLimiter(config.MaxPacketSize, totalFiles)
-	if rateLimiter != nil {
-		log.Printf("Send rate limit enabled: %.2f Mbps (~%d bytes/sec)", rateMbps, rateBytesPerSec)
+	// 配置速率限制器
+	var rateBytesPerSec int
+	if limiter != nil {
+		// 如果提供了全局限制器，使用它
+		rateBytesPerSec = int(limiter.Limit())
+	} else {
+		// 如果没有提供全局限制器，则创建独立的限制器
+		// 根据总文件数平分默认带宽
+		limitMbps := float64(constant.DefaultSendRateLimitMbps)
+		if totalFiles > 0 {
+			limitMbps /= float64(totalFiles)
+		}
+		limiter, rateBytesPerSec = CreateRateLimiter(limitMbps, int(config.MaxPacketSize))
+		if limiter != nil {
+			log.Printf("Created per-file rate limiter: %.2f Mbps", limitMbps)
+		}
 	}
 
 	// 创建发送端实例
@@ -257,50 +279,44 @@ func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, 
 		chunkCount:           chunkCount,
 		fd:                   int(file.Fd()),
 		startTime:            time.Now(),
-		rateLimiter:          rateLimiter,
+		rateLimiter:          limiter,
 		rateLimitBytesPerSec: rateBytesPerSec,
 		totalFiles:           totalFiles,
 	}
 	return sender, nil
 }
 
-// buildRateLimiter 构建速率限制器
+// CreateRateLimiter 创建全局速率限制器
 // 功能说明：
 //
-//	根据配置的最大包大小和总文件数计算发送速率限制
+//	根据配置的总带宽和最大包大小创建速率限制器
 //
 // 参数：
 //
+//	limitMbps - 总带宽限制 (Mbps)
 //	maxPacketSize - 最大数据包大小（字节）
-//	totalFiles - 总并发文件数
 //
 // 返回值：
 //
 //	*rate.Limiter - 速率限制器实例
 //	int - 每秒字节数限制
-//	float64 - Mbps速率限制
 //
 // 算法逻辑：
-//  1. 计算每个文件的平均速率
-//  2. 转换为每秒字节数
-//  3. 设置合适的突发大小
-//  4. 考虑包大小对突发大小的影响
-func buildRateLimiter(maxPacketSize, totalFiles uint16) (*rate.Limiter, int, float64) {
-	// 计算每个文件的速率限制
-	//TODO: change totalFiles to currSendingFiles
-	limitMbps := float64(constant.DefaultSendRateLimitMbps / totalFiles)
-
-	log.Printf("Configured send rate limit: %.2f Mbps", limitMbps)
+//  1. 转换为每秒字节数
+//  2. 设置合适的突发大小
+//  3. 考虑包大小对突发大小的影响
+func CreateRateLimiter(limitMbps float64, maxPacketSize int) (*rate.Limiter, int) {
+	log.Printf("Configured rate limit: %.2f Mbps", limitMbps)
 
 	// 检查是否需要速率限制
 	if limitMbps <= 0 {
-		return nil, 0, limitMbps
+		return nil, 0
 	}
 
 	// 转换为每秒字节数
 	bytesPerSec := int(limitMbps * 1_000_000 / 8)
 	if bytesPerSec <= 0 {
-		return nil, 0, limitMbps
+		return nil, 0
 	}
 
 	// 计算突发大小（桶容量）
@@ -320,7 +336,7 @@ func buildRateLimiter(maxPacketSize, totalFiles uint16) (*rate.Limiter, int, flo
 
 	// 创建令牌桶速率限制器
 	limiter := rate.NewLimiter(rate.Limit(float64(bytesPerSec)), burst)
-	return limiter, bytesPerSec, limitMbps
+	return limiter, bytesPerSec
 }
 
 type sendTask struct {
@@ -359,13 +375,13 @@ func (s *Sender) processSendTask(wsck *pool.WinSocket, bufPool *sync.Pool, task 
 	}
 
 	// 记录发送日志
-	if chunkIdx%5000 == 0 {
-		if s.config.DataShards > 0 && s.config.ParityShards > 0 {
-			log.Printf("Write symbol for shard %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, byteSent, len(buf)-8)
-		} else {
-			log.Printf("Write symbol for chunk %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, byteSent, len(buf)-8)
-		}
-	}
+	// if chunkIdx%5000 == 0 {
+	// 	if s.config.DataShards > 0 && s.config.ParityShards > 0 {
+	// 		log.Printf("Write symbol for shard %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, byteSent, len(buf)-8)
+	// 	} else {
+	// 		log.Printf("Write symbol for chunk %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, byteSent, len(buf)-8)
+	// 	}
+	// }
 
 	// 标记连接已使用
 	wsck.MarkSent()
@@ -373,14 +389,61 @@ func (s *Sender) processSendTask(wsck *pool.WinSocket, bufPool *sync.Pool, task 
 	// 标记发送开始（第一次成功写）
 	if atomic.CompareAndSwapInt32(&s.sendStarted, 0, 1) {
 		s.sendStart = time.Now()
-		log.Printf("fdtID(%d): send started at %s", s.fdtID, s.sendStart.Format(time.RFC3339Nano))
+		// log.Printf("fdtID(%d): send started at %s", s.fdtID, s.sendStart.Format(time.RFC3339Nano))
 	}
 	// 返还缓冲区到池中
 	bufPool.Put(buf[:cap(buf)])
 
 	// 更新统计信息
 	atomic.AddInt64(&s.totalPackets, 1)
-	atomic.AddInt64(&s.totalSent, int64(len(buf)))
+	sent := atomic.AddInt64(&s.totalSent, int64(len(buf)))
+	if s.onProgress != nil {
+		s.onProgress(sent)
+	}
+}
+
+// GetTotalBytesToSend 计算预计发送的总字节数（包含头部）
+func (s *Sender) GetTotalBytesToSend() int64 {
+	if s.config.Type == encoder.EncoderReedSolomon {
+		totalSymbols := int64(s.chunkCount) * int64(s.config.DataShards+s.config.ParityShards)
+		return totalSymbols * int64(s.config.SymbolSize+8)
+	}
+
+	// For NoCode and RaptorQ
+	symSize := int64(s.config.SymbolSize)
+	if symSize == 0 {
+		symSize = 1
+	}
+
+	chunkSize := int64(s.config.ChunkSize)
+	fileSize := int64(s.fileSize)
+
+	// Calculate full chunks
+	fullChunks := fileSize / chunkSize
+	lastChunkSize := fileSize % chunkSize
+
+	var totalBytes int64
+
+	// Helper to calculate bytes for a chunk of given size
+	calcChunkBytes := func(size int64) int64 {
+		symbols := (size + symSize - 1) / symSize
+		if s.config.Type == encoder.EncoderRaptorQ {
+			symbols = int64(float64(symbols) * s.config.RedundancyRatio)
+			// RaptorQ typically sends full symbols
+			return symbols * int64(symSize+8)
+		}
+		// NoCode: payload is exactly size, plus headers
+		return size + (symbols * 8)
+	}
+
+	if fullChunks > 0 {
+		totalBytes += fullChunks * calcChunkBytes(chunkSize)
+	}
+	if lastChunkSize > 0 {
+		totalBytes += calcChunkBytes(lastChunkSize)
+	}
+
+	return totalBytes
 }
 
 // Start 启动数据传输
@@ -431,22 +494,11 @@ func (s *Sender) Start(ctx context.Context) error {
 	conn := conns[0]
 
 	// Calculate and log total symbols
-	var totalSymbols int64
-	if s.config.Type == encoder.EncoderReedSolomon {
-		totalSymbols = int64(s.chunkCount) * int64(s.config.DataShards+s.config.ParityShards)
-	} else {
-		// For RaptorQ and NoCode
-		symSize := int64(s.config.SymbolSize)
-		if symSize == 0 {
-			symSize = 1
-		}
-		symbolsPerChunk := (int64(s.config.ChunkSize) + symSize - 1) / symSize
-		if s.config.Type == encoder.EncoderRaptorQ {
-			symbolsPerChunk = int64(float64(symbolsPerChunk) * s.config.RedundancyRatio)
-		}
-		totalSymbols = int64(s.chunkCount) * symbolsPerChunk
-	}
-	log.Printf("fdtID(%d): Total symbols to send: %d", s.fdtID, totalSymbols)
+	// Use helper method but keep logging
+	// totalBytes := s.GetTotalBytesToSend()
+	// Approximate total symbols for logging (ignoring header size in division)
+	// totalSymbols := totalBytes / int64(s.config.SymbolSize+8)
+	// log.Printf("fdtID(%d): Total symbols to send: %d, Total bytes: %d", s.fdtID, totalSymbols, totalBytes)
 
 	// 初始化缓冲区池
 	bufPool := &sync.Pool{
@@ -537,24 +589,24 @@ func (s *Sender) Start(ctx context.Context) error {
 	wgSender.Wait()
 
 	// 标记发送结束并记录时间（如果曾经开始过）
-	if atomic.LoadInt32(&s.sendStarted) == 1 {
-		s.sendEnd = time.Now()
-		dur := s.sendEnd.Sub(s.sendStart)
-		totalBytes := atomic.LoadInt64(&s.totalSent)
-		mbps := 0.0
-		if dur.Seconds() > 0 {
-			mbps = (float64(totalBytes) * 8.0 / dur.Seconds()) / 1e6
-		}
-		log.Printf("fdtID(%d): send finished at %s, duration=%s", s.fdtID, s.sendEnd.Format(time.RFC3339Nano), dur.String())
-		log.Printf("fdtID(%d): bytes sent=%d, duration=%s, throughput=%.2f Mbps", s.fdtID, totalBytes, dur.String(), mbps)
-		log.Printf("fdtID(%d): total chunks sent=%d", s.fdtID, s.chunkCount)
+	// if atomic.LoadInt32(&s.sendStarted) == 1 {
+	// 	s.sendEnd = time.Now()
+	// 	dur := s.sendEnd.Sub(s.sendStart)
+	// 	totalBytes := atomic.LoadInt64(&s.totalSent)
+	// 	mbps := 0.0
+	// 	if dur.Seconds() > 0 {
+	// 		mbps = (float64(totalBytes) * 8.0 / dur.Seconds()) / 1e6
+	// 	}
+	// 	log.Printf("fdtID(%d): send finished at %s, duration=%s", s.fdtID, s.sendEnd.Format(time.RFC3339Nano), dur.String())
+	// 	log.Printf("fdtID(%d): bytes sent=%d, duration=%s, throughput=%.2f Mbps", s.fdtID, totalBytes, dur.String(), mbps)
+	// 	log.Printf("fdtID(%d): total chunks sent=%d", s.fdtID, s.chunkCount)
 
-		// 计算有效传输速率 (Goodput)
-		goodput := 0.0
-		if dur.Seconds() > 0 {
-			goodput = (float64(s.fileSize) * 8.0 / dur.Seconds()) / 1e6
-		}
-		log.Printf("fdtID(%d): file size=%d, effective rate (goodput)=%.2f Mbps", s.fdtID, s.fileSize, goodput)
-	}
+	// 	// 计算有效传输速率 (Goodput)
+	// 	goodput := 0.0
+	// 	if dur.Seconds() > 0 {
+	// 		goodput = (float64(s.fileSize) * 8.0 / dur.Seconds()) / 1e6
+	// 	}
+	// 	log.Printf("fdtID(%d): file size=%d, effective rate (goodput)=%.2f Mbps", s.fdtID, s.fileSize, goodput)
+	// }
 	return err
 }

@@ -367,7 +367,7 @@ func (s *ReceiverSystem) StartMetaProgram() {
 		fromLen := s.metaConn.FromLen
 		flags := s.metaConn.Flags
 		// 设置接收超时
-		windows.SetsockoptInt(s.metaConn.Socket, windows.SOL_SOCKET, windows.SO_RCVTIMEO, constant.MTEA_TIMEOUT)
+		windows.SetsockoptInt(s.metaConn.Socket, windows.SOL_SOCKET, windows.SO_RCVTIMEO, constant.META_TIMEOUT)
 
 		// 主接收循环
 		for {
