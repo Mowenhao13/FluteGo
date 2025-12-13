@@ -389,6 +389,7 @@ func (p *ConnPool) GetFileConn(fdtID uint8) (uint16, []*WinSocket, error) {
 		var healthyWscks []*WinSocket
 		for _, w := range wscks {
 			if p.isHealthyConn(w) {
+				w.MarkSent() // Mark as active to prevent idle timeout
 				healthyWscks = append(healthyWscks, w)
 			} else {
 				w.Mu.Lock()
@@ -451,6 +452,12 @@ func (p *ConnPool) CloseFileConn(fdtID uint8) error {
 				}
 			}
 			w.Mu.Unlock()
+
+			// Remove from Conns map to prevent handle reuse issues
+			if w.Addr != nil {
+				key := fmt.Sprintf("%s:%d", w.Addr.IP.String(), w.Addr.Port)
+				p.Conns.Delete(key)
+			}
 		}
 		p.FileConns.Delete(fdtID)
 	}
