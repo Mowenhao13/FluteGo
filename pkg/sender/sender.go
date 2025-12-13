@@ -20,11 +20,13 @@ import (
 	pool "FluteGo/pkg/pool"
 	"context"
 	"encoding/binary"
+	"encoding/csv"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync/atomic"
 
 	"sync"
@@ -71,6 +73,7 @@ type Sender struct {
 	rateLimitBytesPerSec int
 	sentChunkBytes       int64
 	onProgress           func(int64)
+	MaxConcurrentSends   int
 }
 
 // SetProgressCallback 设置进度回调函数
@@ -156,14 +159,14 @@ func initEncoderConfig(mt *meta.MetaPkt) encoder.EncoderConfig {
 // 路径解析：
 //
 //	尝试两种路径格式：直接文件路径和目录+文件名组合
-func InitSender(mt *meta.MetaPkt, limiter *rate.Limiter) (*Sender, error) {
+func InitSender(mt *meta.MetaPkt, limiter *rate.Limiter, maxConcurrentSends int) (*Sender, error) {
 	inputFilePath := mt.File.SendPath
 	if _, err := os.Stat(inputFilePath); os.IsNotExist(err) {
 		inputFilePath = filepath.Join(mt.File.SendPath, mt.File.Name)
 	}
 
 	config := initEncoderConfig(mt)
-	return NewSender(inputFilePath, config, mt.File.FdtID, mt.TotalFiles, limiter)
+	return NewSender(inputFilePath, config, mt.File.FdtID, mt.TotalFiles, limiter, maxConcurrentSends)
 }
 
 // NewSender 创建新的发送端实例
@@ -193,7 +196,7 @@ func InitSender(mt *meta.MetaPkt, limiter *rate.Limiter) (*Sender, error) {
 // 错误处理：
 //
 //	文件不存在、文件为空、分块大小无效等情况
-func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, totalFiles uint16, limiter *rate.Limiter) (*Sender, error) {
+func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, totalFiles uint16, limiter *rate.Limiter, maxConcurrentSends int) (*Sender, error) {
 	// 打开输入文件
 	file, err := os.Open(inputFilePath)
 	if err != nil {
@@ -268,6 +271,7 @@ func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, 
 		rateLimiter:          limiter,
 		rateLimitBytesPerSec: rateBytesPerSec,
 		totalFiles:           totalFiles,
+		MaxConcurrentSends:   maxConcurrentSends,
 	}
 	return sender, nil
 }
@@ -458,6 +462,9 @@ func (s *Sender) GetTotalBytesToSend() int64 {
 //   - 连接池：复用网络连接
 //   - 缓冲区池：减少内存分配开销
 func (s *Sender) Start(ctx context.Context) error {
+	var memStatsStart runtime.MemStats
+	runtime.ReadMemStats(&memStatsStart)
+
 	// 获取全局连接池
 	p := pool.GetConnPool()
 	if p == nil {
@@ -476,8 +483,24 @@ func (s *Sender) Start(ctx context.Context) error {
 	}
 
 	// 使用第一个连接（简化实现，实际可轮询）
-	//TODO: Add multi connections support
 	conn := conns[0]
+
+	// 启动保活协程，防止在准备阶段或发送间隙连接被回收
+	// 特别是对于第二个文件，连接可能已经处于空闲监控状态
+	keepAliveStop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-keepAliveStop:
+				return
+			case <-ticker.C:
+				conn.MarkSent()
+			}
+		}
+	}()
+	defer close(keepAliveStop)
 
 	// Calculate and log total symbols
 	// Use helper method but keep logging
@@ -575,24 +598,83 @@ func (s *Sender) Start(ctx context.Context) error {
 	wgSender.Wait()
 
 	// 标记发送结束并记录时间（如果曾经开始过）
-	// if atomic.LoadInt32(&s.sendStarted) == 1 {
-	// 	s.sendEnd = time.Now()
-	// 	dur := s.sendEnd.Sub(s.sendStart)
-	// 	totalBytes := atomic.LoadInt64(&s.totalSent)
-	// 	mbps := 0.0
-	// 	if dur.Seconds() > 0 {
-	// 		mbps = (float64(totalBytes) * 8.0 / dur.Seconds()) / 1e6
-	// 	}
-	// 	log.Printf("fdtID(%d): send finished at %s, duration=%s", s.fdtID, s.sendEnd.Format(time.RFC3339Nano), dur.String())
-	// 	log.Printf("fdtID(%d): bytes sent=%d, duration=%s, throughput=%.2f Mbps", s.fdtID, totalBytes, dur.String(), mbps)
-	// 	log.Printf("fdtID(%d): total chunks sent=%d", s.fdtID, s.chunkCount)
+	if atomic.LoadInt32(&s.sendStarted) == 1 {
+		s.sendEnd = time.Now()
+		dur := s.sendEnd.Sub(s.sendStart)
+		totalBytes := atomic.LoadInt64(&s.totalSent)
 
-	// 	// 计算有效传输速率 (Goodput)
-	// 	goodput := 0.0
-	// 	if dur.Seconds() > 0 {
-	// 		goodput = (float64(s.fileSize) * 8.0 / dur.Seconds()) / 1e6
-	// 	}
-	// 	log.Printf("fdtID(%d): file size=%d, effective rate (goodput)=%.2f Mbps", s.fdtID, s.fileSize, goodput)
-	// }
+		seconds := dur.Seconds()
+		if seconds <= 0 {
+			seconds = 0.000001 // 防止除以零，对于极小文件假设1微秒
+		}
+
+		mbps := (float64(totalBytes) * 8.0 / seconds) / 1e6
+
+		log.Printf("fdtID(%d): send finished at %s, duration=%s", s.fdtID, s.sendEnd.Format(time.RFC3339Nano), dur.String())
+		log.Printf("fdtID(%d): bytes sent=%d, duration=%s, throughput=%.4f Mbps", s.fdtID, totalBytes, dur.String(), mbps)
+		log.Printf("fdtID(%d): total chunks sent=%d", s.fdtID, s.chunkCount)
+
+		// 计算有效传输速率 (Goodput)
+		goodput := (float64(s.fileSize) * 8.0 / seconds) / 1e6
+
+		log.Printf("fdtID(%d): file size=%d, effective rate (goodput)=%.4f Mbps", s.fdtID, s.fileSize, goodput)
+
+		// Memory Profile
+		var memStatsEnd runtime.MemStats
+		runtime.ReadMemStats(&memStatsEnd)
+		// fmt.Printf("=== Memory Profile Results for Current Send Session ===\n")
+		// fmt.Printf("Total Allocated Memory: %v bytes\n", memStatsEnd.TotalAlloc-memStatsStart.TotalAlloc)
+		// fmt.Printf("Peak Heap Memory: %v bytes, %v MB\n", memStatsEnd.HeapAlloc, memStatsEnd.HeapAlloc/(1024*1024))
+		// fmt.Printf("System Memory (Sys): %d MB\n", memStatsEnd.Sys/(1024*1024))
+		// fmt.Printf("Heap Idle Memory: %d MB\n", memStatsEnd.HeapIdle/(1024*1024))
+		// fmt.Printf("Garbage Collection Count: %v\n", memStatsEnd.NumGC-memStatsStart.NumGC)
+		// fmt.Printf("Memory Allocation Count: %v\n", memStatsEnd.Mallocs-memStatsStart.Mallocs)
+		// fmt.Printf("Heap Objects Count: %v\n", memStatsEnd.HeapObjects)
+
+		// Write to CSV
+		csvFile, err := os.OpenFile("sender_performance.csv", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err == nil {
+			defer csvFile.Close()
+			writer := csv.NewWriter(csvFile)
+			defer writer.Flush()
+
+			// Check if file is empty to write header
+			stat, _ := csvFile.Stat()
+			if stat.Size() == 0 {
+				writer.Write([]string{"Timestamp", "FdtID", "FileSize", "Duration(s)", "Throughput(Mbps)", "Goodput(Mbps)", "TotalAlloc(Bytes)", "PeakHeap(Bytes)", "SysMem(MB)", "HeapIdle(MB)", "GCCount", "Mallocs", "HeapObjects", "FEC_Type", "RateLimit(Mbps)", "MaxConcurrent"})
+			}
+
+			fecType := "Unknown"
+			switch s.config.Type {
+			case encoder.EncoderNoCode:
+				fecType = "NoCode"
+			case encoder.EncoderRaptorQ:
+				fecType = "RaptorQ"
+			case encoder.EncoderReedSolomon:
+				fecType = "ReedSolomon"
+			}
+
+			writer.Write([]string{
+				time.Now().Format(time.RFC3339),
+				strconv.Itoa(int(s.fdtID)),
+				strconv.FormatInt(s.fileSize, 10),
+				fmt.Sprintf("%.6f", dur.Seconds()),
+				fmt.Sprintf("%.6f", mbps),
+				fmt.Sprintf("%.6f", goodput),
+				strconv.FormatUint(memStatsEnd.TotalAlloc-memStatsStart.TotalAlloc, 10),
+				strconv.FormatUint(memStatsEnd.HeapAlloc, 10),
+				strconv.FormatUint(memStatsEnd.Sys/(1024*1024), 10),
+				strconv.FormatUint(memStatsEnd.HeapIdle/(1024*1024), 10),
+				strconv.FormatUint(uint64(memStatsEnd.NumGC-memStatsStart.NumGC), 10),
+				strconv.FormatUint(memStatsEnd.Mallocs-memStatsStart.Mallocs, 10),
+				strconv.FormatUint(memStatsEnd.HeapObjects, 10),
+				fecType,
+				fmt.Sprintf("%d", constant.DefaultSendRateLimitMbps),
+				strconv.Itoa(s.MaxConcurrentSends),
+			})
+		} else {
+			log.Printf("Failed to open sender_performance.csv: %v", err)
+		}
+	}
 	return err
 }

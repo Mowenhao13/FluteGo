@@ -14,12 +14,14 @@ import (
 	"FluteGo/pkg/pool"
 	"context"
 	"encoding/binary"
+	"encoding/csv"
 	stdErrors "errors"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"runtime"
+	"strconv"
 	"unsafe"
 
 	"sync"
@@ -125,6 +127,7 @@ type Receiver struct {
 	receiveStarted int32
 	receiveStart   time.Time
 	receiveEnd     time.Time
+	memStatsStart  runtime.MemStats
 }
 
 // WriteRequest 写入请求结构
@@ -412,12 +415,69 @@ func (r *Receiver) OnDecodedData(data []byte, offset int64, chunkIdx uint32) err
 				r.receiveEnd = time.Now()
 				dur := r.receiveEnd.Sub(r.receiveStart)
 				bytesWritten := atomic.LoadInt64(&r.currWritten)
-				mbps := 0.0
-				if dur.Seconds() > 0 {
-					mbps = (float64(bytesWritten) * 8.0 / dur.Seconds()) / 1e6
+
+				seconds := dur.Seconds()
+				if seconds <= 0 {
+					seconds = 0.000001 // 防止除以零
 				}
+				mbps := (float64(bytesWritten) * 8.0 / seconds) / 1e6
+
 				fmt.Printf("File transfer completed (fdtID=%d): %d/%d chunks, duration=%s\n", r.fdtID, finished, r.expectedChunks, dur.String())
-				fmt.Printf("fdtID(%d): bytes received=%d, duration=%s, throughput=%.2f Mbps\n", r.fdtID, bytesWritten, dur.String(), mbps)
+				fmt.Printf("fdtID(%d): bytes received=%d, duration=%s, throughput=%.4f Mbps\n", r.fdtID, bytesWritten, dur.String(), mbps)
+
+				// Memory Profile
+				var memStatsEnd runtime.MemStats
+				runtime.ReadMemStats(&memStatsEnd)
+				fmt.Printf("=== Memory Profile Results for Current Receive Session ===\n")
+				fmt.Printf("Total Allocated Memory: %v bytes\n", memStatsEnd.TotalAlloc-r.memStatsStart.TotalAlloc)
+				fmt.Printf("Peak Heap Memory: %v bytes, %v MB\n", memStatsEnd.HeapAlloc, memStatsEnd.HeapAlloc/(1024*1024))
+				fmt.Printf("System Memory (Sys): %d MB\n", memStatsEnd.Sys/(1024*1024))
+				fmt.Printf("Heap Idle Memory: %d MB\n", memStatsEnd.HeapIdle/(1024*1024))
+				fmt.Printf("Garbage Collection Count: %v\n", memStatsEnd.NumGC-r.memStatsStart.NumGC)
+				fmt.Printf("Memory Allocation Count: %v\n", memStatsEnd.Mallocs-r.memStatsStart.Mallocs)
+				fmt.Printf("Heap Objects Count: %v\n", memStatsEnd.HeapObjects)
+
+				// Write to CSV
+				csvFile, err := os.OpenFile("receiver_performance.csv", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				if err == nil {
+					defer csvFile.Close()
+					writer := csv.NewWriter(csvFile)
+					defer writer.Flush()
+
+					// Check if file is empty to write header
+					stat, _ := csvFile.Stat()
+					if stat.Size() == 0 {
+						writer.Write([]string{"Timestamp", "FdtID", "BytesReceived", "Duration(s)", "Throughput(Mbps)", "TotalAlloc(Bytes)", "PeakHeap(Bytes)", "SysMem(MB)", "HeapIdle(MB)", "GCCount", "Mallocs", "HeapObjects", "FEC_Type"})
+					}
+
+					fecType := "Unknown"
+					switch r.config.Type {
+					case decoder.DecoderNoCode:
+						fecType = "NoCode"
+					case decoder.DecoderRaptorQ:
+						fecType = "RaptorQ"
+					case decoder.DecoderReedSolomon:
+						fecType = "ReedSolomon"
+					}
+
+					writer.Write([]string{
+						time.Now().Format(time.RFC3339),
+						strconv.Itoa(int(r.fdtID)),
+						strconv.FormatInt(bytesWritten, 10),
+						fmt.Sprintf("%.6f", dur.Seconds()),
+						fmt.Sprintf("%.6f", mbps),
+						strconv.FormatUint(memStatsEnd.TotalAlloc-r.memStatsStart.TotalAlloc, 10),
+						strconv.FormatUint(memStatsEnd.HeapAlloc, 10),
+						strconv.FormatUint(memStatsEnd.Sys/(1024*1024), 10),
+						strconv.FormatUint(memStatsEnd.HeapIdle/(1024*1024), 10),
+						strconv.FormatUint(uint64(memStatsEnd.NumGC-r.memStatsStart.NumGC), 10),
+						strconv.FormatUint(memStatsEnd.Mallocs-r.memStatsStart.Mallocs, 10),
+						strconv.FormatUint(memStatsEnd.HeapObjects, 10),
+						fecType,
+					})
+				} else {
+					log.Printf("Failed to open receiver_performance.csv: %v", err)
+				}
 			} else {
 				fmt.Printf("File transfer completed (fdtID=%d): %d/%d chunks\n", r.fdtID, finished, r.expectedChunks)
 			}
@@ -512,6 +572,8 @@ func (r *Receiver) ShowBasicInfo() {
 //   - 使用等待组同步所有协程
 //   - 错误传播和上下文取消链
 func (r *Receiver) Start(ctx context.Context) error {
+	runtime.ReadMemStats(&r.memStatsStart)
+
 	// 获取全局连接池
 	p := pool.GetConnPool()
 	if p == nil {
@@ -631,6 +693,12 @@ func (r *Receiver) readLoop(ctx context.Context, wsck *pool.WinSocket) error {
 	// 启动工作协程
 	errCh := make(chan error, workerCount)
 	var wg sync.WaitGroup
+
+	// 设置接收超时，以便在上下文取消时能够退出阻塞的读取
+	// 设置为 2 秒
+	timeout := int(2000)
+	windows.SetsockoptInt(wsck.Socket, windows.SOL_SOCKET, windows.SO_RCVTIMEO, timeout)
+
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {
@@ -649,6 +717,8 @@ func (r *Receiver) readLoop(ctx context.Context, wsck *pool.WinSocket) error {
 
 	// 清理工作协程
 	workerCancel()
+	// 等待所有工作协程退出，防止向已关闭的通道发送数据
+	wg.Wait()
 	return err
 }
 
@@ -714,12 +784,7 @@ func (r *Receiver) readWorker(ctx context.Context, wsck *pool.WinSocket, bufPool
 			bufPool.Put(buf)
 			// 检查是否是超时 (WSAETIMEDOUT = 10060)
 			if err == windows.WSAETIMEDOUT {
-				// 接收超时，记录当前状态
-				currWritten := int(atomic.LoadInt64(&r.currWritten))
-				log.Printf("接收超时，已接收: %d MB, 待写入: %d MB, 丢包: %d",
-					currWritten/(1024*1024),
-					(r.totalReceived-int64(currWritten))/(1024*1024),
-					r.totalDropped)
+				// 接收超时是预期的（用于检查退出信号），不打印日志以免刷屏
 				continue
 			}
 			// 检查是否是WSAEWOULDBLOCK (10035)
