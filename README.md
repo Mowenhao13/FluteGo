@@ -37,7 +37,7 @@ sequenceDiagram
     FR->>FR: Data Receiving Completed<br/>Close Port
 ```
 
-## Initialization
+<!-- ## Initialization
 ### Network interface configuration (Linux)
 #### Receiver
 ```zsh
@@ -72,7 +72,7 @@ sudo sysctl -w net.core.rmem_max=134217728  # Set maximum receive buffer to 128 
 sudo sysctl -w net.core.rmem_default=134217728  # Set default receive buffer to 128 MB
 sudo sysctl -w net.core.wmem_max=134217728
 sudo sysctl -w net.core.netdev_max_backlog=65535
-```
+``` -->
 ## Use
 1. Start receiver first
 
