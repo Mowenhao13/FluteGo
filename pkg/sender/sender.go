@@ -119,20 +119,6 @@ func initEncoderConfig(mt *meta.MetaPkt) encoder.EncoderConfig {
 	// 符号大小处理
 	symbolSize := mt.Oti.SymbolSize
 
-	// 对于Reed-Solomon编码，期望一个包/符号大小（例如MTU大小）
-	// 一些OTI构造函数将SymbolSize=1作为占位符；优先使用mt.MaxPacketSize或constant.MaxPacketSize
-	if encoderType == 2 { // Reed-Solomon
-		if mt.MaxPacketSize > 0 {
-			symbolSize = uint16(mt.MaxPacketSize)
-		} else if symbolSize <= 1 {
-			symbolSize = uint16(constant.MAX_PACKET_SIZE)
-		}
-	} else {
-		if symbolSize == 0 {
-			symbolSize = uint16(constant.MAX_PACKET_SIZE)
-		}
-	}
-
 	// 前向纠错参数
 	dataShards := mt.Oti.DataShards                 // Reed-Solomon
 	parityShards := mt.Oti.ParityShards             // Reed-Solomon

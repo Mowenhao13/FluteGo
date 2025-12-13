@@ -2,7 +2,7 @@ package constant
 
 // UDP Param
 const (
-	MAX_PACKET_SIZE = 1400
+	MAX_PACKET_SIZE = 1408
 	BASE_FILE_PORT  = 3400
 	NUM_PORTS       = 1
 )
