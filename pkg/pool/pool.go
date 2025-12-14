@@ -115,6 +115,14 @@ func (p *ConnPool) createNewConn(ip string, port int) (*WinSocket, error) {
 		return nil, err
 	}
 
+	// 设置接收缓冲区为 100MB，防止高吞吐下丢包
+	// 2Gbps = 250MB/s，100MB 可以缓冲约 400ms 的数据
+	const RCVBUF_SIZE = 100 * 1024 * 1024
+	if err := windows.SetsockoptInt(sck, windows.SOL_SOCKET, windows.SO_RCVBUF, RCVBUF_SIZE); err != nil {
+		// 如果设置失败，尝试设置一个较小的值 (e.g. 10MB)
+		windows.SetsockoptInt(sck, windows.SOL_SOCKET, windows.SO_RCVBUF, 10*1024*1024)
+	}
+
 	if p.Mode == constant.POOL_SEND {
 		windows.Shutdown(sck, windows.SHUT_RD)
 	}

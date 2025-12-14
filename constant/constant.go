@@ -22,7 +22,7 @@ const (
 	SendFileDir_win          = "cmd\\send_files\\"
 	SaveFileDir_win          = "cmd\\received_files\\"
 	SendRedundancyRatio      = 1.05
-	DefaultSendRateLimitMbps = 1400 // default send rate limit; 0 disables throttling
+	DefaultSendRateLimitMbps = 2900 // default send rate limit; 0 disables throttling
 	WindowsSize              = 30
 
 	START_SEND_WAIT = 1 // seconds to wait before starting to send data
