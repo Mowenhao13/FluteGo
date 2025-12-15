@@ -343,11 +343,8 @@ func (s *Sender) processSendTask(wsck *pool.WinSocket, bufPool *sync.Pool, task 
 
 	// 构建序列号
 	var seqNum uint64
-	if s.config.DataShards > 0 && s.config.ParityShards > 0 {
-		seqNum = (uint64(chunkIdx) << 32) | uint64(symbolID)
-	} else {
-		seqNum = uint64(chunkIdx)*uint64(s.config.ChunkSize) + uint64(symbolID)
-	}
+	seqNum = (uint64(chunkIdx) << 32) | uint64(symbolID)
+
 	binary.BigEndian.PutUint64(buf[:8], seqNum)
 
 	var wsaBuf windows.WSABuf

@@ -10,6 +10,7 @@ package receiver
 import (
 	constant "FluteGo/constant"
 	"FluteGo/pkg/decoder"
+	"FluteGo/pkg/iocp"
 	"FluteGo/pkg/meta"
 	"FluteGo/pkg/pool"
 	"context"
@@ -22,13 +23,10 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"unsafe"
 
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"golang.org/x/sys/windows"
 )
 
 // Report 定义进度报告结构
@@ -630,227 +628,126 @@ func (r *Receiver) Start(ctx context.Context) error {
 // readLoop 连接接收循环
 // 功能说明：
 //
-//	管理单个UDP连接的数据接收，包括工作协程启动和错误处理
-//
-// 参数：
-//
-//	ctx  - 连接级上下文
-//	conn - UDP连接包装器
-//
-// 返回值：
-//
-//	error - 接收过程中的错误
-//
-// 工作模式：
-//  1. 初始化缓冲区池
-//  2. 启动多个接收工作协程
-//  3. 监听完成信号
-//  4. 清理工作协程
+//	管理单个UDP连接的数据接收，使用 IOCP 模型
 func (r *Receiver) readLoop(ctx context.Context, wsck *pool.WinSocket) error {
-	// 初始化缓冲区池
-	bufPool := &sync.Pool{
-		New: func() interface{} {
-			return make([]byte, r.config.MaxPacketSize*10)
-		},
+	// 使用 IOCP Server
+	// 缓冲区大小设为 MaxPacketSize
+	// Worker 数量设为 0 (自动，通常为 CPU 核心数)
+	// 队列大小设为 16384，提供足够的缓冲
+	server, err := iocp.NewIOCPServer(wsck.Socket, int(r.config.MaxPacketSize), 0, 16384)
+	if err != nil {
+		return fmt.Errorf("failed to create IOCP server: %v", err)
 	}
 
-	// 设置工作协程数量
-	// 在高吞吐场景下（如 2Gbps），需要更多的 worker 来及时消费 UDP 缓冲区
-	workerCount := runtime.NumCPU() * 40
-	if workerCount < 32 {
-		workerCount = 32
+	// 预投递接收请求，数量越多越能抗突发
+	if err := server.PostReceives(10240); err != nil {
+		return fmt.Errorf("failed to post receives: %v", err)
 	}
 
-	log.Printf("Starting %d read workers for connection\n", workerCount)
+	server.Start()
+	defer server.Stop()
 
-	// 创建工作级上下文
-	workerCtx, workerCancel := context.WithCancel(ctx)
-	defer workerCancel()
+	// 启动消费者协程处理数据
+	// 消费者负责解码，计算量大，但过多会导致上下文切换开销
+	consumerCount := runtime.NumCPU() * 2
+	if consumerCount < 4 {
+		consumerCount = 4
+	}
 
-	// 启动工作协程
-	errCh := make(chan error, workerCount)
+	log.Printf("Starting %d consumers for connection", consumerCount)
+
 	var wg sync.WaitGroup
-
-	// 设置接收超时，以便在上下文取消时能够退出阻塞的读取
-	// 设置为 2 秒
-	timeout := int(2000)
-	windows.SetsockoptInt(wsck.Socket, windows.SOL_SOCKET, windows.SO_RCVTIMEO, timeout)
-
-	for i := 0; i < workerCount; i++ {
+	for i := 0; i < consumerCount; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r.readWorker(workerCtx, wsck, bufPool, errCh)
+			r.consumeLoop(ctx, server, wsck)
 		}()
 	}
 
-	// 等待错误或取消
-	var err error
-	select {
-	case <-ctx.Done():
-		err = ctx.Err()
-	case err = <-errCh:
-	}
+	// 等待上下文取消
+	<-ctx.Done()
 
-	// 清理工作协程
-	workerCancel()
-	// 等待所有工作协程退出，防止向已关闭的通道发送数据
+	// 等待消费者退出
 	wg.Wait()
-	return err
+
+	return ctx.Err()
 }
 
-// readWorker 接收工作协程
+// consumeLoop 消费者循环
 // 功能说明：
 //
-//	从UDP连接读取数据，解析数据包，提交给解码器处理
-//
-// 参数：
-//
-//	ctx     - 工作协程上下文
-//	wsck    - UDP连接
-//	bufPool - 缓冲区池
-//	errCh   - 错误通道
-//
-// 核心流程：
-//  1. 从缓冲区池获取缓冲区
-//  2. 读取UDP数据报
-//  3. 解析数据包头部
-//  4. 根据解码器类型处理数据
-//  5. 发送进度报告
-//
-// 性能优化：
-//   - 缓冲区池复用减少内存分配
-//   - 原子操作更新统计信息
-//   - 非阻塞进度报告
-func (r *Receiver) readWorker(ctx context.Context, wsck *pool.WinSocket, bufPool *sync.Pool, errCh chan<- error) {
-	// 准备WSARecvFrom参数
-	var bytesRecvd uint32
-	var flags uint32
-	var from windows.RawSockaddrAny
-	var fromLen int32 = int32(unsafe.Sizeof(from))
-	var wsaBuf windows.WSABuf
-
+//	从 IOCP 队列获取数据并进行解码处理
+func (r *Receiver) consumeLoop(ctx context.Context, server *iocp.IOCPServer, wsck *pool.WinSocket) {
+	queue := server.GetDataQueue()
 	for {
+		// 检查退出
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
 
-		// 从缓冲区池获取缓冲区
-		buf := bufPool.Get().([]byte)
-		wsaBuf.Len = uint32(cap(buf))
-		wsaBuf.Buf = &buf[0]
-
-		// 重置参数
-		flags = 0
-		fromLen = int32(unsafe.Sizeof(from))
-
-		// 使用WSARecvFrom接收数据
-		err := windows.WSARecvFrom(wsck.Socket, &wsaBuf, 1, &bytesRecvd, &flags, &from, &fromLen, nil, nil)
-		n := int(bytesRecvd)
-
-		// 更新最后活动时间，防止被连接池回收
-		atomic.StoreInt64(&wsck.LastUsed, time.Now().Unix())
-
-		// 更新接收统计
-		atomic.AddInt64(&r.totalReceived, int64(n))
-		pool.GetConnPool().AddReceived(uint64(n))
-
-		if err != nil {
-			bufPool.Put(buf)
-			// 检查是否是超时 (WSAETIMEDOUT = 10060)
-			if err == windows.WSAETIMEDOUT {
-				// 接收超时是预期的（用于检查退出信号），不打印日志以免刷屏
-				continue
-			}
-			// 检查是否是WSAEWOULDBLOCK (10035)
-			if err == windows.WSAEWOULDBLOCK {
-				continue
-			}
-			// 忽略因Socket关闭导致的错误
-			if err == windows.WSAEINTR || err == windows.WSAENOTSOCK {
-				return
-			}
-
-			select {
-			case errCh <- err:
-			default:
-			}
-			return
-		}
-
-		if n < 8 {
-			bufPool.Put(buf)
+		// 从队列获取数据
+		ioCtx, ok := queue.TryDequeue()
+		if !ok {
+			// 避免空转占用 CPU
+			time.Sleep(1 * time.Microsecond)
 			continue
 		}
 
-		// 根据解码器类型处理数据
-		if r.config.Type == decoder.DecoderRaptorQ || r.config.Type == decoder.DecoderNoCode {
-			// 解析序列号
-			seqNum := binary.BigEndian.Uint64(buf[:8])
+		// 处理数据
+		// 注意：ioCtx.Data 是复用的，AddSymbol 必须同步处理或拷贝数据
+		r.processPacket(ctx, wsck, ioCtx.Data[:ioCtx.BytesRecv])
 
-			chunkSize := uint64(r.config.ChunkSize)
-			if chunkSize == 0 {
-				bufPool.Put(buf)
-				continue
-			}
+		// 归还 Context，使其可用于接收新包
+		server.ReturnContext(ioCtx)
+	}
+}
 
-			// 计算分块索引和符号索引
-			chunkIdx := uint32(seqNum / chunkSize)
-			symbolIdx := uint32(seqNum % chunkSize)
+// processPacket 处理单个数据包
+func (r *Receiver) processPacket(ctx context.Context, wsck *pool.WinSocket, data []byte) {
+	n := len(data)
 
-			// 标记接收开始（第一次有效数据）
-			if atomic.CompareAndSwapInt32(&r.receiveStarted, 0, 1) {
-				r.receiveStart = time.Now()
-				log.Printf("fdtID(%d): receive started at %s", r.fdtID, r.receiveStart.Format(time.RFC3339Nano))
-			}
+	// 更新统计
+	atomic.StoreInt64(&wsck.LastUsed, time.Now().Unix())
+	atomic.AddInt64(&r.totalReceived, int64(n))
+	pool.GetConnPool().AddReceived(uint64(n))
 
-			// 提交给解码器
-			if err := r.decoder.AddSymbol(chunkIdx, symbolIdx, buf[8:n]); err != nil {
-				// 仅记录错误，不退出接收循环
-				// log.Printf("Error processing chunk %d: %v", chunkIdx, err)
-				bufPool.Put(buf)
-				continue
-			}
-		} else if r.config.Type == decoder.DecoderReedSolomon {
-			// 解析RS编码序列号
-			seqNum := binary.BigEndian.Uint64(buf[:8])
-			shardIdx := uint32(seqNum >> 32)
-			symbolIdx := uint32(seqNum & 0xFFFFFFFF)
+	if n < 8 {
+		return
+	}
 
-			// 标记接收开始（第一次有效数据）
-			if atomic.CompareAndSwapInt32(&r.receiveStarted, 0, 1) {
-				r.receiveStart = time.Now()
-				log.Printf("fdtID(%d): receive started at %s", r.fdtID, r.receiveStart.Format(time.RFC3339Nano))
-			}
+	// 解析序列号
+	seqNum := binary.BigEndian.Uint64(data[:8])
 
-			// 提交给解码器
-			if err := r.decoder.AddSymbol(shardIdx, symbolIdx, buf[8:n]); err != nil {
-				// 仅记录错误，不退出接收循环
-				// log.Printf("Error processing shard %d: %v", shardIdx, err)
-				bufPool.Put(buf)
-				continue
-			}
-		}
-		// 返还缓冲区
-		bufPool.Put(buf)
+	// 计算分块索引和符号索引
+	chunkIdx := uint32(seqNum >> 32)
+	symbolIdx := uint32(seqNum & 0xFFFFFFFF)
 
-		// 更新连接最后使用时间
-		atomic.StoreInt64(&wsck.LastUsed, time.Now().Unix())
+	// 标记接收开始（第一次有效数据）
+	if atomic.CompareAndSwapInt32(&r.receiveStarted, 0, 1) {
+		r.receiveStart = time.Now()
+		log.Printf("fdtID(%d): receive started at %s", r.fdtID, r.receiveStart.Format(time.RFC3339Nano))
+	}
 
-		// 发送进度报告
-		if ch, ok := GetReportChan(ctx); ok {
-			select {
-			case ch <- Report{
-				FdtID:    r.fdtID,
-				Received: atomic.LoadInt64(&r.currWritten),
-				Total:    int64(r.config.FileSize),
-				Status:   0,
-			}:
-			default:
-				// 非阻塞发送，避免阻塞接收循环
-			}
+	// 提交给解码器
+	if err := r.decoder.AddSymbol(chunkIdx, symbolIdx, data[8:n]); err != nil {
+		// 仅记录错误，不退出接收循环
+		return
+	}
+
+	// 发送进度报告
+	if ch, ok := GetReportChan(ctx); ok {
+		select {
+		case ch <- Report{
+			FdtID:    r.fdtID,
+			Received: atomic.LoadInt64(&r.currWritten),
+			Total:    int64(r.config.FileSize),
+			Status:   0,
+		}:
+		default:
+			// 非阻塞发送，避免阻塞接收循环
 		}
 	}
 }
