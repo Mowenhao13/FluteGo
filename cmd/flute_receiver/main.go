@@ -40,7 +40,7 @@ func main() {
 		fmt.Scanln()
 	}
 
-	fmt.Println("Enter dest IP, example: 192.168.1.103:3400")
+	fmt.Println("Enter dest IP, example: 127.0.0.1")
 	fmt.Scanln(&destIP)
 	if destIP == "" {
 		destIP = constant.DestIP
@@ -63,7 +63,7 @@ func main() {
 
 	// 1. Initialize System
 	// Use default max workers (0 = auto)
-	sys, err := system.InitReceiverSystem(0, destIP, saveFileDir)
+	sys, err := system.InitReceiverSystem(0, destIP, saveFileDir, true)
 	if err != nil {
 		log.Fatalf("Failed to initialize system: %v", err)
 		fmt.Println("按回车键退出...")
