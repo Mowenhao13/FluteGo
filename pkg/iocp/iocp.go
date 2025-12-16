@@ -8,6 +8,7 @@
 package iocp
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"runtime"
@@ -138,7 +139,7 @@ func (s *IOCPServer) postRecv(ctx *IOContext) error {
 	)
 
 	if err != nil && err != windows.ERROR_IO_PENDING {
-		return fmt.Errorf("WSARecvFrom failed: %v", err)
+		return fmt.Errorf("WSARecvFrom failed: %w", err)
 	}
 	return nil
 }
@@ -169,10 +170,37 @@ func (s *IOCPServer) GetDataQueue() *xsync.MPMCQueueOf[*IOContext] {
 
 // ReturnContext 消费者处理完数据后，必须调用此方法归还 Context
 func (s *IOCPServer) ReturnContext(ctx *IOContext) {
-	if atomic.LoadInt32(&s.isRunning) == 1 {
-		if err := s.postRecv(ctx); err != nil {
-			log.Printf("Repost failed: %v", err)
+	if atomic.LoadInt32(&s.isRunning) == 0 {
+		return
+	}
+
+	for {
+		err := s.postRecv(ctx)
+		if err == nil {
+			return
 		}
+
+		// 如果 Socket 已经关闭 (WSAENOTSOCK) 或操作被取消 (WSAEINTR)，则不再报错并停止服务器
+		if errors.Is(err, windows.WSAENOTSOCK) || errors.Is(err, windows.WSAEINTR) {
+			// 避免重复调用 Stop
+			if atomic.LoadInt32(&s.isRunning) == 1 {
+				s.Stop()
+			}
+			return
+		}
+
+		// 忽略连接重置错误 (WSAECONNRESET)，这在 UDP 中可能发生（ICMP Port Unreachable）
+		// 必须重试，否则会丢失 Context 导致接收缓冲区耗尽
+		// 增加重试次数限制，防止死循环
+		if errors.Is(err, windows.WSAECONNRESET) {
+			// 简单的指数退避或让出时间片
+			runtime.Gosched()
+			continue
+		}
+
+		// 其他错误，记录日志并丢弃 Context (防止死循环)
+		log.Printf("Repost failed: %v", err)
+		return
 	}
 }
 
