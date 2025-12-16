@@ -13,6 +13,7 @@ import (
 	"FluteGo/pkg/iocp"
 	"FluteGo/pkg/meta"
 	"FluteGo/pkg/pool"
+	"FluteGo/pkg/utils"
 	"context"
 	"encoding/binary"
 	"encoding/csv"
@@ -112,7 +113,7 @@ type Receiver struct {
 	dataChan         chan *WriteRequest
 	writerWg         sync.WaitGroup
 	writeRequestPool sync.Pool
-
+	enableMd5        bool // 是否启用MD5校验
 	// 统计
 	currWritten   int64     // 当前已写入字节数
 	totalReceived int64     // 总共接收字节数
@@ -211,7 +212,7 @@ func initDecoderConfig(mt *meta.MetaPkt, saveDir string) decoder.DecoderConfig {
 // 错误处理：
 //
 //	文件创建失败、配置无效等情况
-func InitReceiver(mt *meta.MetaPkt, saveDir string) (*Receiver, error) {
+func InitReceiver(mt *meta.MetaPkt, saveDir string, enableMd5 bool) (*Receiver, error) {
 	// 构建输出文件路径
 	outFilePath := saveDir + mt.File.Name
 	config := initDecoderConfig(mt, saveDir)
@@ -225,7 +226,7 @@ func InitReceiver(mt *meta.MetaPkt, saveDir string) (*Receiver, error) {
 	}
 	expectedMd5 := mt.File.Md5
 
-	return newReceiver(outFilePath, config, mt.File.FdtID, chunkCount, expectedMd5)
+	return newReceiver(outFilePath, config, mt.File.FdtID, chunkCount, expectedMd5, enableMd5)
 }
 
 // newReceiver 创建新的接收端实例
@@ -255,7 +256,7 @@ func InitReceiver(mt *meta.MetaPkt, saveDir string) (*Receiver, error) {
 // 资源管理：
 //
 //	使用对象池复用写入请求对象，减少GC压力
-func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, expectedChunks uint32, expectedMd5 string) (*Receiver, error) {
+func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, expectedChunks uint32, expectedMd5 string, enableMd5 bool) (*Receiver, error) {
 	// 创建输出文件
 	file, err := os.Create(outFilePath)
 	if err != nil {
@@ -274,9 +275,10 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 		outputPath:     outFilePath,
 		expectedChunks: expectedChunks,
 		expectedMd5:    expectedMd5,
+		enableMd5:      enableMd5,
 		finishChan:     make(chan struct{}),
 		OnComplete:     nil,
-		dataChan:       make(chan *WriteRequest, 30000), // 初始化缓冲通道（增大以容纳重组后大量回调）
+		dataChan:       make(chan *WriteRequest, 2560), // 初始化缓冲通道（增大以容纳重组后大量回调）
 		writeRequestPool: sync.Pool{
 			New: func() interface{} {
 				return &WriteRequest{}
@@ -291,6 +293,11 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 		return nil, err
 	}
 	receiver.decoder = dec
+
+	// // 启动 NcDecoder 监控（如果是 NoCode 类型）
+	// if ncDec, ok := dec.(*decoder.NcDecoder); ok {
+	// 	ncDec.Monitor()
+	// }
 
 	// 启动写入循环：RaptorQ/NoCode 以及 Reed-Solomon 都需要写入循环
 	if receiver.config.Type == decoder.DecoderRaptorQ || receiver.config.Type == decoder.DecoderNoCode || receiver.config.Type == decoder.DecoderReedSolomon {
@@ -454,6 +461,11 @@ func (r *Receiver) OnDecodedData(data []byte, offset int64, chunkIdx uint32) err
 	req.Offset = offset
 	req.ChunkIdx = chunkIdx
 
+	// Debug: Check channel status
+	if len(r.dataChan) > cap(r.dataChan)*9/10 {
+		log.Printf("WARNING: Write queue nearly full: %d/%d. Receiver may block.", len(r.dataChan), cap(r.dataChan))
+	}
+
 	// 直接发送到通道，减少逻辑判断和Timer开销
 	// 如果通道满，这里会阻塞，形成自然的背压，阻止接收端接收过快
 	r.dataChan <- req
@@ -611,6 +623,18 @@ func (r *Receiver) Start(ctx context.Context) error {
 	case <-sessionCtx.Done():
 	case <-done:
 	case <-r.finishChan: // 文件接收完成信号
+	}
+
+	if r.enableMd5 {
+		// 验证MD5
+		recvMd5, err := utils.CalculateMd5(r.outputFile)
+		if err != nil {
+			log.Printf("Failed to calculate MD5: %v", err)
+		} else if recvMd5 != r.expectedMd5 {
+			log.Printf("MD5 mismatch: expected %s, got %s", r.expectedMd5, recvMd5)
+		} else {
+			log.Printf("MD5 verified successfully: %s", recvMd5)
+		}
 	}
 
 	// 检查是否有错误发生
