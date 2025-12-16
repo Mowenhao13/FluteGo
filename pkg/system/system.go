@@ -48,11 +48,11 @@ type ReceiverSystem struct {
 	wg              sync.WaitGroup
 	activeReceivers int32
 	maxWorkers      int32
-
-	recvPool    *pool.ConnPool
-	metaConn    *pool.WinSocket
-	targets     sync.Map
-	curReceived sync.Map
+	enableMd5       bool
+	recvPool        *pool.ConnPool
+	metaConn        *pool.WinSocket
+	targets         sync.Map
+	curReceived     sync.Map
 
 	FileReporter FileReporter
 	DestIP       string
@@ -124,7 +124,7 @@ var (
 //  1. 创建工作池和错误通道
 //  2. 初始化全局连接池
 //  3. 设置文件报告器
-func InitReceiverSystem(maxWorkers int32, destIP string, saveDir string) (*ReceiverSystem, error) {
+func InitReceiverSystem(maxWorkers int32, destIP string, saveDir string, enableMd5 bool) (*ReceiverSystem, error) {
 	// 参数验证和默认值设置
 	if maxWorkers <= 0 {
 		maxWorkers = int32(runtime.NumCPU() / 2)
@@ -141,6 +141,7 @@ func InitReceiverSystem(maxWorkers int32, destIP string, saveDir string) (*Recei
 		errChans:   errs.InitErrorChannels(),
 		workerPool: make(chan struct{}, maxWorkers),
 		maxWorkers: maxWorkers,
+		enableMd5:  enableMd5,
 		FileReporter: FileReporter{
 			ReportChan: make(chan FileReport, 100),
 			FileChans:  make(map[uint8]chan FileReport),
@@ -576,7 +577,7 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 	defer s.recvPool.CloseFileConn(fdtID)
 
 	// 初始化接收器
-	recv, err := receiver.InitReceiver(task, s.SaveDir)
+	recv, err := receiver.InitReceiver(task, s.SaveDir, s.enableMd5)
 	if err != nil {
 		s.reportError(ctx, uint8(errs.LevelError), err, fdtID)
 		close(recvReportChan)
