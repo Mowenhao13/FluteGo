@@ -78,12 +78,16 @@ type Oti struct {
 // noCodeOti := oti.NewNoCode(1400)
 // ```
 func NewNoCode(SymbolSize uint16) Oti {
-	maxChunkSize := constant.MaxNoCodeChunkSize
+	maxChunkSize := int(constant.MaxNoCodeChunkSize)
 	pageSize := os.Getpagesize()
-	var alignedSize uint32
-	if maxChunkSize%pageSize != 0 {
-		alignedSize = uint32(((maxChunkSize+pageSize-1)/pageSize - 1) / pageSize)
+
+	// 向下对齐到页大小的整数倍，以优化内存映射性能
+	alignedSize := uint32((maxChunkSize / pageSize) * pageSize)
+	if alignedSize == 0 {
+		// 如果小于一页，则直接使用原大小
+		alignedSize = uint32(maxChunkSize)
 	}
+
 	return Oti{
 		FECEncodingID:    0,
 		FECInstanceID:    0,
@@ -118,11 +122,13 @@ func NewNoCode(SymbolSize uint16) Oti {
 // raptorQOti := oti.NewRaptorQ(1400)
 // ```
 func NewRaptorQ(SymbolSize uint16) Oti {
-	maxChunkSize := constant.MaxRaptorQChunkSize
+	maxChunkSize := int(constant.MaxRaptorQChunkSize)
 	pageSize := os.Getpagesize()
-	var alignedSize uint32
-	if maxChunkSize%pageSize != 0 {
-		alignedSize = uint32(((maxChunkSize+pageSize-1)/pageSize - 1) / pageSize)
+
+	// 向下对齐到页大小的整数倍
+	alignedSize := uint32((maxChunkSize / pageSize) * pageSize)
+	if alignedSize == 0 {
+		alignedSize = uint32(maxChunkSize)
 	}
 
 	return Oti{
