@@ -115,12 +115,12 @@ func (p *ConnPool) createNewConn(ip string, port int) (*WinSocket, error) {
 		return nil, err
 	}
 
-	// 设置接收缓冲区为 100MB，防止高吞吐下丢包
-	// 2Gbps = 250MB/s，100MB 可以缓冲约 400ms 的数据
-	const RCVBUF_SIZE = 100 * 1024 * 1024
+	// 设置接收缓冲区为 256MB，防止高吞吐下丢包
+	// 2Gbps = 250MB/s，256MB 可以缓冲约 1秒 的数据
+	const RCVBUF_SIZE = 256 * 1024 * 1024
 	if err := windows.SetsockoptInt(sck, windows.SOL_SOCKET, windows.SO_RCVBUF, RCVBUF_SIZE); err != nil {
-		// 如果设置失败，尝试设置一个较小的值 (e.g. 10MB)
-		windows.SetsockoptInt(sck, windows.SOL_SOCKET, windows.SO_RCVBUF, 10*1024*1024)
+		// 如果设置失败，尝试设置一个较小的值 (e.g. 64MB)
+		windows.SetsockoptInt(sck, windows.SOL_SOCKET, windows.SO_RCVBUF, 64*1024*1024)
 	}
 
 	if p.Mode == constant.POOL_SEND {
@@ -303,7 +303,7 @@ func (p *ConnPool) isHealthyConn(wsck *WinSocket) bool {
 
 	if time.Since(lastAct) > constant.CONN_TIMEOUT*time.Second {
 		// log.Printf("Connection timeout: FdtID=%d, LastAct=%s, Timeout=%d", wsck.FdtID, lastAct.Format(time.RFC3339), constant.CONN_TIMEOUT)
-		wsck.IsHealthy = false
+		// wsck.IsHealthy = false
 	}
 
 	return wsck.IsHealthy
@@ -501,6 +501,12 @@ func (p *ConnPool) closeIdle(wsck *WinSocket) {
 }
 
 func (p *ConnPool) idleSenderMonitor() {
+	// 如果是接收端模式，不需要监控发送空闲，因为接收端主要任务是接收
+	// 否则会导致接收端连接在 60s 后被误杀
+	if p.Mode == constant.POOL_RECV {
+		return
+	}
+
 	ticker := time.NewTicker(constant.IDLE_SENDER_CHECK_INTERVAL * time.Second)
 	defer ticker.Stop()
 
