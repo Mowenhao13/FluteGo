@@ -342,7 +342,40 @@ func (e *RsEncoder) SetCallback(cb SendCallback) {
 //
 // # 描述
 //
-// 当前实现无需清理额外资源，仅保留接口占位。
+// 清理生成的临时分片文件。
 func (e *RsEncoder) Close() error {
+	// 确定临时文件所在目录，逻辑需与 encode() 保持一致
+	dir, file := filepath.Split(e.Config.FName)
+	if constant.RsTmpSendOutDir != "" {
+		dir = constant.RsTmpSendOutDir
+	}
+
+	// 临时文件前缀: filename.
+	prefix := file + "."
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// 目录可能不存在或无法访问，忽略
+		return nil
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		if strings.HasPrefix(name, prefix) {
+			// 进一步检查后缀是否为数字，避免误删非分片文件
+			// 分片文件命名格式: filename.0, filename.1, ...
+			suffix := strings.TrimPrefix(name, prefix)
+			if _, err := strconv.Atoi(suffix); err == nil {
+				fullPath := filepath.Join(dir, name)
+				if err := os.Remove(fullPath); err != nil {
+					log.Printf("Failed to remove temp file %s: %v", fullPath, err)
+				}
+			}
+		}
+	}
 	return nil
 }

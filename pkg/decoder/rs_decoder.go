@@ -455,13 +455,35 @@ func (r *RsDecoder) decode() error {
 	return nil
 }
 
-// Close 释放 RsDecoder 保留的资源。
-//
-// # 描述
-//
-// 当前实现无需额外清理。
+// Close 释放 RsDecoder 保留的资源并清理临时文件。
 func (r *RsDecoder) Close() error {
-	return nil
+	var firstErr error
+
+	// 1. 关闭所有打开的文件句柄
+	for i, f := range r.inputs {
+		if f != nil {
+			if err := f.Close(); err != nil {
+				log.Printf("Warning: failed to close shard file %d: %v", i, err)
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+			r.inputs[i] = nil
+		}
+	}
+
+	// 2. 删除所有临时分片文件
+	totalShards := int(r.Config.DataShards + r.Config.ParityShards)
+	for i := 0; i < totalShards; i++ {
+		infn := fmt.Sprintf("%s.%d", r.Config.FName, i)
+		if err := os.Remove(infn); err != nil && !os.IsNotExist(err) {
+			log.Printf("Warning: failed to remove temp file %s: %v", infn, err)
+		} else {
+			// log.Printf("Cleaned up temp file: %s", infn)
+		}
+	}
+
+	return firstErr
 }
 
 // AddSymbol 将 symbol 写入对应 shard 并在满足条件时触发解码。
