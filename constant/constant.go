@@ -10,7 +10,7 @@ const (
 // Receiver param
 const (
 	RecvRedundancyRatio = 1.01
-	DefaultChunkSize    = 32 * 1024 // 32KB chunks
+	DefaultChunkSize    = 64 * 1024 // 64KB chunks
 )
 
 // Sender param
@@ -22,7 +22,7 @@ const (
 	SendFileDir_win          = "cmd\\send_files\\"
 	SaveFileDir_win          = "cmd\\received_files\\"
 	SendRedundancyRatio      = 1.05
-	DefaultSendRateLimitMbps = 2500 // default send rate limit; 0 disables throttling
+	DefaultSendRateLimitMbps = 1500 // default send rate limit; 0 disables throttling
 	WindowsSize              = 10
 
 	START_SEND_WAIT = 1 // seconds to wait before starting to send data
@@ -71,7 +71,7 @@ const (
 )
 
 const (
-	CONN_TIMEOUT = 120 // in seconds
+	CONN_TIMEOUT = 1500 // in seconds
 )
 
 const (
