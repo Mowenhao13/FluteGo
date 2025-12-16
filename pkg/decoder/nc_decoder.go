@@ -7,8 +7,10 @@
 package decoder
 
 import (
+	"FluteGo/pkg/shard_map"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // NcDecoder 实现了 NoCode 解码路径，直接将 chunk 数据写回而不做 FEC 操作。
@@ -19,7 +21,7 @@ import (
 type NcDecoder struct {
 	Config DecoderConfig
 	output OutputHandler
-	chunks sync.Map // map[chunkIdx]*ncChunkState
+	chunks *shard_map.ShardedMap // 使用高性能分片 Map 替换 sync.Map
 }
 
 type ncChunkState struct {
@@ -64,7 +66,30 @@ func NewNcDecoder(config DecoderConfig, output OutputHandler) (*NcDecoder, error
 	return &NcDecoder{
 		Config: config,
 		output: output,
+		chunks: shard_map.NewShardedMap(), // 初始化分片 Map
 	}, nil
+}
+
+// // Monitor 启动监控协程（调试用）
+//
+//	func (d *NcDecoder) Monitor() {
+//		go func() {
+//			ticker := time.NewTicker(3 * time.Second)
+//			defer ticker.Stop()
+//			for range ticker.C {
+//
+// Monitor 启动监控协程（调试用）
+func (d *NcDecoder) Monitor() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			count := d.chunks.Count()
+			if count > 0 {
+				fmt.Printf("[NcDecoder Monitor] Active incomplete chunks in memory: %d (Potential packet loss accumulation)\n", count)
+			}
+		}
+	}()
 }
 
 // AddSymbol 将一个符号写入 chunk 缓冲并在符号齐全后回调写入逻辑。
@@ -94,6 +119,7 @@ func (d *NcDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 	symIdx := int(symbolIdx)
 
 	// get or create chunk state
+	// 使用分片 Map 的 LoadOrStore
 	v, _ := d.chunks.LoadOrStore(chunkIdx, &ncChunkState{
 		data:     make([]byte, chunkSize),
 		received: make(map[int]struct{}, (chunkSize+symbolSize-1)/symbolSize),

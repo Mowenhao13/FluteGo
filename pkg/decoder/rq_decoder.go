@@ -8,6 +8,7 @@
 package decoder
 
 import (
+	"FluteGo/pkg/shard_map"
 	"fmt"
 	"log"
 	"strconv"
@@ -26,7 +27,7 @@ import (
 type RqDecoder struct {
 	Config          DecoderConfig
 	output          OutputHandler
-	RqChunkDecoders sync.Map
+	RqChunkDecoders *shard_map.ShardedMap
 	DecoderCnt      uint32 // 实际最大到 uint16(65535) 支持解码最大文件尺寸: 65535 * chunkSize
 	engine          *raptorq.RaptorQ
 }
@@ -166,9 +167,10 @@ func NewRqDecoder(config DecoderConfig, output OutputHandler) (*RqDecoder, error
 	engine := raptorq.NewRaptorQ(uint32(config.SymbolSize))
 
 	return &RqDecoder{
-		Config: config,
-		output: output,
-		engine: engine,
+		Config:          config,
+		output:          output,
+		engine:          engine,
+		RqChunkDecoders: shard_map.NewShardedMap(),
 	}, nil
 }
 
@@ -243,7 +245,7 @@ func (r *RqDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 //	清理的 chunk 数量。
 func (r *RqDecoder) CleanupDecoded() int {
 	cleaned := 0
-	r.RqChunkDecoders.Range(func(key, value interface{}) bool {
+	r.RqChunkDecoders.Range(func(key uint32, value interface{}) bool {
 		dec := value.(*rqChunkDecoder)
 		if dec.decoded || time.Since(dec.lastUsed) > 30*time.Second {
 			r.RqChunkDecoders.Delete(key)
@@ -263,7 +265,7 @@ func (r *RqDecoder) CleanupDecoded() int {
 //	`decoded`: 已完成解码的 chunk 数
 //	`total`: 当前活动 chunk 总数
 func (r *RqDecoder) GetStats() (decoded, total int) {
-	r.RqChunkDecoders.Range(func(key, value interface{}) bool {
+	r.RqChunkDecoders.Range(func(key uint32, value interface{}) bool {
 		total++
 		dec := value.(*rqChunkDecoder)
 		if dec.decoded {
@@ -281,7 +283,7 @@ func (r *RqDecoder) SetFileSize(fileSize uint64) {
 
 // Close 释放 RqDecoder 关联的资源。
 func (r *RqDecoder) Close() error {
-	r.RqChunkDecoders.Range(func(key, value interface{}) bool {
+	r.RqChunkDecoders.Range(func(key uint32, value interface{}) bool {
 		if dec := value.(*rqChunkDecoder); dec.decoder != nil {
 			// 如果有释放方法则调用
 			dec.decoder = nil
