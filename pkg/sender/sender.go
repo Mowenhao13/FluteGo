@@ -22,6 +22,7 @@ import (
 	"encoding/binary"
 	"encoding/csv"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -32,7 +33,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/edsrzf/mmap-go"
+	// "github.com/edsrzf/mmap-go"
 	"golang.org/x/sys/windows"
 	"golang.org/x/time/rate"
 )
@@ -529,14 +530,15 @@ func (s *Sender) Start(ctx context.Context) error {
 		}()
 	}
 
-	// 映射整个文件
-	mappedData, mapErr := mmap.Map(s.inputFile, mmap.RDONLY, 0)
-	if mapErr != nil {
-		return fmt.Errorf("mmap file failed: %w", mapErr)
-	}
-	defer mappedData.Unmap()
+	// 移除 mmap，改用直接文件读取
+	// mappedData, mapErr := mmap.Map(s.inputFile, mmap.RDONLY, 0)
+	// if mapErr != nil {
+	// 	return fmt.Errorf("mmap file failed: %w", mapErr)
+	// }
+	// defer mappedData.Unmap()
 
-	// 数据提供器函数 - 通过内存映射提供分块数据
+	// 数据提供器函数 - 通过 ReadAt 直接读取文件
+	// 这种方式对超大文件更稳定，且不会占用大量虚拟内存
 	provider := func(chunkIdx uint32) ([]byte, int, error) {
 		if chunkIdx >= s.chunkCount {
 			return nil, 0, fmt.Errorf("chunk index out of bounds")
@@ -554,7 +556,25 @@ func (s *Sender) Start(ctx context.Context) error {
 			length = s.fileSize - offset
 		}
 
-		return mappedData[offset : offset+length], int(length), nil
+		// 分配缓冲区并读取数据
+		// 注意：这里每次都会分配内存，但对于大文件传输，相比 mmap 的缺页中断开销，
+		// 这种方式更可控，且 Go 的 GC 对这种短期小对象处理很快。
+		// 如果追求极致性能，可以使用 sync.Pool 复用这个 buffer，
+		// 但考虑到 encoder 可能会持有这个 slice，需要小心处理生命周期。
+		data := make([]byte, length)
+		n, err := s.inputFile.ReadAt(data, offset)
+		if err != nil && err != io.EOF {
+			return nil, 0, fmt.Errorf("read file failed at offset %d: %w", offset, err)
+		}
+
+		// ReadAt 可能返回少于请求的数据（如果遇到 EOF），但我们已经计算了 length
+		// 所以如果 n < length 且没有 error，通常是不应该发生的（除非文件被截断）
+		if int64(n) < length {
+			// 调整 slice 大小
+			data = data[:n]
+		}
+
+		return data, n, nil
 	}
 
 	// 创建发送回调函数
