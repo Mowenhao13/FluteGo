@@ -1,16 +1,3 @@
-/*
- * 软件著作权声明：
- * 本文件包含的代码是 FluteGo 软件的组成部分
- * 版权所有 (C) 2025
- * 保留所有权利。
- */
-/*
- * 软件著作权声明：
- * 本文件包含的代码是 FluteGo 软件的组成部分
- * 版权所有 (C) 2025
- * 保留所有权利。
- */
-
 package pool
 
 import (
@@ -20,9 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
 	"FluteGo/constant"
-
 	"unsafe"
 
 	"golang.org/x/sys/windows"
