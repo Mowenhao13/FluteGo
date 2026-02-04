@@ -1,3 +1,10 @@
+/*
+ * 软件著作权声明：
+ * 本文件包含的代码是 FluteGo 软件的组成部分
+ * 版权所有 (C) 2025
+ * 保留所有权利。
+ */
+
 package encoder
 
 import (
@@ -17,6 +24,11 @@ import (
 	rs "github.com/klauspost/reedsolomon"
 )
 
+// RsEncoder 封装了 Reed-Solomon 编码所需的配置、辅助参数及发送回调。
+//
+// # 描述
+//
+// 封装对 k 个数据片段和 m 个校验片段的编码逻辑，生成 FEC 符号并调度回调。
 type RsEncoder struct {
 	Config EncoderConfig
 	RsExtraParam
@@ -58,6 +70,16 @@ func loadExtraParams() RsExtraParam {
 	}
 }
 
+// NewRsEncoder 初始化一个带有优化参数的 Reed-Solomon 编码器实例。
+//
+// # 参数
+//
+//   - `config`: `EncoderConfig`
+//     包含数据/校验分片数、符号长度及文件路径等。
+//
+// # 返回值
+//
+//	初始化后的 `RsEncoder` 实例及可能出现的错误。
 func NewRsEncoder(config EncoderConfig) (*RsEncoder, error) {
 	rsExtraParam := loadExtraParams()
 	return &RsEncoder{
@@ -191,6 +213,22 @@ func extractShardIndex(filename string) int {
 	return 0
 }
 
+// Encode 读取临时分片目录中的所有 data/parity 文件，并按符号大小发射回调。
+//
+// # 参数
+//
+//   - `ctx`: `context.Context`
+//     保留给未来用以支持取消，目前 TODO。
+//   - `chunkCount`: `uint32`
+//     当前传输的 chunk 数量（尚未直接使用）。
+//   - `provider`: `DataProvider`
+//     临时保留参数，当前实现通过磁盘扫描获取 shard 数据。
+//   - `cb`: `SendCallback`
+//     用于发送生成的符号。
+//
+// # 返回值
+//
+//	发送完成或出错时返回对应结果。
 func (e *RsEncoder) Encode(ctx context.Context, chunkCount uint32, provider DataProvider, cb SendCallback) error {
 	callback := cb
 	if callback == nil {
@@ -245,15 +283,13 @@ func (e *RsEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 
 		sz := int(instat.Size())
 
-
 		offset := 0
-		
+
 		shardDat, err := mmap.MapRegion(f, sz, mmap.RDONLY, 0, int64(offset))
 		if err != nil {
 			return fmt.Errorf("mmap failed for shard %s: %w", fn.Name(), err)
 		}
 		shardData := []byte(shardDat)
-	
 
 		if len(shardData) != sz {
 			return fmt.Errorf("mmap size mismatch for shard %s: expected %d, got %d", fn.Name(), sz, len(shardData))
@@ -278,8 +314,8 @@ func (e *RsEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 			symbolIdx := i / int(e.Config.SymbolSize)
 			symData := shardData[start:end]
 			// 添加调试日志
-			log.Printf("DEBUG: Calling callback with shardIdx=%d, symbolIdx=%d, shardSize=%d, dataLen=%d",
-				shardIdx, symbolIdx, sz, len(symData))
+			// log.Printf("DEBUG: Calling callback with shardIdx=%d, symbolIdx=%d, shardSize=%d, dataLen=%d",
+			// 	shardIdx, symbolIdx, sz, len(symData))
 			if err := callback(uint32(shardIdx), uint32(symbolIdx), uint32(sz), symData); err != nil {
 				return fmt.Errorf("callback failed for shard %d symbol %d: %w", shardIdx, symbolIdx, err)
 			}
@@ -291,12 +327,55 @@ func (e *RsEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 	return nil
 }
 
+// SetCallback 注册默认符号发送回调。
+//
+// # 参数
+//
+//   - `cb`: `SendCallback`
+//     供 `Encode` 调用时使用的发送逻辑。
 func (e *RsEncoder) SetCallback(cb SendCallback) {
 	e.Callback = cb
 }
 
 // Close 释放编码器资源
+// Close 关闭 RsEncoder，释放相关资源。
+//
+// # 描述
+//
+// 清理生成的临时分片文件。
 func (e *RsEncoder) Close() error {
-	// No specific resources to release for Reed-Solomon encoder
+	// 确定临时文件所在目录，逻辑需与 encode() 保持一致
+	dir, file := filepath.Split(e.Config.FName)
+	if constant.RsTmpSendOutDir != "" {
+		dir = constant.RsTmpSendOutDir
+	}
+
+	// 临时文件前缀: filename.
+	prefix := file + "."
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// 目录可能不存在或无法访问，忽略
+		return nil
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		if strings.HasPrefix(name, prefix) {
+			// 进一步检查后缀是否为数字，避免误删非分片文件
+			// 分片文件命名格式: filename.0, filename.1, ...
+			suffix := strings.TrimPrefix(name, prefix)
+			if _, err := strconv.Atoi(suffix); err == nil {
+				fullPath := filepath.Join(dir, name)
+				if err := os.Remove(fullPath); err != nil {
+					log.Printf("Failed to remove temp file %s: %v", fullPath, err)
+				}
+			}
+		}
+	}
 	return nil
 }

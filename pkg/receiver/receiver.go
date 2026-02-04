@@ -10,16 +10,20 @@ package receiver
 import (
 	constant "FluteGo/constant"
 	"FluteGo/pkg/decoder"
+	"FluteGo/pkg/iocp"
 	"FluteGo/pkg/meta"
 	"FluteGo/pkg/pool"
+	"FluteGo/pkg/utils"
 	"context"
 	"encoding/binary"
+	"encoding/csv"
 	stdErrors "errors"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"runtime"
+	"strconv"
 
 	"sync"
 	"sync/atomic"
@@ -109,7 +113,7 @@ type Receiver struct {
 	dataChan         chan *WriteRequest
 	writerWg         sync.WaitGroup
 	writeRequestPool sync.Pool
-
+	enableMd5        bool // 是否启用MD5校验
 	// 统计
 	currWritten   int64     // 当前已写入字节数
 	totalReceived int64     // 总共接收字节数
@@ -122,6 +126,7 @@ type Receiver struct {
 	receiveStarted int32
 	receiveStart   time.Time
 	receiveEnd     time.Time
+	memStatsStart  runtime.MemStats
 }
 
 // WriteRequest 写入请求结构
@@ -207,7 +212,7 @@ func initDecoderConfig(mt *meta.MetaPkt, saveDir string) decoder.DecoderConfig {
 // 错误处理：
 //
 //	文件创建失败、配置无效等情况
-func InitReceiver(mt *meta.MetaPkt, saveDir string) (*Receiver, error) {
+func InitReceiver(mt *meta.MetaPkt, saveDir string, enableMd5 bool) (*Receiver, error) {
 	// 构建输出文件路径
 	outFilePath := saveDir + mt.File.Name
 	config := initDecoderConfig(mt, saveDir)
@@ -221,7 +226,7 @@ func InitReceiver(mt *meta.MetaPkt, saveDir string) (*Receiver, error) {
 	}
 	expectedMd5 := mt.File.Md5
 
-	return newReceiver(outFilePath, config, mt.File.FdtID, chunkCount, expectedMd5)
+	return newReceiver(outFilePath, config, mt.File.FdtID, chunkCount, expectedMd5, enableMd5)
 }
 
 // newReceiver 创建新的接收端实例
@@ -251,7 +256,7 @@ func InitReceiver(mt *meta.MetaPkt, saveDir string) (*Receiver, error) {
 // 资源管理：
 //
 //	使用对象池复用写入请求对象，减少GC压力
-func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, expectedChunks uint32, expectedMd5 string) (*Receiver, error) {
+func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, expectedChunks uint32, expectedMd5 string, enableMd5 bool) (*Receiver, error) {
 	// 创建输出文件
 	file, err := os.Create(outFilePath)
 	if err != nil {
@@ -270,9 +275,10 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 		outputPath:     outFilePath,
 		expectedChunks: expectedChunks,
 		expectedMd5:    expectedMd5,
+		enableMd5:      enableMd5,
 		finishChan:     make(chan struct{}),
 		OnComplete:     nil,
-		dataChan:       make(chan *WriteRequest, 20000), // 初始化缓冲通道（增大以容纳重组后大量回调）
+		dataChan:       make(chan *WriteRequest, 2560), // 初始化缓冲通道（增大以容纳重组后大量回调）
 		writeRequestPool: sync.Pool{
 			New: func() interface{} {
 				return &WriteRequest{}
@@ -287,6 +293,11 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 		return nil, err
 	}
 	receiver.decoder = dec
+
+	// // 启动 NcDecoder 监控（如果是 NoCode 类型）
+	// if ncDec, ok := dec.(*decoder.NcDecoder); ok {
+	// 	ncDec.Monitor()
+	// }
 
 	// 启动写入循环：RaptorQ/NoCode 以及 Reed-Solomon 都需要写入循环
 	if receiver.config.Type == decoder.DecoderRaptorQ || receiver.config.Type == decoder.DecoderNoCode || receiver.config.Type == decoder.DecoderReedSolomon {
@@ -331,14 +342,88 @@ func (r *Receiver) startWriterLoop() {
 				// 更新写入统计
 				atomic.AddInt64(&r.currWritten, int64(len(req.Data)))
 
-				// 每1000个分块记录一次日志
-				if req.ChunkIdx%1000 == 0 {
-					log.Printf("fdtID(%d) writer#%d: chunk %d 写入完成: %d bytes", req.FdtID, id, req.ChunkIdx, len(req.Data))
-				}
-
 				// 回收写入请求对象
 				req.Data = nil
 				r.writeRequestPool.Put(req)
+
+				// 检查是否所有分片都已接收完成
+				finished := atomic.AddUint32(&r.finishedChunks, 1)
+				if finished >= r.expectedChunks {
+					r.closeOnce.Do(func() {
+						close(r.finishChan)
+						// 记录接收结束时间
+						if atomic.LoadInt32(&r.receiveStarted) == 1 {
+							r.receiveEnd = time.Now()
+							dur := r.receiveEnd.Sub(r.receiveStart)
+							bytesWritten := atomic.LoadInt64(&r.currWritten)
+
+							seconds := dur.Seconds()
+							if seconds <= 0 {
+								seconds = 0.000001 // 防止除以零
+							}
+							mbps := (float64(bytesWritten) * 8.0 / seconds) / 1e6
+
+							fmt.Printf("File transfer completed (fdtID=%d): %d/%d chunks, duration=%s\n", r.fdtID, finished, r.expectedChunks, dur.String())
+							fmt.Printf("fdtID(%d): bytes received=%d, duration=%s, throughput=%.4f Mbps\n", r.fdtID, bytesWritten, dur.String(), mbps)
+
+							// Memory Profile
+							var memStatsEnd runtime.MemStats
+							runtime.ReadMemStats(&memStatsEnd)
+							fmt.Printf("=== Memory Profile Results for Current Receive Session ===\n")
+							fmt.Printf("Total Allocated Memory: %v bytes\n", memStatsEnd.TotalAlloc-r.memStatsStart.TotalAlloc)
+							fmt.Printf("Peak Heap Memory: %v bytes, %v MB\n", memStatsEnd.HeapAlloc, memStatsEnd.HeapAlloc/(1024*1024))
+							fmt.Printf("System Memory (Sys): %d MB\n", memStatsEnd.Sys/(1024*1024))
+							fmt.Printf("Heap Idle Memory: %d MB\n", memStatsEnd.HeapIdle/(1024*1024))
+							fmt.Printf("Garbage Collection Count: %v\n", memStatsEnd.NumGC-r.memStatsStart.NumGC)
+							fmt.Printf("Memory Allocation Count: %v\n", memStatsEnd.Mallocs-r.memStatsStart.Mallocs)
+							fmt.Printf("Heap Objects Count: %v\n", memStatsEnd.HeapObjects)
+
+							// Write to CSV
+							csvFile, err := os.OpenFile("receiver_performance.csv", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+							if err == nil {
+								defer csvFile.Close()
+								writer := csv.NewWriter(csvFile)
+								defer writer.Flush()
+
+								// Check if file is empty to write header
+								stat, _ := csvFile.Stat()
+								if stat.Size() == 0 {
+									writer.Write([]string{"Timestamp", "FdtID", "BytesReceived", "Duration(s)", "Throughput(Mbps)", "TotalAlloc(Bytes)", "PeakHeap(Bytes)", "SysMem(MB)", "HeapIdle(MB)", "GCCount", "Mallocs", "HeapObjects", "FEC_Type"})
+								}
+
+								fecType := "Unknown"
+								switch r.config.Type {
+								case decoder.DecoderNoCode:
+									fecType = "NoCode"
+								case decoder.DecoderRaptorQ:
+									fecType = "RaptorQ"
+								case decoder.DecoderReedSolomon:
+									fecType = "ReedSolomon"
+								}
+
+								writer.Write([]string{
+									time.Now().Format(time.RFC3339),
+									strconv.Itoa(int(r.fdtID)),
+									strconv.FormatInt(bytesWritten, 10),
+									fmt.Sprintf("%.6f", dur.Seconds()),
+									fmt.Sprintf("%.6f", mbps),
+									strconv.FormatUint(memStatsEnd.TotalAlloc-r.memStatsStart.TotalAlloc, 10),
+									strconv.FormatUint(memStatsEnd.HeapAlloc, 10),
+									strconv.FormatUint(memStatsEnd.Sys/(1024*1024), 10),
+									strconv.FormatUint(memStatsEnd.HeapIdle/(1024*1024), 10),
+									strconv.FormatUint(uint64(memStatsEnd.NumGC-r.memStatsStart.NumGC), 10),
+									strconv.FormatUint(memStatsEnd.Mallocs-r.memStatsStart.Mallocs, 10),
+									strconv.FormatUint(memStatsEnd.HeapObjects, 10),
+									fecType,
+								})
+							} else {
+								log.Printf("Failed to open receiver_performance.csv: %v", err)
+							}
+						} else {
+							fmt.Printf("File transfer completed (fdtID=%d): %d/%d chunks\n", r.fdtID, finished, r.expectedChunks)
+						}
+					})
+				}
 			}
 		}(i)
 	}
@@ -376,50 +461,14 @@ func (r *Receiver) OnDecodedData(data []byte, offset int64, chunkIdx uint32) err
 	req.Offset = offset
 	req.ChunkIdx = chunkIdx
 
-	// 尝试放入数据通道（若满，等待短时间后放弃以避免阻塞过久）
-	queued := false
-	select {
-	case r.dataChan <- req:
-		queued = true
-	default:
-		// queue full, wait briefly up to 500ms
-		timer := time.NewTimer(500 * time.Millisecond)
-		select {
-		case r.dataChan <- req:
-			queued = true
-		case <-timer.C:
-			// timeout
-		}
-		timer.Stop()
+	// Debug: Check channel status
+	if len(r.dataChan) > cap(r.dataChan)*9/10 {
+		log.Printf("WARNING: Write queue nearly full: %d/%d. Receiver may block.", len(r.dataChan), cap(r.dataChan))
 	}
 
-	if !queued {
-		r.writeRequestPool.Put(req)
-		log.Printf("warning: write queue full and enqueue timed out for chunk %d", chunkIdx)
-		return fmt.Errorf("write queue full")
-	}
-
-	// 已成功入队，检查是否所有分片都已接收完成
-	finished := atomic.AddUint32(&r.finishedChunks, 1)
-	if finished >= r.expectedChunks {
-		r.closeOnce.Do(func() {
-			close(r.finishChan)
-			// 记录接收结束时间
-			if atomic.LoadInt32(&r.receiveStarted) == 1 {
-				r.receiveEnd = time.Now()
-				dur := r.receiveEnd.Sub(r.receiveStart)
-				bytesWritten := atomic.LoadInt64(&r.currWritten)
-				mbps := 0.0
-				if dur.Seconds() > 0 {
-					mbps = (float64(bytesWritten) * 8.0 / dur.Seconds()) / 1e6
-				}
-				log.Printf("文件接收完成 (fdtID=%d): %d/%d chunks, duration=%s", r.fdtID, finished, r.expectedChunks, dur.String())
-				log.Printf("fdtID(%d): bytes received=%d, duration=%s, throughput=%.2f Mbps", r.fdtID, bytesWritten, dur.String(), mbps)
-			} else {
-				log.Printf("文件接收完成 (fdtID=%d): %d/%d chunks", r.fdtID, finished, r.expectedChunks)
-			}
-		})
-	}
+	// 直接发送到通道，减少逻辑判断和Timer开销
+	// 如果通道满，这里会阻塞，形成自然的背压，阻止接收端接收过快
+	r.dataChan <- req
 
 	return nil
 }
@@ -509,14 +558,16 @@ func (r *Receiver) ShowBasicInfo() {
 //   - 使用等待组同步所有协程
 //   - 错误传播和上下文取消链
 func (r *Receiver) Start(ctx context.Context) error {
+	runtime.ReadMemStats(&r.memStatsStart)
+
 	// 获取全局连接池
-	p := pool.GetGlobalPool()
+	p := pool.GetConnPool()
 	if p == nil {
 		return fmt.Errorf("connection pool not initialized")
 	}
 
 	// 获取文件传输连接
-	_, conns, err := p.GetGlobalFileConn(r.fdtID)
+	_, conns, err := p.GetFileConn(r.fdtID)
 	if err != nil {
 		return fmt.Errorf("failed to get connections for fdtID %d: %v", r.fdtID, err)
 	}
@@ -574,6 +625,18 @@ func (r *Receiver) Start(ctx context.Context) error {
 	case <-r.finishChan: // 文件接收完成信号
 	}
 
+	if r.enableMd5 {
+		// 验证MD5
+		recvMd5, err := utils.CalculateMd5(r.outputFile)
+		if err != nil {
+			log.Printf("Failed to calculate MD5: %v", err)
+		} else if recvMd5 != r.expectedMd5 {
+			log.Printf("MD5 mismatch: expected %s, got %s", r.expectedMd5, recvMd5)
+		} else {
+			log.Printf("MD5 verified successfully: %s", recvMd5)
+		}
+	}
+
 	// 检查是否有错误发生
 	select {
 	case err := <-errCh:
@@ -589,206 +652,126 @@ func (r *Receiver) Start(ctx context.Context) error {
 // readLoop 连接接收循环
 // 功能说明：
 //
-//	管理单个UDP连接的数据接收，包括工作协程启动和错误处理
-//
-// 参数：
-//
-//	ctx  - 连接级上下文
-//	conn - UDP连接包装器
-//
-// 返回值：
-//
-//	error - 接收过程中的错误
-//
-// 工作模式：
-//  1. 初始化缓冲区池
-//  2. 启动多个接收工作协程
-//  3. 监听完成信号
-//  4. 清理工作协程
-func (r *Receiver) readLoop(ctx context.Context, conn *pool.UDPConnWrapper) error {
-	// 初始化缓冲区池
-	bufPool := &sync.Pool{
-		New: func() interface{} {
-			return make([]byte, r.config.MaxPacketSize*10)
-		},
+//	管理单个UDP连接的数据接收，使用 IOCP 模型
+func (r *Receiver) readLoop(ctx context.Context, wsck *pool.WinSocket) error {
+	// 使用 IOCP Server
+	// 缓冲区大小设为 MaxPacketSize
+	// Worker 数量设为 0 (自动，通常为 CPU 核心数)
+	// 队列大小设为 16384，提供足够的缓冲
+	server, err := iocp.NewIOCPServer(wsck.Socket, int(r.config.MaxPacketSize), 0, 16384)
+	if err != nil {
+		return fmt.Errorf("failed to create IOCP server: %v", err)
 	}
 
-	// 设置工作协程数量
-	workerCount := 1
-	if workerCount <= 0 {
-		workerCount = 1
+	// 预投递接收请求，数量越多越能抗突发
+	if err := server.PostReceives(10240); err != nil {
+		return fmt.Errorf("failed to post receives: %v", err)
 	}
 
-	log.Printf("Starting %d read workers for connection\n", workerCount)
+	server.Start()
+	defer server.Stop()
 
-	// 创建工作级上下文
-	workerCtx, workerCancel := context.WithCancel(ctx)
-	defer workerCancel()
+	// 启动消费者协程处理数据
+	// 消费者负责解码，计算量大，但过多会导致上下文切换开销
+	consumerCount := runtime.NumCPU() * 2
+	if consumerCount < 4 {
+		consumerCount = 4
+	}
 
-	// 启动工作协程
-	errCh := make(chan error, workerCount)
+	log.Printf("Starting %d consumers for connection", consumerCount)
+
 	var wg sync.WaitGroup
-	for i := 0; i < workerCount; i++ {
+	for i := 0; i < consumerCount; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r.readWorker(workerCtx, conn, bufPool, errCh)
+			r.consumeLoop(ctx, server, wsck)
 		}()
 	}
 
-	// 等待错误或取消
-	var err error
-	select {
-	case <-ctx.Done():
-		err = ctx.Err()
-	case err = <-errCh:
-	}
+	// 等待上下文取消
+	<-ctx.Done()
 
-	// 清理工作协程
-	workerCancel()
-	// 强制解除ReadFromUDP阻塞
-	conn.Conn.SetReadDeadline(time.Now())
+	// 等待消费者退出
 	wg.Wait()
 
-	// 恢复默认超时设置
-	var zero time.Time
-	conn.Conn.SetReadDeadline(zero)
-
-	return err
+	return ctx.Err()
 }
 
-// readWorker 接收工作协程
+// consumeLoop 消费者循环
 // 功能说明：
 //
-//	从UDP连接读取数据，解析数据包，提交给解码器处理
-//
-// 参数：
-//
-//	ctx     - 工作协程上下文
-//	conn    - UDP连接
-//	bufPool - 缓冲区池
-//	errCh   - 错误通道
-//
-// 核心流程：
-//  1. 从缓冲区池获取缓冲区
-//  2. 读取UDP数据报
-//  3. 解析数据包头部
-//  4. 根据解码器类型处理数据
-//  5. 发送进度报告
-//
-// 性能优化：
-//   - 缓冲区池复用减少内存分配
-//   - 原子操作更新统计信息
-//   - 非阻塞进度报告
-func (r *Receiver) readWorker(ctx context.Context, conn *pool.UDPConnWrapper, bufPool *sync.Pool, errCh chan<- error) {
+//	从 IOCP 队列获取数据并进行解码处理
+func (r *Receiver) consumeLoop(ctx context.Context, server *iocp.IOCPServer, wsck *pool.WinSocket) {
+	queue := server.GetDataQueue()
 	for {
+		// 检查退出
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
 
-		// 从缓冲区池获取缓冲区
-		buf := bufPool.Get().([]byte)
-		n, _, err := conn.Conn.ReadFromUDP(buf)
-
-		// 更新接收统计
-		atomic.AddInt64(&r.totalReceived, int64(n))
-		pool.GetGlobalPool().AddReceived(uint64(n))
-
-		if err != nil {
-			bufPool.Put(buf)
-			if os.IsTimeout(err) {
-				// 接收超时，记录当前状态
-				currWritten := int(atomic.LoadInt64(&r.currWritten))
-				log.Printf("接收超时，已接收: %d MB, 待写入: %d MB, 丢包: %d",
-					currWritten/(1024*1024),
-					(r.totalReceived-int64(currWritten))/(1024*1024),
-					r.totalDropped)
-				continue
-			}
-			select {
-			case errCh <- err:
-			default:
-			}
-			return
-		}
-
-		if n < 8 {
-			bufPool.Put(buf)
+		// 从队列获取数据
+		ioCtx, ok := queue.TryDequeue()
+		if !ok {
+			// 避免空转占用 CPU
+			time.Sleep(1 * time.Microsecond)
 			continue
 		}
 
-		// 根据解码器类型处理数据
-		if r.config.Type == decoder.DecoderRaptorQ || r.config.Type == decoder.DecoderNoCode {
-			// 解析序列号
-			seqNum := binary.BigEndian.Uint64(buf[:8])
+		// 处理数据
+		// 注意：ioCtx.Data 是复用的，AddSymbol 必须同步处理或拷贝数据
+		r.processPacket(ctx, wsck, ioCtx.Data[:ioCtx.BytesRecv])
 
-			chunkSize := uint64(r.config.ChunkSize)
-			if chunkSize == 0 {
-				bufPool.Put(buf)
-				continue
-			}
+		// 归还 Context，使其可用于接收新包
+		server.ReturnContext(ioCtx)
+	}
+}
 
-			// 计算分块索引和符号索引
-			chunkIdx := uint32(seqNum / chunkSize)
-			symbolIdx := uint32(seqNum % chunkSize)
+// processPacket 处理单个数据包
+func (r *Receiver) processPacket(ctx context.Context, wsck *pool.WinSocket, data []byte) {
+	n := len(data)
 
-			// 标记接收开始（第一次有效数据）
-			if atomic.CompareAndSwapInt32(&r.receiveStarted, 0, 1) {
-				r.receiveStart = time.Now()
-				log.Printf("fdtID(%d): receive started at %s", r.fdtID, r.receiveStart.Format(time.RFC3339Nano))
-			}
+	// 更新统计
+	atomic.StoreInt64(&wsck.LastUsed, time.Now().Unix())
+	atomic.AddInt64(&r.totalReceived, int64(n))
+	pool.GetConnPool().AddReceived(uint64(n))
 
-			// 提交给解码器
-			if err := r.decoder.AddSymbol(chunkIdx, symbolIdx, buf[8:n]); err != nil {
-				select {
-				case errCh <- err:
-				default:
-				}
-				bufPool.Put(buf)
-				return
-			}
-		} else if r.config.Type == decoder.DecoderReedSolomon {
-			// 解析RS编码序列号
-			seqNum := binary.BigEndian.Uint64(buf[:8])
-			shardIdx := uint32(seqNum >> 32)
-			symbolIdx := uint32(seqNum & 0xFFFFFFFF)
+	if n < 8 {
+		return
+	}
 
-			// 标记接收开始（第一次有效数据）
-			if atomic.CompareAndSwapInt32(&r.receiveStarted, 0, 1) {
-				r.receiveStart = time.Now()
-				log.Printf("fdtID(%d): receive started at %s", r.fdtID, r.receiveStart.Format(time.RFC3339Nano))
-			}
+	// 解析序列号
+	seqNum := binary.BigEndian.Uint64(data[:8])
 
-			// 提交给解码器
-			if err := r.decoder.AddSymbol(shardIdx, symbolIdx, buf[8:n]); err != nil {
-				select {
-				case errCh <- err:
-				default:
-				}
-				bufPool.Put(buf)
-				return
-			}
-		}
-		// 返还缓冲区
-		bufPool.Put(buf)
+	// 计算分块索引和符号索引
+	chunkIdx := uint32(seqNum >> 32)
+	symbolIdx := uint32(seqNum & 0xFFFFFFFF)
 
-		// 更新连接最后使用时间
-		atomic.StoreInt64(&conn.LastUsed, time.Now().Unix())
+	// 标记接收开始（第一次有效数据）
+	if atomic.CompareAndSwapInt32(&r.receiveStarted, 0, 1) {
+		r.receiveStart = time.Now()
+		log.Printf("fdtID(%d): receive started at %s", r.fdtID, r.receiveStart.Format(time.RFC3339Nano))
+	}
 
-		// 发送进度报告
-		if ch, ok := GetReportChan(ctx); ok {
-			select {
-			case ch <- Report{
-				FdtID:    r.fdtID,
-				Received: atomic.LoadInt64(&r.currWritten),
-				Total:    int64(r.config.FileSize),
-				Status:   0,
-			}:
-			default:
-				// 非阻塞发送，避免阻塞接收循环
-			}
+	// 提交给解码器
+	if err := r.decoder.AddSymbol(chunkIdx, symbolIdx, data[8:n]); err != nil {
+		// 仅记录错误，不退出接收循环
+		return
+	}
+
+	// 发送进度报告
+	if ch, ok := GetReportChan(ctx); ok {
+		select {
+		case ch <- Report{
+			FdtID:    r.fdtID,
+			Received: atomic.LoadInt64(&r.currWritten),
+			Total:    int64(r.config.FileSize),
+			Status:   0,
+		}:
+		default:
+			// 非阻塞发送，避免阻塞接收循环
 		}
 	}
 }

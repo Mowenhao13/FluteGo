@@ -1,3 +1,10 @@
+/*
+ * 软件著作权声明：
+ * 本文件包含的代码是 FluteGo 软件的组成部分
+ * 版权所有 (C) 2025
+ * 保留所有权利。
+ */
+
 package meta
 
 import (
@@ -12,6 +19,11 @@ import (
 	"os"
 )
 
+// MetaPkt 封装了一个文件传输任务在 FLUTE 会话中的所有元数据。
+//
+// # 描述
+//
+// 包含文件描述、OTI、端口与会话信息，用于生成和解析 FLUTE 元数据包。
 type MetaPkt struct {
 	File             *fd.FileDesc
 	Oti              oti.Oti
@@ -22,8 +34,20 @@ type MetaPkt struct {
 	CurrentFileIndex uint16
 }
 
-func InitMetaPkt(file *os.File, oti oti.Oti, basePort int, numPorts uint16, fdtID uint8, saveDir string) (*MetaPkt, error) {
-	fd, err := filedesc.GetFileDesc(file, fdtID, saveDir)
+// InitMetaPkt 构建一个用于传输的 MetaPkt 实例。
+//
+// # 参数
+//
+//   - `file`: 源文件句柄
+//   - `oti`: 前向纠错表示
+//   - `basePort`, `numPorts`: 用于传输的端口集合
+//   - `fdtID`: 当前文件 FDT ID
+//
+// # 返回值
+//
+//	初始化好的 `MetaPkt` 以及可能的错误（如文件描述创建失败）。
+func InitMetaPkt(file *os.File, oti oti.Oti, basePort int, numPorts uint16, fdtID uint8) (*MetaPkt, error) {
+	fd, err := filedesc.GetFileDesc(file, fdtID)
 	if err != nil {
 		return nil, err
 	}
@@ -37,10 +61,15 @@ func InitMetaPkt(file *os.File, oti oti.Oti, basePort int, numPorts uint16, fdtI
 		Oti:           oti,
 		BasePort:      basePort,
 		NumPorts:      numPorts,
-		MaxPacketSize: constant.MaxPacketSize,
+		MaxPacketSize: constant.MAX_PACKET_SIZE,
 	}, nil
 }
 
+// Serialize 将 MetaPkt 序列化为字节流，便于通过网络传输。
+//
+// # 返回值
+//
+//	`[]byte`：按照固定字段顺序编码的元数据包。
 func (mt *MetaPkt) Serialize() []byte {
 	buf := new(bytes.Buffer)
 
@@ -56,11 +85,6 @@ func (mt *MetaPkt) Serialize() []byte {
 	sendPath := []byte(file.SendPath)
 	binary.Write(buf, binary.BigEndian, uint16(len(sendPath)))
 	buf.Write(sendPath)
-
-	// SaveDir 长度 + 内容
-	saveDir := []byte(file.SaveDir)
-	binary.Write(buf, binary.BigEndian, uint16(len(saveDir)))
-	buf.Write(saveDir)
 
 	// Name 长度 + 内容
 	name := []byte(file.Name)
@@ -99,6 +123,15 @@ func (mt *MetaPkt) Serialize() []byte {
 	return buf.Bytes()
 }
 
+// DeserializeMetaPkt 将字节流反序列化为 MetaPkt 结构，要求字段顺序与 Serialize 保持一致。
+//
+// # 参数
+//
+//   - `data`: 来自网络的元数据包字节流
+//
+// # 返回值
+//
+//	解析出的 `MetaPkt` 实例和可能的错误。
 func DeserializeMetaPkt(data []byte) (*MetaPkt, error) {
 	buf := bytes.NewReader(data)
 
@@ -124,19 +157,6 @@ func DeserializeMetaPkt(data []byte) (*MetaPkt, error) {
 			return nil, err
 		}
 		mt.File.SendPath = string(path)
-	}
-
-	// SaveDir
-	var saveDirLen uint16
-	if err := binary.Read(buf, binary.BigEndian, &saveDirLen); err != nil {
-		return nil, err
-	}
-	if saveDirLen > 0 {
-		dir := make([]byte, saveDirLen)
-		if _, err := io.ReadFull(buf, dir); err != nil {
-			return nil, err
-		}
-		mt.File.SaveDir = string(dir)
 	}
 
 	// Name
@@ -244,6 +264,7 @@ func DeserializeMetaPkt(data []byte) (*MetaPkt, error) {
 	return mt, nil
 }
 
+// ShowPktInfo 打印 MetaPkt 详情，主要用于调试。
 func (m *MetaPkt) ShowPktInfo() {
 	if m == nil {
 		fmt.Println("<nil> MetaPkt")
@@ -262,7 +283,6 @@ func (m *MetaPkt) ShowPktInfo() {
 	fmt.Printf("File content type: %s\n", m.File.ContentType)
 	fmt.Printf("File md5sum: %s\n", m.File.Md5)
 	fmt.Printf("File send path: %s\n", m.File.SendPath)
-	fmt.Printf("File save dir: %s\n", m.File.SaveDir)
 
 	fmt.Printf("Oti id: %d\n", m.Oti.FECEncodingID)
 	fmt.Printf("BasePort: %d\n", m.BasePort)

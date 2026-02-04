@@ -2,42 +2,38 @@ package constant
 
 // UDP Param
 const (
-	MaxPacketSize = 1400
-	BaseFilePort  = 3400
-	MetaPort      = 3399
-	NumPorts      = 1
-)
-
-// Pool param
-const (
-	MaxConcurrentSends = 1
-	MaxMetaConnTimeout = 500 // in seconds
+	MAX_PACKET_SIZE = 1408
+	BASE_FILE_PORT  = 3400
+	NUM_PORTS       = 1
 )
 
 // Receiver param
 const (
 	RecvRedundancyRatio = 1.01
-	DefaultChunkSize    = 10 * 1024 // 50KB chunks
+	DefaultChunkSize    = 64 * 1024 // 64KB chunks
 )
 
 // Sender param
 const (
-	SendFileDir = "/home/Halllo/Projects/Flute_test_v1/Flute_test/cmd/send_files/"
-	SaveFileDir = "/home/Halllo/Projects/Flute_test_v2/cmd/received_files/"
-
+	SendFileDir_unix         = "cmd/send_files/"
+	SaveFileDir_unix         = "cmd/received_files/"
+	SendFileDir_win_t        = "C:\\Users\\mowen\\Desktop\\FluteGo\\FluteGo\\cmd\\send_files\\"
+	SaveFileDir_win_t        = "C:\\Users\\mowen\\Desktop\\FluteGo\\FluteGo\\cmd\\received_files\\"
+	SendFileDir_win          = "cmd\\send_files\\"
+	SaveFileDir_win          = "cmd\\received_files\\"
 	SendRedundancyRatio      = 1.05
-	DefaultSendRateLimitMbps = 1000 // default send rate limit; 0 disables throttling
-	WindowsSize              = 30
+	DefaultSendRateLimitMbps = 500 // default send rate limit; 0 disables throttling
+	WindowsSize              = 10
 
-	StartSendWait = 3 // seconds to wait before starting to send data
+	START_SEND_WAIT = 1 // seconds to wait before starting to send data
 )
 
 // Arp param
 const (
-	SourceIP        = "192.168.1.102"
+	SourceIP        = "127.0.0.1"
 	SourceMAC       = "10:7c:61:10:a5:47"
 	SourceInterface = "enp3s0"
-	DestIP          = "192.168.1.102"
+	DestIP          = "127.0.0.1"
 	DestMAC         = "88:a2:9e:3f:be:2c"
 	DestInterface   = "eth0"
 )
@@ -54,8 +50,8 @@ const (
 	RsWithConcurrentStreams      = true
 	RsWithInversionCache         = true
 
-	RsTmpSendOutDir              = "../tmp/rs_send/"
-	RsTmpRecvInDir               = "../tmp/rs_recv/"
+	RsTmpSendOutDir = "../tmp/rs_send/"
+	RsTmpRecvInDir  = "../tmp/rs_recv/"
 )
 
 // system param
@@ -65,6 +61,28 @@ const (
 
 // Oti param
 const (
-	MaxNoCodeChunkSize = 32 * 1024
+	MaxNoCodeChunkSize  = 32 * 1024
 	MaxRaptorQChunkSize = 32 * 1024
+)
+
+const (
+	TX_BUF = 64 * 1024 * 1024 // 64 MB
+	RX_BUF = 64 * 1024 * 1024 // 64 MB
+)
+
+const (
+	CONN_TIMEOUT = 1500 // in seconds
+)
+
+const (
+	HEALTH_CHECK_INTERVAL      = 10 // in seconds
+	IDLE_SENDER_CHECK_INTERVAL = 5  // in seconds
+	IDLE_SENDER_TIMEOUT        = 60 // in seconds
+
+	META_PORT = 3399
+	POOL_SEND = 0
+	POOL_RECV = 1
+
+	META_BUF     = 1500
+	META_TIMEOUT = 120 // in seconds
 )

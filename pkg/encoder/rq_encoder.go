@@ -1,3 +1,9 @@
+/*
+ * 软件著作权声明：
+ * 本文件包含的代码是 FluteGo 软件的组成部分
+ * 版权所有 (C) 2025
+ * 保留所有权利。
+ */
 package encoder
 
 import (
@@ -11,11 +17,19 @@ import (
 
 // RqEncoder RaptorQ编码器
 // 功能说明：
-//   实现RaptorQ前向纠错编码
+//
+//	实现RaptorQ前向纠错编码
+//
 // 算法特点：
 //   - 支持任意丢包率
 //   - 可生成任意数量冗余符号
 //   - 计算复杂度适中
+//
+// RqEncoder 封装了 RaptorQ 编码的高阶逻辑。
+//
+// # 描述
+//
+// 使用滑动窗口策略对多个 chunk 生成符号，支撑高冗余配置与延迟控制。
 type RqEncoder struct {
 	Config   EncoderConfig
 	Callback SendCallback
@@ -29,6 +43,16 @@ type activeBlock struct {
 	chunkSize    uint32
 }
 
+// NewRqEncoder 创建一个 RaptorQ 编码器实例。
+//
+// # 参数
+//
+//   - `config`: `EncoderConfig`
+//     指定 chunk 大小、冗余比例和符号长度等信息。
+//
+// # 返回值
+//
+//	初始化后的 `RqEncoder` 和可能的错误。
 func NewRqEncoder(config EncoderConfig) (*RqEncoder, error) {
 	return &RqEncoder{
 		Config: config,
@@ -37,22 +61,46 @@ func NewRqEncoder(config EncoderConfig) (*RqEncoder, error) {
 
 // Encode 编码实现
 // 功能说明：
-//   对多个块进行RaptorQ编码，支持滑动窗口
+//
+//	对多个块进行RaptorQ编码，支持滑动窗口
+//
 // 算法特点：
-//   1. 窗口化处理，控制内存使用
-//   2. 符号级交织，提高网络适应性
-//   3. 支持冗余控制
+//  1. 窗口化处理，控制内存使用
+//  2. 符号级交织，提高网络适应性
+//  3. 支持冗余控制
+//
 // 参数：
-//   ctx        - 上下文，支持取消
-//   chunkCount - 总块数
-//   provider   - 数据提供函数
-//   cb         - 发送回调函数
+//
+//	ctx        - 上下文，支持取消
+//	chunkCount - 总块数
+//	provider   - 数据提供函数
+//	cb         - 发送回调函数
+//
 // 返回值：
-//   error - 编码过程中的错误
+//
+//	error - 编码过程中的错误
+//
 // 实现要点：
-//   1. 滑动窗口控制内存
-//   2. 符号交织抵抗突发丢包
-//   3. 错误处理和资源清理
+//  1. 滑动窗口控制内存
+//  2. 符号交织抵抗突发丢包
+//  3. 错误处理和资源清理
+//
+// Encode 以滑动窗口方式遍历所有 chunk，依次生成并发送符号。
+//
+// # 参数
+//
+//   - `ctx`: `context.Context`
+//     支持取消的上下文。
+//   - `chunkCount`: `uint32`
+//     总 chunk 数。
+//   - `provider`: `DataProvider`
+//     提供 chunk 原始数据。
+//   - `cb`: `SendCallback`
+//     发送符号的回调函数。
+//
+// # 返回值
+//
+//	编码过程中遇到的错误。
 func (e *RqEncoder) Encode(ctx context.Context, chunkCount uint32, provider DataProvider, cb SendCallback) error {
 	callback := cb
 	if callback == nil {
@@ -151,10 +199,21 @@ func (e *RqEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 	return nil
 }
 
+// SetCallback 设置默认的发送回调。
+//
+// # 参数
+//
+//   - `cb`: `SendCallback`
+//     在后续 `Encode` 步骤中被调用。
 func (e *RqEncoder) SetCallback(cb SendCallback) {
 	e.Callback = cb
 }
 
+// Close 释放 RqEncoder 可能占用的资源。
+//
+// # 描述
+//
+// 当前实现仅占位，尚无实际资源需要释放。
 func (e *RqEncoder) Close() error {
 	return nil
 }

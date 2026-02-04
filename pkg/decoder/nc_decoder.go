@@ -1,14 +1,27 @@
+/*
+ * 软件著作权声明：
+ * 本文件包含的代码是 FluteGo 软件的组成部分
+ * 版权所有 (C) 2025
+ * 保留所有权利。
+ */
 package decoder
 
 import (
+	"FluteGo/pkg/shard_map"
 	"fmt"
 	"sync"
+	"time"
 )
 
+// NcDecoder 实现了 NoCode 解码路径，直接将 chunk 数据写回而不做 FEC 操作。
+//
+// # 工作原理
+//
+// 该解码器简单缓冲 chunk 数据，待符号齐全后立即回调输出处理器。适用于网络无需纠错时的场景。
 type NcDecoder struct {
 	Config DecoderConfig
 	output OutputHandler
-	chunks sync.Map // map[chunkIdx]*ncChunkState
+	chunks *shard_map.ShardedMap // 使用高性能分片 Map 替换 sync.Map
 }
 
 type ncChunkState struct {
@@ -33,6 +46,18 @@ func (d *NcDecoder) calChunkSize(chunkIdx uint32) uint32 {
 	return d.Config.ChunkSize
 }
 
+// NewNcDecoder 初始化一个用于没有 FEC 的 Decoder。
+//
+// # 参数
+//
+//   - `config`: `DecoderConfig`
+//     包含 chunk 大小、文件大小等元信息。
+//   - `output`: `OutputHandler`
+//     chunk 解码完成后的写入回调。
+//
+// # 返回值
+//
+//	若参数合法则返回 `NcDecoder` 实例，否则返回错误。
 func NewNcDecoder(config DecoderConfig, output OutputHandler) (*NcDecoder, error) {
 	if config.ChunkSize > 1024*1024*1024 { // 最大1GB per chunk
 		return nil, fmt.Errorf("chunk大小超过限制: %d", config.ChunkSize)
@@ -41,9 +66,42 @@ func NewNcDecoder(config DecoderConfig, output OutputHandler) (*NcDecoder, error
 	return &NcDecoder{
 		Config: config,
 		output: output,
+		chunks: shard_map.NewShardedMap(), // 初始化分片 Map
 	}, nil
 }
 
+// // Monitor 启动监控协程（调试用）
+//
+//	func (d *NcDecoder) Monitor() {
+//		go func() {
+//			ticker := time.NewTicker(3 * time.Second)
+//			defer ticker.Stop()
+//			for range ticker.C {
+//
+// Monitor 启动监控协程（调试用）
+func (d *NcDecoder) Monitor() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			count := d.chunks.Count()
+			if count > 0 {
+				fmt.Printf("[NcDecoder Monitor] Active incomplete chunks in memory: %d (Potential packet loss accumulation)\n", count)
+			}
+		}
+	}()
+}
+
+// AddSymbol 将一个符号写入 chunk 缓冲并在符号齐全后回调写入逻辑。
+//
+// # 参数
+//
+//   - `chunkIdx`, `symbolIdx`：chunk/符号索引，用于定位写入位置。
+//   - `data`：该符号的数据。
+//
+// # 返回值
+//
+//	返回输出处理器的错误（若有）。
 func (d *NcDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) error {
 	// Calculate symbol and chunk sizes
 	symbolSize := int(d.Config.SymbolSize)
@@ -61,6 +119,7 @@ func (d *NcDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 	symIdx := int(symbolIdx)
 
 	// get or create chunk state
+	// 使用分片 Map 的 LoadOrStore
 	v, _ := d.chunks.LoadOrStore(chunkIdx, &ncChunkState{
 		data:     make([]byte, chunkSize),
 		received: make(map[int]struct{}, (chunkSize+symbolSize-1)/symbolSize),
@@ -113,12 +172,17 @@ func (d *NcDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 		}
 	}
 
-	data = nil 
+	data = nil
 
 	return nil
 }
 
-
+// Close 释放 NcDecoder 资源。
+//
+// # 描述
+//
+// 当前实现无特殊资源，返回 `nil`。
 func (d *NcDecoder) Close() error {
+	//TODO:
 	return nil
 }

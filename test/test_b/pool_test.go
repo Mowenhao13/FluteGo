@@ -1,30 +1,23 @@
-package pool
+package test
 
 import (
 	"FluteGo/pkg/utils"
 	"fmt"
-	"net"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
+
 	"FluteGo/constant"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-type To struct {
-	ToAny *windows.RawSockaddrAny
-	ToLen int32
-}
-
-type From struct {
-	FromAny *windows.RawSockaddrAny
-	FromLen int32
-}
+const (
+	DEST_IP = "127.0.0.1"
+)
 
 type WinSocket struct {
-	Addr      *net.UDPAddr
 	Socket    windows.Handle
 	LastUsed  int64
 	LastSent  int64
@@ -32,9 +25,6 @@ type WinSocket struct {
 	FdtID     uint8
 	Mu        sync.RWMutex
 	SentData  uint32
-	Flags     uint32
-	To
-	From
 }
 
 type ConnPool struct {
@@ -85,88 +75,27 @@ func GetConnPool() *ConnPool {
 }
 
 func (p *ConnPool) createNewConn(ip string, port int) (*WinSocket, error) {
-	var sck windows.Handle
-	var err error
-
-	if p.Mode == constant.POOL_SEND {
-		// Sender binds to random port
-		sck, err = utils.CreateSocket("0.0.0.0", 0)
-	} else {
-		// Receiver binds to listening port
-		sck, err = utils.CreateSocket(ip, port)
-	}
-
+	var wsck *WinSocket
+	sck, err := utils.CreateSocket(ip, port)
 	if err != nil {
 		return nil, err
 	}
 
-	// 设置接收缓冲区为 256MB，防止高吞吐下丢包
-	// 2Gbps = 250MB/s，256MB 可以缓冲约 1秒 的数据
-	const RCVBUF_SIZE = 256 * 1024 * 1024
-	if err := windows.SetsockoptInt(sck, windows.SOL_SOCKET, windows.SO_RCVBUF, RCVBUF_SIZE); err != nil {
-		// 如果设置失败，尝试设置一个较小的值 (e.g. 64MB)
-		windows.SetsockoptInt(sck, windows.SOL_SOCKET, windows.SO_RCVBUF, 64*1024*1024)
-	}
-
 	if p.Mode == constant.POOL_SEND {
-		windows.Shutdown(sck, windows.SHUT_RD)
+		windows.Shutdown(wsck.Socket, windows.SHUT_RD)
 	}
 	if p.Mode == constant.POOL_RECV {
-		windows.Shutdown(sck, windows.SHUT_WR)
+		windows.Shutdown(wsck.Socket, windows.SHUT_WR)
 	}
 
-	nPort := uint16(port)
-	ipAddr := net.ParseIP(ip).To4()
-	addr := &net.UDPAddr{
-		IP:   ipAddr,
-		Port: int(nPort),
-	}
-
-	sendTo := To{
-		ToAny: &windows.RawSockaddrAny{},
-		ToLen: 0,
-	}
-	recvFrom := From{
-		FromAny: &windows.RawSockaddrAny{},
-		FromLen: 0,
-	}
-	flags := uint32(0)
-
-	if p.Mode == constant.POOL_SEND {
-		to := &windows.RawSockaddrInet4{
-			Family: windows.AF_INET,
-			Port:   (nPort<<8)&0xff00 | (nPort>>8)&0x00ff,
-		}
-		copy(to.Addr[:], ipAddr)
-
-		toAny := (*windows.RawSockaddrAny)(unsafe.Pointer(to))
-		toLen := int32(unsafe.Sizeof(*to))
-
-		// const MSG_DONTWAIT = 0x40 // send mode
-
-		// if p.Mode == constant.POOL_SEND {
-		// 	flags |= MSG_DONTWAIT
-		// }
-		sendTo.ToAny = toAny
-		sendTo.ToLen = toLen
-	}
-
-	// For POOL_RECV, we use the default initialized recvFrom (RawSockaddrAny)
-	// which is large enough to hold any address.
-	// We don't need to initialize it with local address.
-
-	wsck := &WinSocket{
-		Addr:      addr,
+	wsck = &WinSocket{
 		Socket:    sck,
 		LastUsed:  time.Now().Unix(),
 		IsHealthy: true,
-		Flags:     flags,
-		To:        sendTo,
-		From:      recvFrom,
 	}
 
-	addrKey := fmt.Sprintf("%s:%d", ip, port)
-	p.Conns.Store(addrKey, wsck)
+	addr := fmt.Sprintf("%s:%d", ip, port)
+	p.Conns.Store(addr, wsck)
 
 	atomic.AddInt32(&stats.TotalConns, 1)
 	atomic.AddInt32(&stats.ActiveConns, 1)
@@ -260,20 +189,10 @@ func (p *ConnPool) CreateFileConn(fdtID uint8, numConn uint8, basePort int) ([]*
 		wsck.FdtID = fdtID
 		conns = append(conns, wsck)
 	}
-
-	if len(conns) > 0 {
-		p.FileConns.Store(fdtID, conns)
-	}
-
 	return conns, errs
 }
 
 func (p *ConnPool) isHealthyConn(wsck *WinSocket) bool {
-	// Meta connection (FdtID 0) should not timeout
-	if wsck.FdtID == 0 {
-		return true
-	}
-
 	// 获取最后活动时间（取LastUsed和LastSent的较晚者）
 	lastUsed := atomic.LoadInt64(&wsck.LastUsed)
 	lastSentNano := atomic.LoadInt64(&wsck.LastSent)
@@ -287,8 +206,7 @@ func (p *ConnPool) isHealthyConn(wsck *WinSocket) bool {
 	}
 
 	if time.Since(lastAct) > constant.CONN_TIMEOUT*time.Second {
-		// log.Printf("Connection timeout: FdtID=%d, LastAct=%s, Timeout=%d", wsck.FdtID, lastAct.Format(time.RFC3339), constant.CONN_TIMEOUT)
-		// wsck.IsHealthy = false
+		wsck.IsHealthy = false
 	}
 
 	return wsck.IsHealthy
@@ -320,8 +238,8 @@ func (p *ConnPool) healthCheck() {
 						healthyWsck = append(healthyWsck, w)
 					} else {
 						w.Mu.Lock()
+						defer w.Mu.Unlock()
 						windows.Closesocket(w.Socket)
-						w.Mu.Unlock()
 						atomic.AddInt32(&stats.TotalConns, -1)
 						atomic.AddInt32(&stats.DestoryedConns, 1)
 						atomic.AddInt32(&stats.ActiveConns, -1)
@@ -382,7 +300,6 @@ func (p *ConnPool) GetFileConn(fdtID uint8) (uint16, []*WinSocket, error) {
 		var healthyWscks []*WinSocket
 		for _, w := range wscks {
 			if p.isHealthyConn(w) {
-				w.MarkSent() // Mark as active to prevent idle timeout
 				healthyWscks = append(healthyWscks, w)
 			} else {
 				w.Mu.Lock()
@@ -435,7 +352,6 @@ func (p *ConnPool) CloseFileConn(fdtID uint8) error {
 		for _, w := range wscks {
 			w.Mu.Lock()
 			if w.IsHealthy {
-				// log.Printf("Closing file connection: FdtID=%d", fdtID)
 				w.IsHealthy = false
 				windows.Closesocket(w.Socket)
 				atomic.AddInt32(&stats.TotalConns, -1)
@@ -445,12 +361,6 @@ func (p *ConnPool) CloseFileConn(fdtID uint8) error {
 				}
 			}
 			w.Mu.Unlock()
-
-			// Remove from Conns map to prevent handle reuse issues
-			if w.Addr != nil {
-				key := fmt.Sprintf("%s:%d", w.Addr.IP.String(), w.Addr.Port)
-				p.Conns.Delete(key)
-			}
 		}
 		p.FileConns.Delete(fdtID)
 	}
@@ -474,7 +384,6 @@ func (p *ConnPool) closeIdle(wsck *WinSocket) {
 	wsck.Mu.Lock()
 	defer wsck.Mu.Unlock()
 	if wsck.IsHealthy {
-		// log.Printf("Closing idle connection: FdtID=%d", wsck.FdtID)
 		wsck.IsHealthy = false
 		windows.Closesocket(wsck.Socket)
 		atomic.AddInt32(&stats.TotalConns, -1)
@@ -486,12 +395,6 @@ func (p *ConnPool) closeIdle(wsck *WinSocket) {
 }
 
 func (p *ConnPool) idleSenderMonitor() {
-	// 如果是接收端模式，不需要监控发送空闲，因为接收端主要任务是接收
-	// 否则会导致接收端连接在 60s 后被误杀
-	if p.Mode == constant.POOL_RECV {
-		return
-	}
-
 	ticker := time.NewTicker(constant.IDLE_SENDER_CHECK_INTERVAL * time.Second)
 	defer ticker.Stop()
 
@@ -502,10 +405,6 @@ func (p *ConnPool) idleSenderMonitor() {
 		case <-ticker.C:
 			p.Conns.Range(func(key, value interface{}) bool {
 				wsck := value.(*WinSocket)
-				// Skip Meta connection
-				if wsck.FdtID == 0 {
-					return true
-				}
 				if atomic.LoadUint32(&wsck.SentData) == 0 {
 					return true
 				}
@@ -544,4 +443,49 @@ func (p *ConnPool) ShowInfo() {
 
 func (p *ConnPool) Stop() {
 	close(p.StopChan)
+}
+
+func TestAllocatePorts(t *testing.T) {
+	InitConnPool(DEST_IP, constant.POOL_SEND)
+
+	connPool := GetConnPool()
+	numPorts := 5
+	basePort := 3400
+	ip := "127.0.0.1"
+
+	for i := 0; i < 3; i++ {
+		for j := 0; j < numPorts; j++ {
+			port := basePort + i*numPorts + j
+			connPool.Get(ip, port)
+		}
+	}
+
+	activeConns := connPool.GetStats().ActiveConns
+	t.Logf("Active conns before: %d", activeConns)
+
+	for i := 0; i < 3; i++ {
+		for j := 0; j < numPorts; j++ {
+			port := basePort + i*numPorts + j
+			connPool.closeConn(ip, port)
+		}
+	}
+
+	activeConns = connPool.GetStats().ActiveConns
+	t.Logf("Active conns now: %d", activeConns)
+}
+
+func TestFilePorts(t *testing.T) {
+	InitConnPool(DEST_IP, constant.POOL_SEND)
+	connPool := GetConnPool()
+
+	for fdtID := uint8(0); fdtID < uint8(5); fdtID++ {
+		_, _, err := connPool.GetFileConn(fdtID)
+		if err != nil {
+			connPool.CreateFileConn(fdtID, 10, int(constant.META_PORT)+int(fdtID))
+		}
+	}
+
+	connPool.ShowInfo()
+	connPool.CloseAllConns()
+	connPool.ShowInfo()
 }

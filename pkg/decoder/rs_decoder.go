@@ -1,3 +1,10 @@
+/*
+ * 软件著作权声明：
+ * 本文件包含的代码是 FluteGo 软件的组成部分
+ * 版权所有 (C) 2025
+ * 保留所有权利。
+ */
+
 package decoder
 
 import (
@@ -12,6 +19,11 @@ import (
 	rs "github.com/klauspost/reedsolomon"
 )
 
+// RsDecoder 实现基于 Reed-Solomon 的 chunk 恢复逻辑。
+//
+// # 工作方式
+//
+// 在磁盘上构建每个 shard 的临时文件，随着符号写入逐渐填充，最终调用 `decode` 与 `output` 回调完成 chunk 写回。
 type RsDecoder struct {
 	Config DecoderConfig
 	RsExtraParam
@@ -23,6 +35,7 @@ type RsDecoder struct {
 	output        OutputHandler
 }
 
+// RsExtraParam 存放可选的 SIMD 与并发策略开关。
 type RsExtraParam struct {
 	// SIMD指令集优化（性能从低到高）
 	WithSSE2    bool // SSE2指令集（x86基础）
@@ -41,6 +54,7 @@ type RsExtraParam struct {
 	WithInversionCache bool // 逆矩阵缓存（多次解码优化）
 }
 
+// loadExtraParams 从常量中读取当前编译平台支持的优化特性。
 func loadExtraParams() RsExtraParam {
 	return RsExtraParam{
 		WithSSE2:    constant.RsWithSSE2,
@@ -60,6 +74,16 @@ func loadExtraParams() RsExtraParam {
 
 // NewRsDecoder creates a Reed-Solomon decoder. It accepts an OutputHandler
 // which will be invoked for each decoded chunk once reconstruction/join is done.
+// NewRsDecoder 初始化 Reed-Solomon 解码器，预分配各 shard 的临时文件。
+//
+// # 参数
+//
+//   - `config`: `DecoderConfig`
+//   - `output`: `OutputHandler`
+//
+// # 返回值
+//
+//	`RsDecoder` 实例以及初始化过程中的错误。
 func NewRsDecoder(config DecoderConfig, output OutputHandler) (*RsDecoder, error) {
 	totalShards := int(config.DataShards + config.ParityShards)
 	recvDir := filepath.Dir(constant.RsTmpRecvInDir)
@@ -129,6 +153,13 @@ func NewRsDecoder(config DecoderConfig, output OutputHandler) (*RsDecoder, error
 	return d, nil
 }
 
+// openInput 打开各个 shard 文件并返回其 Reader 列表。
+//
+// # 返回值
+//
+//	`[]io.Reader`: 每个 shard 的 reader
+//	`int64`: 当前最大 shard 大小
+//	`error`: 打开过程中的错误
 func (r *RsDecoder) openInput() ([]io.Reader, int64, error) {
 	totalShards := int(r.Config.DataShards + r.Config.ParityShards)
 	shards := make([]io.Reader, totalShards)
@@ -168,6 +199,7 @@ func (r *RsDecoder) openInput() ([]io.Reader, int64, error) {
 	return shards, maxSize, nil
 }
 
+// decode 执行 Reed-Solomon 还原流程，并在成功后触发 `output` 回调。
 func (r *RsDecoder) decode() error {
 	outDir := filepath.Dir(r.Config.FName)
 	if err := os.MkdirAll(outDir, 0755); err != nil {
@@ -423,10 +455,38 @@ func (r *RsDecoder) decode() error {
 	return nil
 }
 
+// Close 释放 RsDecoder 保留的资源并清理临时文件。
 func (r *RsDecoder) Close() error {
-	return nil
+	var firstErr error
+
+	// 1. 关闭所有打开的文件句柄
+	for i, f := range r.inputs {
+		if f != nil {
+			if err := f.Close(); err != nil {
+				log.Printf("Warning: failed to close shard file %d: %v", i, err)
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+			r.inputs[i] = nil
+		}
+	}
+
+	// 2. 删除所有临时分片文件
+	totalShards := int(r.Config.DataShards + r.Config.ParityShards)
+	for i := 0; i < totalShards; i++ {
+		infn := fmt.Sprintf("%s.%d", r.Config.FName, i)
+		if err := os.Remove(infn); err != nil && !os.IsNotExist(err) {
+			log.Printf("Warning: failed to remove temp file %s: %v", infn, err)
+		} else {
+			// log.Printf("Cleaned up temp file: %s", infn)
+		}
+	}
+
+	return firstErr
 }
 
+// AddSymbol 将 symbol 写入对应 shard 并在满足条件时触发解码。
 func (r *RsDecoder) AddSymbol(chunkID uint32, symbolID uint32, data []byte) error {
 	// Skip if already decoded
 	if r.decoded {
@@ -450,10 +510,10 @@ func (r *RsDecoder) AddSymbol(chunkID uint32, symbolID uint32, data []byte) erro
 	}
 	r.receivedBytes[chunkID] += int64(nWritten)
 
-	log.Printf("Shard %d received: %d/%d bytes (%.1f%%)",
-		chunkID, r.receivedBytes[chunkID], r.expectedSizes[chunkID],
-		(float64(r.receivedBytes[chunkID])/float64(r.expectedSizes[chunkID]))*100,
-	)
+	// log.Printf("Shard %d received: %d/%d bytes (%.1f%%)",
+	// 	chunkID, r.receivedBytes[chunkID], r.expectedSizes[chunkID],
+	// 	(float64(r.receivedBytes[chunkID])/float64(r.expectedSizes[chunkID]))*100,
+	// )
 
 	// Check if we have enough shards to decode
 	if r.canDecode() {
@@ -466,6 +526,7 @@ func (r *RsDecoder) AddSymbol(chunkID uint32, symbolID uint32, data []byte) erro
 	return nil
 }
 
+// canDecode 判断当前收集的 shard 是否足以触发 Reed-Solomon 解码。
 func (r *RsDecoder) canDecode() bool {
 	// Only decode once we have all data shards completely received
 	// OR when we have at least dataShards complete shards (including parity)
