@@ -13,6 +13,7 @@ import (
 	meta "FluteGo/pkg/meta"
 	"FluteGo/pkg/pool"
 	receiver "FluteGo/pkg/receiver"
+	"FluteGo/pkg/sock"
 	"context"
 	"fmt"
 	"log"
@@ -20,9 +21,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
-	"unsafe"
-
-	"golang.org/x/sys/windows"
+	"time"
 )
 
 // ReceiverSystem 接收端系统
@@ -50,7 +49,7 @@ type ReceiverSystem struct {
 	maxWorkers      int32
 	enableMd5       bool
 	recvPool        *pool.ConnPool
-	metaConn        *pool.WinSocket
+	metaConn        *sock.MsSocket
 	targets         sync.Map
 	curReceived     sync.Map
 
@@ -359,16 +358,8 @@ func (s *ReceiverSystem) StartMetaProgram() {
 
 		buf := make([]byte, constant.META_BUF)
 
-		var wsaBuf windows.WSABuf
-		wsaBuf.Len = uint32(len(buf))
-		wsaBuf.Buf = &buf[0]
-		var bytesRecvd uint32
-
-		from := s.metaConn.From.FromAny
-		fromLen := s.metaConn.FromLen
-		flags := s.metaConn.Flags
 		// 设置接收超时
-		windows.SetsockoptInt(s.metaConn.Socket, windows.SOL_SOCKET, windows.SO_RCVTIMEO, constant.META_TIMEOUT)
+		s.metaConn.Socket.SetReadDeadline(time.Now().Add(time.Duration(constant.META_TIMEOUT) * time.Second))
 
 		// 主接收循环
 		for {
@@ -378,10 +369,8 @@ func (s *ReceiverSystem) StartMetaProgram() {
 			default:
 			}
 
-			fromLen = int32(unsafe.Sizeof(*from))
-
-			// 从UDP读取数据
-			err := windows.WSARecvFrom(s.metaConn.Socket, &wsaBuf, 1, &bytesRecvd, &flags, from, &fromLen, nil, nil)
+			// 从UDP读取数据（使用通用的Socket接口方法）
+			bytesRecvd, err := metaConn.Socket.ReadFromUDP(buf)
 			if err != nil {
 				select {
 				case <-s.ctx.Done():
@@ -391,14 +380,9 @@ func (s *ReceiverSystem) StartMetaProgram() {
 					if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
 						return
 					}
-					if err == windows.WSAETIMEDOUT {
+					// 超时错误，继续循环
+					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 						continue
-					}
-					if err == windows.WSAENOTSOCK {
-						return
-					}
-					if err == windows.WSAEINTR {
-						return
 					}
 					log.Printf("Meta read error: %v", err)
 					continue

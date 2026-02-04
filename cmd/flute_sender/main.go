@@ -6,21 +6,23 @@ import (
 	"FluteGo/pkg/oti"
 	"FluteGo/pkg/pool"
 	sender "FluteGo/pkg/sender"
+	"FluteGo/pkg/sock"
 	"FluteGo/pkg/utils"
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"runtime"
 	"runtime/pprof"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/schollz/progressbar/v3"
-	"golang.org/x/sys/windows"
 	"golang.org/x/time/rate"
 )
 
@@ -377,16 +379,33 @@ func main() {
 	fmt.Println("Exit program")
 }
 
-func sendData(wsck *pool.WinSocket, data []byte) error {
-	var wsaBuf windows.WSABuf
-	var byteSent uint32
-	wsaBuf.Len = uint32(len(data))
-	wsaBuf.Buf = &data[0]
-	err := windows.WSASendTo(wsck.Socket, &wsaBuf, 1, &byteSent, wsck.Flags, wsck.To.ToAny, wsck.To.ToLen, nil, nil)
-	if err == nil {
-		wsck.MarkSent()
+func sendData(wsck *sock.MsSocket, data []byte) error {
+	// 从 globalPool 获取目标 IP 地址
+	destIP := globalPool.DestIP
+	if destIP == "" {
+		return fmt.Errorf("destination IP address not set")
 	}
-	return err
+
+	// 去除空格和换行符
+	destIP = strings.TrimSpace(destIP)
+
+	// 创建目标 UDP 地址
+	ip := net.ParseIP(destIP)
+	if ip == nil {
+		return fmt.Errorf("invalid IP address: %s", destIP)
+	}
+
+	destAddr := &net.UDPAddr{
+		IP:   ip,
+		Port: constant.META_PORT,
+	}
+
+	_, err := wsck.Socket.WriteToUDP(data, destAddr)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func SendFile(mt *meta.MetaPkt, limiter *rate.Limiter, onOverhead func(int64), onProgress func(int64), maxConcurrentSends int) error {
@@ -397,9 +416,9 @@ func SendFile(mt *meta.MetaPkt, limiter *rate.Limiter, onOverhead func(int64), o
 
 	metaData := mt.Serialize()
 
-	log.Printf("[SendFile] Meta connection: %s (Mode: %d, FdtID: %d)",
-		metaConn.Addr, globalPool.Mode, metaConn.FdtID)
-	log.Printf("[SendFile] Sending metadata: %d bytes to %s", len(metaData), metaConn.Addr)
+	log.Printf("[SendFile] Meta connection: %s:%d (Mode: %d, FdtID: %d)",
+		globalPool.DestIP, constant.META_PORT, globalPool.Mode, metaConn.FdtID)
+	log.Printf("[SendFile] Sending metadata: %d bytes to %s:%d", len(metaData), globalPool.DestIP, constant.META_PORT)
 
 	if err := sendData(metaConn, metaData); err != nil {
 		log.Printf("[SendFile] Failed to send metadata: %v", err)

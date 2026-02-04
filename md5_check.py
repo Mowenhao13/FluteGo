@@ -11,8 +11,8 @@ def calculate_md5(file_path):
 
 def main():
     # 目录路径
-    send_files_dir = "/home/Halllo/Projects/Flute_test_v2/cmd/send_files"
-    received_files_dir = "/home/Halllo/Projects/Flute_test_v2/cmd/received_files"
+    send_files_dir = "cmd/send_files"
+    received_files_dir = "cmd/received_files"
 
     # 检查目录是否存在
     if not os.path.exists(send_files_dir):
