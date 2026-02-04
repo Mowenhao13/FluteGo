@@ -4,13 +4,6 @@
  * 版权所有 (C) 2025
  * 保留所有权利。
  */
-/*
- * 软件著作权声明：
- * 本文件包含的代码是 FluteGo 软件的组成部分
- * 版权所有 (C) 2025
- * 保留所有权利。
- */
-
 package utils
 
 import (
@@ -30,7 +23,6 @@ import (
 	"sync/atomic"
 
 	"github.com/edsrzf/mmap-go"
-	"golang.org/x/sys/windows"
 )
 
 // globalPeakHeapAlloc 记录全局堆内存分配的峰值（单位：字节）
@@ -357,43 +349,6 @@ func SelectSaveFileDir() string {
 // }
 
 // windows only
-func CreateSocket(ip string, port int) (windows.Handle, error) {
-	sock, err := windows.Socket(windows.AF_INET, windows.SOCK_DGRAM, windows.IPPROTO_UDP)
-	if err != nil {
-		return 0, fmt.Errorf("Create UDP socket failed: %v", err)
-	}
-
-	if err := windows.SetsockoptInt(sock, windows.SOL_SOCKET, windows.SO_REUSEADDR, 1); err != nil {
-		windows.CloseHandle(sock)
-		return 0, fmt.Errorf("Set SO_REUSEADDR failed: %v", err)
-	}
-
-	if err := windows.SetsockoptInt(sock, windows.SOL_SOCKET, windows.SO_SNDBUF, constant.TX_BUF); err != nil {
-		windows.CloseHandle(sock)
-		return 0, fmt.Errorf("Set SO_SNDBUF failed: %v", err)
-	}
-
-	if err := windows.SetsockoptInt(sock, windows.SOL_SOCKET, windows.SO_RCVBUF, constant.RX_BUF); err != nil {
-		windows.CloseHandle(sock)
-		return 0, fmt.Errorf("Set SO_RCVBUF failed: %v", err)
-	}
-
-	if err := windows.SetsockoptInt(sock, windows.IPPROTO_UDP, windows.TCP_NODELAY, 1); err != nil {
-		windows.CloseHandle(sock)
-		return 0, fmt.Errorf("Set TCP_NODELAY failed: %v", err)
-	}
-
-	sockaddr := &windows.SockaddrInet4{Port: port}
-	ipAddr := net.ParseIP(ip).To4()
-	copy(sockaddr.Addr[:], ipAddr)
-	if err := windows.Bind(sock, sockaddr); err != nil {
-		windows.CloseHandle(sock)
-		return 0, fmt.Errorf("Bind socket failed: %v", err)
-	}
-
-	return sock, nil
-}
-
 func ListDir(path string) {
 	entries, err := os.ReadDir(path)
 	if err != nil {

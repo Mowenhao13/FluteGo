@@ -1,5 +1,3 @@
-github.com/alphadose/zenq/v2 v2.8.4 h1:sJnE6tSPKVs67ZTrRhGtXp1tg0FCr1QEgxPMp9IfTg0=
-github.com/alphadose/zenq/v2 v2.8.4/go.mod h1:rA5DlSzkOaSb0jArMjiZ3N4m0CwBf9ZgmNyB8Qt5XlM=
 github.com/chengxilo/virtualterm v1.0.4 h1:Z6IpERbRVlfB8WkOmtbHiDbBANU7cimRIof7mk9/PwM=
 github.com/chengxilo/virtualterm v1.0.4/go.mod h1:DyxxBZz/x1iqJjFxTFcr6/x+jSpqN0iwWCOK1q10rlY=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=

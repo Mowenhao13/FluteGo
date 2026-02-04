@@ -1,3 +1,4 @@
+//go:build windows
 /*
  * 软件著作权声明：
  * 本文件包含的代码是 FluteGo 软件的组成部分

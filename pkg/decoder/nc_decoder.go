@@ -9,6 +9,7 @@ package decoder
 import (
 	"FluteGo/pkg/shard_map"
 	"fmt"
+	// "log"
 	"sync"
 	"time"
 )
@@ -174,6 +175,7 @@ func (d *NcDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 
 	data = nil
 
+	// log.Printf("AddSymbol: chunk %d, symbol %d, got %d/%d", chunkIdx, symbolIdx, st.got, st.expected)
 	return nil
 }
 

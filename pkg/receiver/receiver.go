@@ -10,9 +10,11 @@ package receiver
 import (
 	constant "FluteGo/constant"
 	"FluteGo/pkg/decoder"
+	"FluteGo/pkg/io"
 	"FluteGo/pkg/iocp"
 	"FluteGo/pkg/meta"
 	"FluteGo/pkg/pool"
+	"FluteGo/pkg/sock"
 	"FluteGo/pkg/utils"
 	"context"
 	"encoding/binary"
@@ -22,6 +24,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 
@@ -257,6 +260,12 @@ func InitReceiver(mt *meta.MetaPkt, saveDir string, enableMd5 bool) (*Receiver, 
 //
 //	使用对象池复用写入请求对象，减少GC压力
 func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, expectedChunks uint32, expectedMd5 string, enableMd5 bool) (*Receiver, error) {
+	// 确保目录存在
+	dir := filepath.Dir(outFilePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create directory: %v", err)
+	}
+
 	// 创建输出文件
 	file, err := os.Create(outFilePath)
 	if err != nil {
@@ -327,12 +336,14 @@ func (r *Receiver) startWriterLoop() {
 	if workers < 2 {
 		workers = 2
 	}
-	log.Printf("Starting %d writer workers", workers)
+	// log.Printf("Starting %d writer workers", workers)
 	for i := 0; i < workers; i++ {
 		r.writerWg.Add(1)
 		go func(id int) {
+			// log.Printf("Writer worker %d started for fdtID=%d", id, r.fdtID)
 			defer r.writerWg.Done()
 			for req := range r.dataChan {
+				// log.Printf("Writer worker %d processing write request: chunkIdx=%d, offset=%d, len=%d", id, req.ChunkIdx, req.Offset, len(req.Data))
 				// 使用 WriteAt 进行随机写入
 				_, err := r.outputFile.WriteAt(req.Data, req.Offset)
 				if err != nil {
@@ -345,6 +356,25 @@ func (r *Receiver) startWriterLoop() {
 				// 回收写入请求对象
 				req.Data = nil
 				r.writeRequestPool.Put(req)
+
+				// log.Printf("Writer worker %d completed write for chunkIdx=%d, total written=%d", id, req.ChunkIdx, atomic.LoadInt64(&r.currWritten))
+
+				// 发送进度报告
+				if ch, ok := GetReportChan(context.Background()); ok {
+					report := Report{
+						FdtID:    r.fdtID,
+						Received: atomic.LoadInt64(&r.currWritten),
+						Total:    int64(r.config.FileSize),
+						Status:   0,
+					}
+					select {
+					case ch <- report:
+						// log.Printf("Progress report sent: fdtID=%d, received=%d, total=%d", report.FdtID, report.Received, report.Total)
+					default:
+						// 非阻塞发送，避免阻塞写入循环
+						// log.Printf("Progress report skipped (channel full): fdtID=%d, received=%d, total=%d", report.FdtID, report.Received, report.Total)
+					}
+				}
 
 				// 检查是否所有分片都已接收完成
 				finished := atomic.AddUint32(&r.finishedChunks, 1)
@@ -470,6 +500,7 @@ func (r *Receiver) OnDecodedData(data []byte, offset int64, chunkIdx uint32) err
 	// 如果通道满，这里会阻塞，形成自然的背压，阻止接收端接收过快
 	r.dataChan <- req
 
+	// log.Printf("OnDecodedData: chunk %d, offset %d, len %d", chunkIdx, offset, len(data))
 	return nil
 }
 
@@ -653,30 +684,20 @@ func (r *Receiver) Start(ctx context.Context) error {
 // 功能说明：
 //
 //	管理单个UDP连接的数据接收，使用 IOCP 模型
-func (r *Receiver) readLoop(ctx context.Context, wsck *pool.WinSocket) error {
-	// 使用 IOCP Server
-	// 缓冲区大小设为 MaxPacketSize
-	// Worker 数量设为 0 (自动，通常为 CPU 核心数)
-	// 队列大小设为 16384，提供足够的缓冲
-	server, err := iocp.NewIOCPServer(wsck.Socket, int(r.config.MaxPacketSize), 0, 16384)
+func (r *Receiver) readLoop(ctx context.Context, msck *sock.MsSocket) error {
+	ioHandler, err := io.NewIOHandler(msck, int(r.config.MaxPacketSize))
 	if err != nil {
-		return fmt.Errorf("failed to create IOCP server: %v", err)
+		return fmt.Errorf("failed to create IO handler: %v", err)
 	}
-
-	// 预投递接收请求，数量越多越能抗突发
-	if err := server.PostReceives(10240); err != nil {
-		return fmt.Errorf("failed to post receives: %v", err)
-	}
-
-	server.Start()
-	defer server.Stop()
+	ioHandler.Start()
+	defer ioHandler.Stop()
 
 	// 启动消费者协程处理数据
 	// 消费者负责解码，计算量大，但过多会导致上下文切换开销
-	consumerCount := runtime.NumCPU() * 2
-	if consumerCount < 4 {
-		consumerCount = 4
-	}
+	consumerCount := runtime.NumCPU()
+	// if consumerCount < 4 {
+	// 	consumerCount = 4
+	// }
 
 	log.Printf("Starting %d consumers for connection", consumerCount)
 
@@ -685,7 +706,7 @@ func (r *Receiver) readLoop(ctx context.Context, wsck *pool.WinSocket) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r.consumeLoop(ctx, server, wsck)
+			r.consumeLoop(ctx, ioHandler, msck)
 		}()
 	}
 
@@ -702,8 +723,7 @@ func (r *Receiver) readLoop(ctx context.Context, wsck *pool.WinSocket) error {
 // 功能说明：
 //
 //	从 IOCP 队列获取数据并进行解码处理
-func (r *Receiver) consumeLoop(ctx context.Context, server *iocp.IOCPServer, wsck *pool.WinSocket) {
-	queue := server.GetDataQueue()
+func (r *Receiver) consumeLoop(ctx context.Context, ioHandler io.IOHandler, msck *sock.MsSocket) {
 	for {
 		// 检查退出
 		select {
@@ -713,28 +733,42 @@ func (r *Receiver) consumeLoop(ctx context.Context, server *iocp.IOCPServer, wsc
 		}
 
 		// 从队列获取数据
-		ioCtx, ok := queue.TryDequeue()
+		ctxObj, ok := ioHandler.TryDequeue()
 		if !ok {
 			// 避免空转占用 CPU
 			time.Sleep(1 * time.Microsecond)
 			continue
 		}
 
+		// 根据上下文类型提取数据
+		var data []byte
+		switch obj := ctxObj.(type) {
+		case *iocp.IOContext:
+			// Windows IOCP 上下文
+			data = obj.Data[:obj.BytesRecv]
+		case []byte:
+			// Unix 直接返回的字节数组
+			data = obj
+		default:
+			// 未知类型，跳过
+			ioHandler.ReturnContext(ctxObj)
+			continue
+		}
+
 		// 处理数据
 		// 注意：ioCtx.Data 是复用的，AddSymbol 必须同步处理或拷贝数据
-		r.processPacket(ctx, wsck, ioCtx.Data[:ioCtx.BytesRecv])
-
+		r.processPacket(ctx, msck, data)
 		// 归还 Context，使其可用于接收新包
-		server.ReturnContext(ioCtx)
+		ioHandler.ReturnContext(ctxObj)
 	}
 }
 
 // processPacket 处理单个数据包
-func (r *Receiver) processPacket(ctx context.Context, wsck *pool.WinSocket, data []byte) {
+func (r *Receiver) processPacket(ctx context.Context, msck *sock.MsSocket, data []byte) {
 	n := len(data)
 
 	// 更新统计
-	atomic.StoreInt64(&wsck.LastUsed, time.Now().Unix())
+	atomic.StoreInt64(&msck.LastUsed, time.Now().Unix())
 	atomic.AddInt64(&r.totalReceived, int64(n))
 	pool.GetConnPool().AddReceived(uint64(n))
 
@@ -752,26 +786,30 @@ func (r *Receiver) processPacket(ctx context.Context, wsck *pool.WinSocket, data
 	// 标记接收开始（第一次有效数据）
 	if atomic.CompareAndSwapInt32(&r.receiveStarted, 0, 1) {
 		r.receiveStart = time.Now()
-		log.Printf("fdtID(%d): receive started at %s", r.fdtID, r.receiveStart.Format(time.RFC3339Nano))
+		// log.Printf("fdtID(%d): receive started at %s", r.fdtID, r.receiveStart.Format(time.RFC3339Nano))
 	}
 
 	// 提交给解码器
 	if err := r.decoder.AddSymbol(chunkIdx, symbolIdx, data[8:n]); err != nil {
 		// 仅记录错误，不退出接收循环
+		log.Printf("AddSymbol failed for chunk %d, symbol %d: %v", chunkIdx, symbolIdx, err)
 		return
 	}
 
 	// 发送进度报告
 	if ch, ok := GetReportChan(ctx); ok {
-		select {
-		case ch <- Report{
+		report := Report{
 			FdtID:    r.fdtID,
 			Received: atomic.LoadInt64(&r.currWritten),
 			Total:    int64(r.config.FileSize),
 			Status:   0,
-		}:
+		}
+		select {
+		case ch <- report:
+			// log.Printf("Progress report sent: fdtID=%d, received=%d, total=%d", report.FdtID, report.Received, report.Total)
 		default:
 			// 非阻塞发送，避免阻塞接收循环
+			// log.Printf("Progress report skipped (channel full): fdtID=%d, received=%d, total=%d", report.FdtID, report.Received, report.Total)
 		}
 	}
 }

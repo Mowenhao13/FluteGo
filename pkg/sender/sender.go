@@ -4,12 +4,6 @@
  * 版权所有 (C) 2025
  * 保留所有权利。
  */
-/*
- * 软件著作权声明：
- * 本文件包含的代码是 FluteGo 软件的组成部分
- * 版权所有 (C) 2025
- * 保留所有权利。
- */
 
 package sender
 
@@ -33,8 +27,8 @@ import (
 	"sync"
 	"time"
 
-	// "github.com/edsrzf/mmap-go"
-	"golang.org/x/sys/windows"
+	"FluteGo/pkg/sock"
+
 	"golang.org/x/time/rate"
 )
 
@@ -337,7 +331,7 @@ type sendTask struct {
 }
 
 // processSendTask 异步处理发送任务
-func (s *Sender) processSendTask(wsck *pool.WinSocket, bufPool *sync.Pool, task sendTask) {
+func (s *Sender) processSendTask(sck *sock.MsSocket, bufPool *sync.Pool, task sendTask) {
 	buf := task.buf
 	chunkIdx := task.chunkIdx
 	symbolID := task.symbolID
@@ -348,31 +342,14 @@ func (s *Sender) processSendTask(wsck *pool.WinSocket, bufPool *sync.Pool, task 
 
 	binary.BigEndian.PutUint64(buf[:8], seqNum)
 
-	var wsaBuf windows.WSABuf
-	var byteSent uint32
-
-	wsaBuf.Len = uint32(len(buf))
-	wsaBuf.Buf = &buf[0]
-
 	// 发送数据
-	err := windows.WSASendTo(wsck.Socket, &wsaBuf, 1, &byteSent, wsck.Flags, wsck.To.ToAny, wsck.To.ToLen, nil, nil)
-	if err != nil {
+	if _, err := sck.Socket.WriteToUDP(buf, sck.Addr); err != nil {
 		log.Printf("write failed: chunk %d symbol %d: %v", chunkIdx, symbolID, err)
 		bufPool.Put(buf[:cap(buf)])
 		return
 	}
-
-	// 记录发送日志
-	// if chunkIdx%5000 == 0 {
-	// 	if s.config.DataShards > 0 && s.config.ParityShards > 0 {
-	// 		log.Printf("Write symbol for shard %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, byteSent, len(buf)-8)
-	// 	} else {
-	// 		log.Printf("Write symbol for chunk %d symbol %d, bytes_sent=%d, payload_len=%d", chunkIdx, symbolID, byteSent, len(buf)-8)
-	// 	}
-	// }
-
 	// 标记连接已使用
-	wsck.MarkSent()
+	sck.MarkSent()
 
 	// 标记发送开始（第一次成功写）
 	if atomic.CompareAndSwapInt32(&s.sendStarted, 0, 1) {
@@ -499,13 +476,6 @@ func (s *Sender) Start(ctx context.Context) error {
 		}
 	}()
 	defer close(keepAliveStop)
-
-	// Calculate and log total symbols
-	// Use helper method but keep logging
-	// totalBytes := s.GetTotalBytesToSend()
-	// Approximate total symbols for logging (ignoring header size in division)
-	// totalSymbols := totalBytes / int64(s.config.SymbolSize+8)
-	// log.Printf("fdtID(%d): Total symbols to send: %d, Total bytes: %d", s.fdtID, totalSymbols, totalBytes)
 
 	// 初始化缓冲区池
 	bufPool := &sync.Pool{
