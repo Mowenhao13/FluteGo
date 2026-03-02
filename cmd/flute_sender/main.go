@@ -2,414 +2,240 @@ package main
 
 import (
 	"FluteGo/constant"
+	"FluteGo/pkg/apiserver"
+	"FluteGo/pkg/config"
 	"FluteGo/pkg/meta"
 	"FluteGo/pkg/oti"
 	"FluteGo/pkg/pool"
 	sender "FluteGo/pkg/sender"
 	"FluteGo/pkg/sock"
-	"FluteGo/pkg/utils"
+	"FluteGo/pkg/web"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
-	"runtime/pprof"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/schollz/progressbar/v3"
 	"golang.org/x/time/rate"
 )
 
-var globalPool *pool.ConnPool
-var sendFileIndex uint32
-
 var (
-	fPath              string
-	otiID              uint8
-	maxConcurrentSends uint8
-	destIP             string
-	transferringFiles  sync.Map // 用于存储当前正在传输的文件
+	globalPool *pool.ConnPool
+	poolMu     sync.Mutex
+	poolDestIP string
 )
 
-func main() {
-	// 创建内存profile文件
-	memProfile, err := os.Create("sender_mem_profile.pprof")
-	if err != nil {
-		log.Printf("Failed to create memory profile: %v", err)
-		fmt.Println("按回车键退出...")
-		fmt.Scanln()
+var (
+	currentDestIP   string
+	currentDestIPMu sync.RWMutex
+)
+
+// nextFdtID and nextPort are global atomic counters shared across API sends.
+var nextFdtID atomic.Uint32
+var nextPort  atomic.Int32
+
+func ensurePool(destIP string) error {
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	if globalPool != nil && poolDestIP == destIP {
+		return nil
 	}
-	defer memProfile.Close()
-
-	// 在测试开始时获取内存快照
-	runtime.GC()
-	if err := pprof.WriteHeapProfile(memProfile); err != nil {
-		log.Printf("Failed to write initial heap profile: %v", err)
-		fmt.Println("按回车键退出...")
-		fmt.Scanln()
+	if globalPool != nil {
+		globalPool.CloseMetaConn()
 	}
-
-	// 记录开始时的内存状态
-	var memStatsStart, memStatsEnd runtime.MemStats
-	runtime.ReadMemStats(&memStatsStart)
-
-	// 解析Input参数
-	fmt.Println("Enter dest IP, example: 127.0.0.1")
-	fmt.Scanln(&destIP)
-	// testing
-	if destIP == "" {
-		destIP = constant.DestIP
-		fmt.Printf("Using default dest ip: %s\n", destIP)
-	}
-
-	fmt.Println("\nEnter directory containing files or single file path to send, example: cmd/send_files")
-	fmt.Scanln(&fPath)
-	if fPath == "" {
-		fPath = utils.SelectSendFileDir()
-		log.Printf("Using default send file directory: %s", fPath)
-	}
-
-	info, err := os.Stat(fPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			log.Printf("Path does not exist: %s", fPath)
-			fmt.Println("按回车键退出...")
-			fmt.Scanln()
-			return
-		} else {
-			log.Printf("Failed to access path: %v", err)
-			fmt.Println("按回车键退出...")
-			fmt.Scanln()
-			return
-		}
-	}
-
-	var sendFileList []*os.File
-
-	if info.IsDir() {
-		log.Printf("Sending files from directory: %s", fPath)
-
-		files, err := os.ReadDir(fPath)
-		if err != nil {
-			log.Printf("Failed to read directory: %v", err)
-			fmt.Println("按回车键退出...")
-			fmt.Scanln()
-		}
-
-		utils.ListDir(fPath)
-
-		for _, file := range files {
-			if !file.IsDir() {
-				f, err := os.Open(fPath + file.Name())
-				if err != nil {
-					log.Printf("Failed to open file: %v", err)
-					fmt.Println("按回车键退出...")
-					fmt.Scanln()
-				}
-				defer f.Close()
-				sendFileList = append(sendFileList, f)
-			}
-		}
-
-		if len(sendFileList) == 0 {
-			log.Printf("No files found in %s", fPath)
-			fmt.Println("按回车键退出...")
-			fmt.Scanln()
-			return
-		}
-
-	} else {
-		log.Printf("Sending single file: %s", fPath)
-		f, err := os.Open(fPath)
-		if err != nil {
-			log.Printf("Failed to open file: %v", err)
-			fmt.Println("按回车键退出...")
-			fmt.Scanln()
-		}
-		sendFileList = append(sendFileList, f)
-	}
-
-	fmt.Println("Enter OTI ID (0: NoCode, 1: RaptorQ, 2: Reed-Solomon), default is 0")
-	fmt.Scanln(&otiID)
-	if otiID > 2 {
-		otiID = 0
-		log.Printf("Invalid OTI ID %d, defaulting to No-code", otiID)
-	}
-
-	fmt.Println("Enter max concurrent sends (default 1)")
-	fmt.Scanln(&maxConcurrentSends)
-	if maxConcurrentSends == 0 {
-		maxConcurrentSends = 1
-		log.Printf("Invalid max concurrent sends %d, defaulting to 1", maxConcurrentSends)
-	}
-
-	fdtID := uint8(1)
-
-	var o oti.Oti
-
-	switch otiID {
-	case 0:
-		o = oti.NewNoCode(1400)
-		log.Printf("Using OTI: NoCode")
-	case 1:
-		o = oti.NewRaptorQ(1400)
-		log.Printf("Using OTI: RaptorQ")
-	case 2:
-		o = oti.NewReedSolomon(12, 4)
-		log.Printf("Using OTI: Reed-Solomon")
-	default:
-		log.Printf("Invalid OTI ID %d, defaulting to Reed-Solomon", otiID)
-	}
-
 	pool.InitConnPool(destIP, 0)
-	globalPool = pool.GetConnPool()
-	if globalPool == nil {
-		log.Printf("Pool not initialized\n")
-		fmt.Println("按回车键退出...")
-		fmt.Scanln()
-		return
+	p := pool.GetConnPool()
+	if p == nil {
+		return fmt.Errorf("pool init failed")
 	}
-
-	_, err = globalPool.InitMetaConn()
-	if err != nil {
-		log.Printf("Failed to create MetaPkt connection\n")
-		fmt.Println("按回车键退出...")
-		fmt.Scanln()
-		return
+	if _, err := p.InitMetaConn(); err != nil {
+		return err
 	}
-
-	defer globalPool.CloseMetaConn()
-
-	maxConcurrent := maxConcurrentSends
-	if maxConcurrent <= 0 {
-		maxConcurrent = 1
-	}
-
-	// Create global rate limiter
-	limiter, _ := sender.CreateRateLimiter(constant.DefaultSendRateLimitMbps, 1500)
-
-	sem := make(chan struct{}, maxConcurrent)
-	var wg sync.WaitGroup
-
-	totalFiles := len(sendFileList)
-	currentBasePort := constant.BASE_FILE_PORT
-
-	// Setup global progress bar if concurrent sending is enabled
-	var globalBar *progressbar.ProgressBar
-	var globalBarMu sync.Mutex
-	fileProgress := make(map[uint8]int64)
-
-	if maxConcurrentSends > 1 {
-		var totalSessionSize int64
-		for _, f := range sendFileList {
-			info, _ := f.Stat()
-			totalSessionSize += info.Size()
-		}
-
-		globalBar = progressbar.NewOptions64(
-			totalSessionSize,
-			progressbar.OptionSetDescription("[Total Progress]"),
-			progressbar.OptionSetWriter(os.Stderr),
-			progressbar.OptionShowBytes(true),
-			progressbar.OptionSetWidth(15),
-			progressbar.OptionThrottle(65*time.Millisecond),
-			progressbar.OptionShowCount(),
-			progressbar.OptionOnCompletion(func() {
-				fmt.Fprint(os.Stderr, "\n")
-			}),
-			progressbar.OptionSpinnerType(14),
-			progressbar.OptionFullWidth(),
-		)
-	}
-
-	for i, file := range sendFileList {
-		sem <- struct{}{}
-		currFdtID := fdtID
-		fdtID++
-
-		fileBasePort := currentBasePort
-		currentBasePort += constant.NUM_PORTS
-
-		wg.Add(1)
-
-		go func(idx int, f *os.File, fid uint8, portBase int) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			numPorts := uint8(constant.NUM_PORTS)
-			conns, connErrs := globalPool.CreateFileConn(fid, numPorts, portBase)
-			if len(connErrs) > 0 {
-				for _, cErr := range connErrs {
-					if cErr != nil {
-						log.Printf("Failed to create data connection for fdtID %d: %v", fid, cErr)
-					}
-				}
-			}
-			if len(conns) == 0 {
-				log.Printf("No data connections available for fdtID %d, skip file", fid)
-				fmt.Println("按回车键退出...")
-				fmt.Scanln()
-				return
-			}
-			defer globalPool.CloseFileConn(fid)
-
-			// Use the intended destination port as basePort for metadata
-			basePort := portBase
-			metaPkt, err := meta.InitMetaPkt(f, o, basePort, uint16(numPorts), fid)
-			if err != nil {
-				log.Printf("Failed to init MetaPkt: %v", err)
-				fmt.Println("按回车键退出...")
-				fmt.Scanln()
-				return
-			}
-			metaPkt.TotalFiles = uint16(totalFiles)
-			metaPkt.CurrentFileIndex = uint16(atomic.AddUint32(&sendFileIndex, 1))
-			log.Printf("Initialized MetaPkt for file: %s, FdtID: %d", metaPkt.File.Name, metaPkt.File.FdtID)
-
-			// 记录正在传输的文件
-			transferringFiles.Store(fid, metaPkt.File.Name)
-			defer transferringFiles.Delete(fid)
-
-			var onOverhead func(int64)
-			var onProgress func(int64)
-			var localBar *progressbar.ProgressBar
-
-			if maxConcurrentSends > 1 {
-				// Use global bar
-				onOverhead = func(overhead int64) {
-					// globalBar is thread-safe for ChangeMax64
-					globalBar.ChangeMax64(globalBar.GetMax64() + overhead)
-				}
-				onProgress = func(sent int64) {
-					globalBarMu.Lock()
-					defer globalBarMu.Unlock()
-					delta := sent - fileProgress[fid]
-					if delta > 0 {
-						fileProgress[fid] = sent
-						globalBar.Add64(delta)
-					}
-				}
-			} else {
-				// Use local bar
-				localBar = progressbar.NewOptions64(
-					int64(metaPkt.File.TransferLen),
-					progressbar.OptionSetDescription(fmt.Sprintf("[%s]", metaPkt.File.Name)),
-					progressbar.OptionSetWriter(os.Stderr),
-					progressbar.OptionShowBytes(true),
-					progressbar.OptionSetWidth(15),
-					progressbar.OptionThrottle(65*time.Millisecond),
-					progressbar.OptionShowCount(),
-					progressbar.OptionOnCompletion(func() {
-						fmt.Fprint(os.Stderr, "\n")
-					}),
-					progressbar.OptionSpinnerType(14),
-					progressbar.OptionFullWidth(),
-				)
-				onOverhead = func(overhead int64) {
-					localBar.ChangeMax64(localBar.GetMax64() + overhead)
-				}
-				onProgress = func(sent int64) {
-					localBar.Set64(sent)
-				}
-			}
-
-			metaPkt.ShowPktInfo()
-			if err := SendFile(metaPkt, limiter, onOverhead, onProgress, int(maxConcurrentSends)); err != nil {
-				log.Printf("Failed to send file(fdtID: %d): %v", fid, err)
-				if localBar != nil {
-					localBar.Finish()
-				}
-				fmt.Println("按回车键退出...")
-				fmt.Scanln()
-				return
-			}
-			if localBar != nil {
-				localBar.Finish()
-			}
-		}(i, file, currFdtID, fileBasePort)
-
-	}
-
-	wg.Wait()
-
-	if globalBar != nil {
-		globalBar.Finish()
-	}
-
-	time.Sleep(500 * time.Millisecond)
-	fmt.Printf("All files have been processed.\n")
-
-	runtime.ReadMemStats(&memStatsEnd)
-
-	// 写入最终的内存profile
-	if err := pprof.WriteHeapProfile(memProfile); err != nil {
-		log.Printf("Failed to write final heap profile: %v", err)
-		fmt.Println("按回车键退出...")
-		fmt.Scanln()
-	}
-
-	// 输出详细的内存分析结果
-	fmt.Printf("=== Memory Profile Results for Current Receive Session ===\n")
-	fmt.Printf("Total Allocated Memory: %v bytes\n", memStatsEnd.TotalAlloc-memStatsStart.TotalAlloc)
-	fmt.Printf("Peak Heap Memory: %v bytes, %v MB\n", memStatsEnd.HeapAlloc, memStatsEnd.HeapAlloc/(1024*1024))
-	fmt.Printf("System Memory (Sys): %d MB\n", memStatsEnd.Sys/(1024*1024))
-	fmt.Printf("Heap Idle Memory: %d MB\n", memStatsEnd.HeapIdle/(1024*1024))
-	fmt.Printf("Garbage Collection Count: %v\n", memStatsEnd.NumGC-memStatsStart.NumGC)
-	fmt.Printf("Memory Allocation Count: %v\n", memStatsEnd.Mallocs-memStatsStart.Mallocs)
-	fmt.Printf("Heap Objects Count: %v\n", memStatsEnd.HeapObjects)
-
-	ctxx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGABRT, syscall.SIGALRM)
-
-	go func() {
-		<-sigChan
-		cancel()
-	}()
-
-	<-ctxx.Done()
-	fmt.Println("Exit program")
+	globalPool = p
+	poolDestIP = destIP
+	return nil
 }
 
-func sendData(wsck *sock.MsSocket, data []byte) error {
-	// 从 globalPool 获取目标 IP 地址
-	destIP := globalPool.DestIP
-	if destIP == "" {
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	cmd.Start() //nolint:errcheck
+}
+
+func main() {
+	cfg, err := config.Load("config_sender.json")
+	if err != nil {
+		log.Printf("[config] load error: %v, using defaults", err)
+		cfg = config.Default()
+	}
+
+	// Signal context for graceful shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Initialize currentDestIP from config.
+	currentDestIPMu.Lock()
+	currentDestIP = cfg.DestIP
+	currentDestIPMu.Unlock()
+
+	// Global rate limiter.
+	limiter, _ := sender.CreateRateLimiter(float64(cfg.Sender.RateLimitMbps), 1500)
+
+	// Initialize atomic counters.
+	nextFdtID.Store(0)
+	nextPort.Store(int32(cfg.Network.BaseFilePort))
+
+	// Set up API server.
+	srv := apiserver.New(cfg.Server.Port, "sender").
+		WithDestIP(cfg.DestIP).
+		WithFilePort(cfg.Network.BaseFilePort)
+
+	// Register setDestFn — lets the frontend update the destination IP at runtime.
+	srv.SetDestFunc(func(ip string) error {
+		currentDestIPMu.Lock()
+		currentDestIP = ip
+		currentDestIPMu.Unlock()
+		srv.WithDestIP(ip)
+		return nil
+	})
+
+	// Register send function.
+	srv.SetSendFunc(func(fileName string, data io.Reader, fecType string) (uint8, error) {
+		currentDestIPMu.RLock()
+		destIP := currentDestIP
+		currentDestIPMu.RUnlock()
+
+		if err := ensurePool(destIP); err != nil {
+			return 0, fmt.Errorf("pool: %w", err)
+		}
+
+		// Capture pool pointer while holding the lock.
+		poolMu.Lock()
+		p := globalPool
+		poolMu.Unlock()
+
+		// Save uploaded data to sendFileDir.
+		if err := os.MkdirAll(cfg.Sender.SendFileDir, 0755); err != nil {
+			return 0, fmt.Errorf("cannot create upload dir: %w", err)
+		}
+		savePath := filepath.Join(cfg.Sender.SendFileDir, filepath.Base(fileName))
+		f, err := os.Create(savePath)
+		if err != nil {
+			return 0, fmt.Errorf("cannot create file: %w", err)
+		}
+		if _, err := io.Copy(f, data); err != nil {
+			f.Close()
+			return 0, fmt.Errorf("write error: %w", err)
+		}
+		f.Close()
+
+		// Re-open for reading.
+		f, err = os.Open(savePath)
+		if err != nil {
+			return 0, fmt.Errorf("cannot open saved file: %w", err)
+		}
+
+		// Allocate fdtID and port range atomically.
+		fid := uint8(nextFdtID.Add(1))
+		portBase := int(nextPort.Add(int32(cfg.Network.NumPorts))) - cfg.Network.NumPorts
+
+		// Build OTI.
+		o := fecTypeToOti(fecType)
+
+		// Create connections.
+		numPorts := uint8(cfg.Network.NumPorts)
+		conns, connErrs := p.CreateFileConn(fid, numPorts, portBase)
+		for _, cErr := range connErrs {
+			if cErr != nil {
+				log.Printf("[sendFn] conn error for fdtID %d: %v", fid, cErr)
+			}
+		}
+		if len(conns) == 0 {
+			f.Close()
+			return 0, fmt.Errorf("no connections available for fdtID %d", fid)
+		}
+
+		// Build MetaPkt.
+		metaPkt, err := meta.InitMetaPkt(f, o, portBase, uint16(numPorts), fid)
+		if err != nil {
+			f.Close()
+			p.CloseFileConn(fid)
+			return 0, fmt.Errorf("meta init error: %w", err)
+		}
+
+		// Async send (does not block the HTTP handler).
+		go func() {
+			defer p.CloseFileConn(fid)
+			defer f.Close()
+			if err := SendFile(p, metaPkt, limiter, nil, nil, 1, srv); err != nil {
+				log.Printf("[sendFn] SendFile error fdtID %d: %v", fid, err)
+			}
+		}()
+
+		return fid, nil
+	})
+	srv.WithUploadDir(cfg.Sender.SendFileDir)
+	srv.WithStaticContent(web.HTML)
+
+	// Shutdown: close pool.
+	defer func() {
+		poolMu.Lock()
+		if globalPool != nil {
+			globalPool.CloseMetaConn()
+		}
+		poolMu.Unlock()
+	}()
+
+	if cfg.Server.Enabled {
+		go srv.Start(ctx) //nolint:errcheck
+		time.Sleep(300 * time.Millisecond)
+		openBrowser(fmt.Sprintf("http://localhost:%d", cfg.Server.Port))
+	}
+
+	// Wait for shutdown signal.
+	<-ctx.Done()
+	log.Println("Exit program")
+}
+
+func sendData(p *pool.ConnPool, wsck *sock.MsSocket, data []byte) error {
+	if p == nil {
+		return fmt.Errorf("pool not initialized")
+	}
+	destIPLocal := strings.TrimSpace(p.DestIP)
+	if destIPLocal == "" {
 		return fmt.Errorf("destination IP address not set")
 	}
-
-	// 去除空格和换行符
-	destIP = strings.TrimSpace(destIP)
-
-	// 创建目标 UDP 地址
-	ip := net.ParseIP(destIP)
+	ip := net.ParseIP(destIPLocal)
 	if ip == nil {
-		return fmt.Errorf("invalid IP address: %s", destIP)
+		return fmt.Errorf("invalid IP address: %s", destIPLocal)
 	}
-
 	destAddr := &net.UDPAddr{
 		IP:   ip,
 		Port: constant.META_PORT,
 	}
-
 	_, err := wsck.Socket.WriteToUDP(data, destAddr)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
-func SendFile(mt *meta.MetaPkt, limiter *rate.Limiter, onOverhead func(int64), onProgress func(int64), maxConcurrentSends int) error {
-	metaConn, err := globalPool.GetMetaConn()
+func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverhead func(int64), onProgress func(int64), maxConcurrentSends int, srv *apiserver.Server) error {
+	metaConn, err := p.GetMetaConn()
 	if err != nil {
 		return err
 	}
@@ -417,36 +243,75 @@ func SendFile(mt *meta.MetaPkt, limiter *rate.Limiter, onOverhead func(int64), o
 	metaData := mt.Serialize()
 
 	log.Printf("[SendFile] Meta connection: %s:%d (Mode: %d, FdtID: %d)",
-		globalPool.DestIP, constant.META_PORT, globalPool.Mode, metaConn.FdtID)
-	log.Printf("[SendFile] Sending metadata: %d bytes to %s:%d", len(metaData), globalPool.DestIP, constant.META_PORT)
+		p.DestIP, constant.META_PORT, p.Mode, metaConn.FdtID)
+	log.Printf("[SendFile] Sending metadata: %d bytes to %s:%d", len(metaData), p.DestIP, constant.META_PORT)
 
-	if err := sendData(metaConn, metaData); err != nil {
+	if err := sendData(p, metaConn, metaData); err != nil {
 		log.Printf("[SendFile] Failed to send metadata: %v", err)
 		return err
 	}
 
 	log.Printf("[SendFile] Metadata sent successfully")
-
 	log.Printf("Sender will be started after %d seconds\n", constant.START_SEND_WAIT)
 	time.Sleep(constant.START_SEND_WAIT * time.Second)
 
-	sender, err := sender.InitSender(mt, limiter, maxConcurrentSends)
+	s, err := sender.InitSender(mt, limiter, maxConcurrentSends)
 	if err != nil {
 		return fmt.Errorf("Failed to init sender: %v", err)
 	}
 
+	if srv != nil {
+		totalBytes := s.GetTotalBytesToSend()
+		fecType := senderFECTypeName(mt.Oti.FECEncodingID)
+		srv.State().RegisterFile("sender", mt.File.FdtID, mt.File.Name,
+			int64(mt.File.TransferLen), fecType, mt.File.Md5)
+		stateAdapter := srv.State().SenderProgressAdapter(mt.File.FdtID, totalBytes)
+		if onProgress != nil {
+			orig := onProgress
+			onProgress = func(sent int64) {
+				orig(sent)
+				stateAdapter(sent)
+			}
+		} else {
+			onProgress = stateAdapter
+		}
+	}
+
 	if onOverhead != nil {
-		totalBytes := sender.GetTotalBytesToSend()
-		// Calculate overhead: totalBytes - originalFileSize
-		// Note: mt.File.TransferLen is the original file size
+		totalBytes := s.GetTotalBytesToSend()
 		overhead := totalBytes - int64(mt.File.TransferLen)
 		onOverhead(overhead)
 	}
 
 	if onProgress != nil {
-		sender.SetProgressCallback(onProgress)
+		s.SetProgressCallback(onProgress)
 	}
 
-	err = sender.Start(context.Background())
-	return err
+	return s.Start(context.Background())
+}
+
+// fecTypeToOti converts a FEC type string to an OTI instance.
+func fecTypeToOti(fecType string) oti.Oti {
+	switch fecType {
+	case "RaptorQ":
+		return oti.NewRaptorQ(1400)
+	case "ReedSolomon":
+		return oti.NewReedSolomon(12, 4)
+	default:
+		return oti.NewNoCode(1400)
+	}
+}
+
+// senderFECTypeName maps a FECEncodingID to a human-readable string.
+func senderFECTypeName(id uint8) string {
+	switch id {
+	case 0:
+		return "NoCode"
+	case 1:
+		return "RaptorQ"
+	case 2:
+		return "ReedSolomon"
+	default:
+		return "Unknown"
+	}
 }

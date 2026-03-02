@@ -65,11 +65,6 @@ func createWinSocket(ip string, port int) (windows.Handle, error) {
 		return 0, fmt.Errorf("Set SO_REUSEADDR failed: %v", err)
 	}
 
-	if err := windows.SetsockoptInt(sock, windows.IPPROTO_UDP, windows.TCP_NODELAY, 1); err != nil {
-		windows.CloseHandle(sock)
-		return 0, fmt.Errorf("Set TCP_NODELAY failed: %v", err)
-	}
-
 	sockaddr := &windows.SockaddrInet4{Port: port}
 	ipAddr := net.ParseIP(ip).To4()
 	copy(sockaddr.Addr[:], ipAddr)
@@ -137,11 +132,23 @@ func (s *WinSocket) SetWriteBuffer(size int) error {
 }
 
 func (s *WinSocket) SetReadDeadline(t time.Time) error {
-	return windows.SetsockoptTimeval(s.handle, windows.SOL_SOCKET, SO_RCVTIMEO, &windows.Timeval{Sec: int32(t.Unix()), Usec: int32(t.UnixNano() % int64(time.Second))})
+	d := time.Until(t)
+	if d < 0 {
+		d = 0
+	}
+	sec := int32(d / time.Second)
+	usec := int32((d % time.Second) / time.Microsecond)
+	return windows.SetsockoptTimeval(s.handle, windows.SOL_SOCKET, SO_RCVTIMEO, &windows.Timeval{Sec: sec, Usec: usec})
 }
 
 func (s *WinSocket) SetWriteDeadline(t time.Time) error {
-	return windows.SetsockoptTimeval(s.handle, windows.SOL_SOCKET, SO_SNDTIMEO, &windows.Timeval{Sec: int32(t.Unix()), Usec: int32(t.UnixNano() % int64(time.Second))})
+	d := time.Until(t)
+	if d < 0 {
+		d = 0
+	}
+	sec := int32(d / time.Second)
+	usec := int32((d % time.Second) / time.Microsecond)
+	return windows.SetsockoptTimeval(s.handle, windows.SOL_SOCKET, SO_SNDTIMEO, &windows.Timeval{Sec: sec, Usec: usec})
 }
 
 func (s *WinSocket) LocalAddr() net.Addr {

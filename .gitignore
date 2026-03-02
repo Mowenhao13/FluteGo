@@ -31,3 +31,4 @@ test/tmp_recv/
 *.go.bak
 vendor/
 go.sum.bak
+.superdesign

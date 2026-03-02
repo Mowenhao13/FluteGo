@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -56,6 +57,11 @@ type ReceiverSystem struct {
 	FileReporter FileReporter
 	DestIP       string
 	SaveDir      string
+	saveDirMu    sync.RWMutex // protects SaveDir for concurrent reads/writes
+
+	// OnMetaReceived is an optional callback invoked once per unique FdtID when
+	// a MetaPkt is accepted. Set this before calling StartMetaProgram.
+	OnMetaReceived func(fdtID uint8, fileName string, fileSize int64, fecType, md5 string)
 }
 
 // FileReporter 文件报告器
@@ -492,6 +498,17 @@ func (s *ReceiverSystem) processMeta(mainCtx context.Context, metaPkt *meta.Meta
 		return
 	}
 
+	// Invoke optional meta-received callback (once per unique FdtID).
+	if s.OnMetaReceived != nil {
+		s.OnMetaReceived(
+			metaPkt.File.FdtID,
+			metaPkt.File.Name,
+			int64(metaPkt.File.TransferLen),
+			fecTypeName(metaPkt.Oti.FECEncodingID),
+			metaPkt.File.Md5,
+		)
+	}
+
 	// 通过工作池控制并发
 	s.workerPool <- struct{}{}
 	s.wg.Add(1)
@@ -504,6 +521,36 @@ func (s *ReceiverSystem) processMeta(mainCtx context.Context, metaPkt *meta.Meta
 
 		s.runReceiver(ctx, task)
 	}(mainCtx, metaPkt)
+}
+
+// fecTypeName maps a FECEncodingID to a human-readable string.
+func fecTypeName(id uint8) string {
+	switch id {
+	case 0:
+		return "NoCode"
+	case 1:
+		return "RaptorQ"
+	case 2:
+		return "ReedSolomon"
+	default:
+		return "Unknown"
+	}
+}
+
+// SetSaveDir atomically updates the directory where received files are saved.
+// Returns an error if the path does not exist or is not a directory.
+func (s *ReceiverSystem) SetSaveDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("directory not accessible: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	s.saveDirMu.Lock()
+	s.SaveDir = dir
+	s.saveDirMu.Unlock()
+	return nil
 }
 
 // runReceiver 执行单个文件的接收生命周期。
@@ -561,7 +608,10 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 	defer s.recvPool.CloseFileConn(fdtID)
 
 	// 初始化接收器
-	recv, err := receiver.InitReceiver(task, s.SaveDir, s.enableMd5)
+	s.saveDirMu.RLock()
+	saveDir := s.SaveDir
+	s.saveDirMu.RUnlock()
+	recv, err := receiver.InitReceiver(task, saveDir, s.enableMd5)
 	if err != nil {
 		s.reportError(ctx, uint8(errs.LevelError), err, fdtID)
 		close(recvReportChan)

@@ -71,6 +71,17 @@ type Sender struct {
 	MaxConcurrentSends   int
 }
 
+// Close 释放发送端持有的资源（文件句柄、编码器）
+func (s *Sender) Close() {
+	if s.inputFile != nil {
+		s.inputFile.Close()
+		s.inputFile = nil
+	}
+	if s.encoder != nil {
+		s.encoder.Close()
+	}
+}
+
 // SetProgressCallback 设置进度回调函数
 func (s *Sender) SetProgressCallback(cb func(int64)) {
 	s.onProgress = cb

@@ -30,7 +30,8 @@ func newUnixSocket(addr *net.UDPAddr, mode uint8) (Socket, error) {
 		sockAddr.Port = 0
 	} else {
 		// 对于接收者，绑定到指定的端口
-		sockAddr.Port = htons(uint16(addr.Port))
+		// syscall.SockaddrInet4.Port 使用主机字节序，syscall.Bind 内部会自动转换
+		sockAddr.Port = addr.Port
 		copy(sockAddr.Addr[:], addr.IP.To4())
 	}
 
@@ -56,7 +57,8 @@ func (s *UnixSocket) WriteToUDP(buf []byte, addr *net.UDPAddr) (int, error) {
 
 	// 构建 sockaddr_in 结构
 	var sockAddr syscall.SockaddrInet4
-	sockAddr.Port = htons(uint16(addr.Port))
+	// syscall.SockaddrInet4.Port 使用主机字节序，syscall.Sendto 内部会自动转换
+	sockAddr.Port = addr.Port
 	copy(sockAddr.Addr[:], addr.IP.To4())
 
 	err := syscall.Sendto(s.fd, buf, 0, &sockAddr)
@@ -100,11 +102,21 @@ func (s *UnixSocket) SetWriteBuffer(bytes int) error {
 }
 
 func (s *UnixSocket) SetReadDeadline(t time.Time) error {
-	return syscall.SetsockoptTimeval(s.fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &syscall.Timeval{Sec: t.Unix(), Usec: int32(t.UnixNano() % int64(time.Second))})
+	d := time.Until(t)
+	if d < 0 {
+		d = 0
+	}
+	tv := syscall.NsecToTimeval(d.Nanoseconds())
+	return syscall.SetsockoptTimeval(s.fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv)
 }
 
 func (s *UnixSocket) SetWriteDeadline(t time.Time) error {
-	return syscall.SetsockoptTimeval(s.fd, syscall.SOL_SOCKET, syscall.SO_SNDTIMEO, &syscall.Timeval{Sec: t.Unix(), Usec: int32(t.UnixNano() % int64(time.Second))})
+	d := time.Until(t)
+	if d < 0 {
+		d = 0
+	}
+	tv := syscall.NsecToTimeval(d.Nanoseconds())
+	return syscall.SetsockoptTimeval(s.fd, syscall.SOL_SOCKET, syscall.SO_SNDTIMEO, &tv)
 }
 
 func (s *UnixSocket) Shutdown(mode int) error {

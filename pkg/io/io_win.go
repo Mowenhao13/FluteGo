@@ -5,12 +5,17 @@ package io
 import (
 	"FluteGo/pkg/iocp"
 	"FluteGo/pkg/sock"
+	"sync"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
 
 type WinIOHandler struct {
-	server *iocp.IOCPServer
+	server   *iocp.IOCPServer
+	dataCh   chan []byte
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 func init() {
@@ -29,10 +34,43 @@ func newWinIOHandler(msck *sock.MsSocket, maxPacketSize int) (IOHandler, error) 
 		return nil, err
 	}
 
-	return &WinIOHandler{
+	h := &WinIOHandler{
 		server: server,
-	}, nil
+		dataCh: make(chan []byte, 16384),
+		stopCh: make(chan struct{}),
+	}
+	go h.forwardLoop()
+	return h, nil
+}
 
+// forwardLoop 持续从 IOCP 队列取出数据，拷贝后归还 Context，再转发到 dataCh。
+// 生命周期与 WinIOHandler 相同，在 Stop() 关闭 stopCh 时退出。
+func (h *WinIOHandler) forwardLoop() {
+	defer close(h.dataCh)
+	for {
+		select {
+		case <-h.stopCh:
+			return
+		default:
+		}
+
+		ctx, ok := h.server.GetDataQueue().TryDequeue()
+		if !ok {
+			time.Sleep(time.Microsecond)
+			continue
+		}
+
+		// 拷贝数据后立即归还 Context，使其可接收下一个包
+		data := make([]byte, ctx.BytesRecv)
+		copy(data, ctx.Data[:ctx.BytesRecv])
+		h.server.ReturnContext(ctx)
+
+		select {
+		case h.dataCh <- data:
+		case <-h.stopCh:
+			return
+		}
+	}
 }
 
 func (h *WinIOHandler) Start() {
@@ -40,40 +78,29 @@ func (h *WinIOHandler) Start() {
 }
 
 func (h *WinIOHandler) Stop() {
-	h.server.Stop()
+	h.stopOnce.Do(func() {
+		h.server.Stop()
+		close(h.stopCh)
+	})
 }
 
+// GetDataQueue 返回持续接收数据的通道，由 forwardLoop 负责写入。
 func (h *WinIOHandler) GetDataQueue() chan []byte {
-	// 由于接口返回 chan []byte，但 IOCPServer 返回 MPMCQueueOf[*IOContext]
-	// 这里需要创建一个适配器通道
-	ch := make(chan []byte, 16384)
-
-	go func() {
-		for {
-			ctx, ok := h.server.GetDataQueue().TryDequeue()
-			if !ok {
-				break
-			}
-			// 提取数据并发送到通道
-			data := ctx.Data[:ctx.BytesRecv]
-			ch <- data
-		}
-	}()
-
-	return ch
+	return h.dataCh
 }
 
-func (h *WinIOHandler) ReturnContext(ctx interface{}) {
-	// 类型断言，将 interface{} 转换为 *iocp.IOContext
-	if ioCtx, ok := ctx.(*iocp.IOContext); ok {
-		h.server.ReturnContext(ioCtx)
-	}
-}
+// ReturnContext 在 Windows 实现中为空操作：数据已在 forwardLoop 中拷贝并归还 Context。
+func (h *WinIOHandler) ReturnContext(ctx interface{}) {}
 
+// TryDequeue 从 dataCh 非阻塞地取出一条数据（[]byte）。
 func (h *WinIOHandler) TryDequeue() (interface{}, bool) {
-	ctx, ok := h.server.GetDataQueue().TryDequeue()
-	if !ok {
+	select {
+	case data, ok := <-h.dataCh:
+		if !ok {
+			return nil, false
+		}
+		return data, true
+	default:
 		return nil, false
 	}
-	return ctx, true
 }

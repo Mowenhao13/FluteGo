@@ -1,0 +1,7 @@
+{
+  "destIP": "127.0.0.1",
+  "network": { "maxPacketSize": 1408, "baseFilePort": 3400, "metaPort": 3399, "numPorts": 1 },
+  "sender": { "sendFileDir": "cmd/send_files/", "sendRedundancyRatio": 1.05, "rateLimitMbps": 500, "startSendWait": 1 },
+  "receiver": { "saveFileDir": "cmd/received_files/", "recvRedundancyRatio": 1.01, "defaultChunkSize": 65536 },
+  "server": { "port": 8080, "enabled": true }
+}

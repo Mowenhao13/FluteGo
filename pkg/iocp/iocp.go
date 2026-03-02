@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/puzpuzpuz/xsync/v3"
@@ -192,11 +193,16 @@ func (s *IOCPServer) ReturnContext(ctx *IOContext) {
 
 		// 忽略连接重置错误 (WSAECONNRESET)，这在 UDP 中可能发生（ICMP Port Unreachable）
 		// 必须重试，否则会丢失 Context 导致接收缓冲区耗尽
-		// 增加重试次数限制，防止死循环
+		// 使用指数退避（最多10次，1µs→1ms），避免在高丢包场景下忙等待占用 OS 线程
 		if errors.Is(err, windows.WSAECONNRESET) {
-			// 简单的指数退避或让出时间片
-			runtime.Gosched()
-			continue
+			for attempt := 0; attempt < 10; attempt++ {
+				time.Sleep(time.Duration(1<<attempt) * time.Microsecond)
+				if err2 := s.postRecv(ctx); err2 == nil {
+					return
+				}
+			}
+			log.Printf("ReturnContext: gave up after 10 retries on WSAECONNRESET")
+			return
 		}
 
 		// 其他错误，记录日志并丢弃 Context (防止死循环)
@@ -213,10 +219,6 @@ func (s *IOCPServer) workerLoop(id int) {
 	var overlapped *windows.Overlapped
 
 	for {
-		if atomic.LoadInt32(&s.isRunning) == 0 {
-			return
-		}
-
 		// 阻塞等待 IOCP 事件
 		err := windows.GetQueuedCompletionStatus(
 			s.handle,
@@ -227,12 +229,12 @@ func (s *IOCPServer) workerLoop(id int) {
 		)
 
 		if err != nil {
-			// 如果服务器正在停止，忽略错误退出
+			// IOCP handle 已关闭（Stop() 调用），正常退出
 			if atomic.LoadInt32(&s.isRunning) == 0 {
 				return
 			}
-			// 超时或其他错误，继续
-			// log.Printf("Worker %d GQCS error: %v", id, err)
+			// 真正的意外错误，记录后继续
+			log.Printf("Worker %d: unexpected GQCS error: %v", id, err)
 			continue
 		}
 
