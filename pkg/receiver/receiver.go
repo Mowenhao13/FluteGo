@@ -11,7 +11,6 @@ import (
 	constant "FluteGo/constant"
 	"FluteGo/pkg/decoder"
 	"FluteGo/pkg/io"
-	"FluteGo/pkg/iocp"
 	"FluteGo/pkg/meta"
 	"FluteGo/pkg/pool"
 	"FluteGo/pkg/sock"
@@ -741,15 +740,8 @@ func (r *Receiver) consumeLoop(ctx context.Context, ioHandler io.IOHandler, msck
 		}
 
 		// 根据上下文类型提取数据
-		var data []byte
-		switch obj := ctxObj.(type) {
-		case *iocp.IOContext:
-			// Windows IOCP 上下文
-			data = obj.Data[:obj.BytesRecv]
-		case []byte:
-			// Unix 直接返回的字节数组
-			data = obj
-		default:
+		data, ok := io.ExtractData(ctxObj)
+		if !ok {
 			// 未知类型，跳过
 			ioHandler.ReturnContext(ctxObj)
 			continue

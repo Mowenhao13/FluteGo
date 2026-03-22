@@ -21,7 +21,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
-	"time"
+	_ "time" // imported for potential later use
 )
 
 // ReceiverSystem 接收端系统

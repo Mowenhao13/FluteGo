@@ -1,4 +1,5 @@
 //go:build windows
+// +build windows
 
 package io
 
@@ -76,4 +77,18 @@ func (h *WinIOHandler) TryDequeue() (interface{}, bool) {
 		return nil, false
 	}
 	return ctx, true
+}
+
+// ExtractData Windows 版本：从 IOCP 上下文中提取数据
+func ExtractData(ctxObj interface{}) ([]byte, bool) {
+	switch obj := ctxObj.(type) {
+	case *iocp.IOContext:
+		// Windows IOCP 上下文
+		return obj.Data[:obj.BytesRecv], true
+	case []byte:
+		// Unix 直接返回的字节数组
+		return obj, true
+	default:
+		return nil, false
+	}
 }
