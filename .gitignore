@@ -31,3 +31,5 @@ test/tmp_recv/
 *.go.bak
 vendor/
 go.sum.bak
+cmd/cmd/
+bin/
