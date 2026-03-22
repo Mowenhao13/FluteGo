@@ -70,7 +70,9 @@ func createWinSocket(ip string, port int) (windows.Handle, error) {
 		return 0, fmt.Errorf("Set TCP_NODELAY failed: %v", err)
 	}
 
-	sockaddr := &windows.SockaddrInet4{Port: port}
+	sockaddr := &windows.SockaddrInet4{
+		Port: int(uint16((port>>8)&0xFF) | uint16((port&0xFF)<<8)), // 转换端口到网络字节序
+	}
 	ipAddr := net.ParseIP(ip).To4()
 	copy(sockaddr.Addr[:], ipAddr)
 	if err := windows.Bind(sock, sockaddr); err != nil {

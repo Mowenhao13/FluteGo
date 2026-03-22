@@ -22,7 +22,7 @@ const (
 	SendFileDir_win          = "cmd\\send_files\\"
 	SaveFileDir_win          = "cmd\\received_files\\"
 	SendRedundancyRatio      = 1.05
-	DefaultSendRateLimitMbps = 500 // default send rate limit; 0 disables throttling
+	DefaultSendRateLimitMbps = 300 // default send rate limit; 0 disables throttling
 	WindowsSize              = 10
 
 	START_SEND_WAIT = 1 // seconds to wait before starting to send data
@@ -30,10 +30,10 @@ const (
 
 // Arp param
 const (
-	SourceIP        = "127.0.0.1"
+	SourceIP        = "192.168.0.10"
 	SourceMAC       = "10:7c:61:10:a5:47"
 	SourceInterface = "enp3s0"
-	DestIP          = "127.0.0.1"
+	DestIP          = "192.168.0.10"
 	DestMAC         = "88:a2:9e:3f:be:2c"
 	DestInterface   = "eth0"
 )
@@ -66,8 +66,8 @@ const (
 )
 
 const (
-	TX_BUF = 64 * 1024 * 1024 // 64 MB
-	RX_BUF = 64 * 1024 * 1024 // 64 MB
+	TX_BUF = 32 * 1024 * 1024 // 64 MB
+	RX_BUF = 32 * 1024 * 1024 // 64 MB
 )
 
 const (

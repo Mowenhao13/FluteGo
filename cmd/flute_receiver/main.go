@@ -40,7 +40,7 @@ func main() {
 		fmt.Scanln()
 	}
 
-	fmt.Println("Enter dest IP, example: 127.0.0.1")
+	fmt.Println("Enter dest IP, example: 192.168.0.10")
 	fmt.Scanln(&destIP)
 	if destIP == "" {
 		destIP = constant.DestIP
