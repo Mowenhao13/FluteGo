@@ -120,11 +120,32 @@ func (s *WinSocket) ReadFromUDP(b []byte) (int, error) {
 
 	err := windows.WSARecvFrom(s.handle, &wsaBuf, 1, &byteReceived, &flags, fromAddr, &fromLen, nil, nil)
 	if err != nil {
-		return 0, fmt.Errorf("ReadFromUDP failed: %v", err)
+		// 转换为 net.Error 类型，以便调用方可以正确处理超时
+		if err == windows.WSAETIMEDOUT {
+			return 0, &net.OpError{
+				Op:   "read",
+				Net:  "udp",
+				Addr: s.addr,
+				Err:  timeoutError{},
+			}
+		}
+		return 0, &net.OpError{
+			Op:   "read",
+			Net:  "udp",
+			Addr: s.addr,
+			Err:  err,
+		}
 	}
 
 	return int(byteReceived), nil
 }
+
+// timeoutError 实现 net.Error 接口
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "i/o timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
 
 func (s *WinSocket) Close() error {
 	return windows.CloseHandle(s.handle)

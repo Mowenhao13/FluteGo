@@ -358,8 +358,8 @@ func (s *ReceiverSystem) StartMetaProgram() {
 
 		buf := make([]byte, constant.META_BUF)
 
-		// 设置接收超时
-		s.metaConn.Socket.SetReadDeadline(time.Now().Add(time.Duration(constant.META_TIMEOUT) * time.Second))
+		// 设置接收超时 (Windows上暂时禁用，避免问题)
+		// s.metaConn.Socket.SetReadDeadline(time.Now().Add(time.Duration(constant.META_TIMEOUT) * time.Second))
 
 		// 主接收循环
 		for {
