@@ -160,11 +160,15 @@ func (s *WinSocket) SetWriteBuffer(size int) error {
 }
 
 func (s *WinSocket) SetReadDeadline(t time.Time) error {
-	return windows.SetsockoptTimeval(s.handle, windows.SOL_SOCKET, SO_RCVTIMEO, &windows.Timeval{Sec: int32(t.Unix()), Usec: int32(t.UnixNano() % int64(time.Second))})
+	// Windows 上暂时禁用超时设置，避免 SetWaitableTimer 错误
+	// return windows.SetsockoptTimeval(s.handle, windows.SOL_SOCKET, SO_RCVTIMEO, &windows.Timeval{Sec: int32(t.Unix()), Usec: int32(t.UnixNano() % int64(time.Second))})
+	return nil
 }
 
 func (s *WinSocket) SetWriteDeadline(t time.Time) error {
-	return windows.SetsockoptTimeval(s.handle, windows.SOL_SOCKET, SO_SNDTIMEO, &windows.Timeval{Sec: int32(t.Unix()), Usec: int32(t.UnixNano() % int64(time.Second))})
+	// Windows 上暂时禁用超时设置，避免 SetWaitableTimer 错误
+	// return windows.SetsockoptTimeval(s.handle, windows.SOL_SOCKET, SO_SNDTIMEO, &windows.Timeval{Sec: int32(t.Unix()), Usec: int32(t.UnixNano() % int64(time.Second))})
+	return nil
 }
 
 func (s *WinSocket) LocalAddr() net.Addr {

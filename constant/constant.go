@@ -9,7 +9,7 @@ const (
 
 // Receiver param
 const (
-	RecvRedundancyRatio = 1.01
+	RecvRedundancyRatio = 1.15
 	DefaultChunkSize    = 64 * 1024 // 64KB chunks
 )
 
@@ -21,7 +21,7 @@ const (
 	SaveFileDir_win_t        = "C:\\Users\\mowen\\Desktop\\FluteGo\\FluteGo\\cmd\\received_files\\"
 	SendFileDir_win          = "cmd\\send_files\\"
 	SaveFileDir_win          = "cmd\\received_files\\"
-	SendRedundancyRatio      = 1.05
+	SendRedundancyRatio      = 1.15
 	DefaultSendRateLimitMbps = 300 // default send rate limit; 0 disables throttling
 	WindowsSize              = 10
 
