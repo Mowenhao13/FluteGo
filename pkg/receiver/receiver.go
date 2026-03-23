@@ -109,6 +109,7 @@ type Receiver struct {
 	expectedMd5      string
 	expectedChunks   uint32
 	finishedChunks   uint32
+	completedChunks  sync.Map // 用于跟踪已完成的chunk，避免重复计数
 	finishChan       chan struct{}
 	OnComplete       func()
 	closeOnce        sync.Once
@@ -376,8 +377,20 @@ func (r *Receiver) startWriterLoop() {
 				}
 
 				// 检查是否所有分片都已接收完成
-				finished := atomic.AddUint32(&r.finishedChunks, 1)
-				if finished >= r.expectedChunks {
+				// 使用双重保险：1. chunk去重计数 2. 字节数检查
+				_, loaded := r.completedChunks.LoadOrStore(req.ChunkIdx, true)
+				var finished uint32
+				if !loaded {
+					finished = atomic.AddUint32(&r.finishedChunks, 1)
+				} else {
+					finished = atomic.LoadUint32(&r.finishedChunks)
+				}
+
+				// 检查完成条件：chunk数够了，或者字节数够了
+				bytesWritten := atomic.LoadInt64(&r.currWritten)
+				shouldFinish := finished >= r.expectedChunks || bytesWritten >= int64(r.config.FileSize)
+
+				if shouldFinish {
 					r.closeOnce.Do(func() {
 						close(r.finishChan)
 						// 记录接收结束时间

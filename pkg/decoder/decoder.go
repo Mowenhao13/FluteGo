@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+// DecodedChunk 表示解码完成的数据块，用于通过channel传输
+type DecodedChunk struct {
+	Data     []byte
+	Offset   int64
+	ChunkIdx uint32
+}
+
 // OutputHandler 定义 chunk 级写入回调接口，供解码器在完成一个 chunk 解码后通知上层写入逻辑。
 //
 // # 描述
@@ -120,4 +127,30 @@ func NewDecoder(config DecoderConfig, output OutputHandler) (BaseDecoder, error)
 	default:
 		return nil, nil
 	}
+}
+
+// NewDecoderWithChannel 根据配置和channel创建对应的解码器实例。
+// 解码完成的 chunk 数据将发送到 channel 中。
+func NewDecoderWithChannel(config DecoderConfig, ch chan<- DecodedChunk) (BaseDecoder, error) {
+	// 创建一个适配器，将 channel 包装为 OutputHandler
+	handler := &channelOutputHandler{ch: ch}
+	return NewDecoder(config, handler)
+}
+
+// channelOutputHandler 是 OutputHandler 的 channel 适配器实现
+type channelOutputHandler struct {
+	ch chan<- DecodedChunk
+}
+
+func (h *channelOutputHandler) OnDecodedData(data []byte, offset int64, chunkIdx uint32) error {
+	// 创建数据副本，避免内存复用问题
+	dataCopy := make([]byte, len(data))
+	copy(dataCopy, data)
+
+	h.ch <- DecodedChunk{
+		Data:     dataCopy,
+		Offset:   offset,
+		ChunkIdx: chunkIdx,
+	}
+	return nil
 }
