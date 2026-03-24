@@ -17,7 +17,6 @@ import (
 	"FluteGo/pkg/utils"
 	"context"
 	"encoding/binary"
-	"encoding/csv"
 	stdErrors "errors"
 	"fmt"
 	"log"
@@ -25,7 +24,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 
 	"sync"
 	"sync/atomic"
@@ -419,48 +417,6 @@ func (r *Receiver) startWriterLoop() {
 							fmt.Printf("Garbage Collection Count: %v\n", memStatsEnd.NumGC-r.memStatsStart.NumGC)
 							fmt.Printf("Memory Allocation Count: %v\n", memStatsEnd.Mallocs-r.memStatsStart.Mallocs)
 							fmt.Printf("Heap Objects Count: %v\n", memStatsEnd.HeapObjects)
-
-							// Write to CSV
-							csvFile, err := os.OpenFile("receiver_performance.csv", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-							if err == nil {
-								defer csvFile.Close()
-								writer := csv.NewWriter(csvFile)
-								defer writer.Flush()
-
-								// Check if file is empty to write header
-								stat, _ := csvFile.Stat()
-								if stat.Size() == 0 {
-									writer.Write([]string{"Timestamp", "FdtID", "BytesReceived", "Duration(s)", "Throughput(Mbps)", "TotalAlloc(Bytes)", "PeakHeap(Bytes)", "SysMem(MB)", "HeapIdle(MB)", "GCCount", "Mallocs", "HeapObjects", "FEC_Type"})
-								}
-
-								fecType := "Unknown"
-								switch r.config.Type {
-								case decoder.DecoderNoCode:
-									fecType = "NoCode"
-								case decoder.DecoderRaptorQ:
-									fecType = "RaptorQ"
-								case decoder.DecoderReedSolomon:
-									fecType = "ReedSolomon"
-								}
-
-								writer.Write([]string{
-									time.Now().Format(time.RFC3339),
-									strconv.Itoa(int(r.fdtID)),
-									strconv.FormatInt(bytesWritten, 10),
-									fmt.Sprintf("%.6f", dur.Seconds()),
-									fmt.Sprintf("%.6f", mbps),
-									strconv.FormatUint(memStatsEnd.TotalAlloc-r.memStatsStart.TotalAlloc, 10),
-									strconv.FormatUint(memStatsEnd.HeapAlloc, 10),
-									strconv.FormatUint(memStatsEnd.Sys/(1024*1024), 10),
-									strconv.FormatUint(memStatsEnd.HeapIdle/(1024*1024), 10),
-									strconv.FormatUint(uint64(memStatsEnd.NumGC-r.memStatsStart.NumGC), 10),
-									strconv.FormatUint(memStatsEnd.Mallocs-r.memStatsStart.Mallocs, 10),
-									strconv.FormatUint(memStatsEnd.HeapObjects, 10),
-									fecType,
-								})
-							} else {
-								log.Printf("Failed to open receiver_performance.csv: %v", err)
-							}
 						} else {
 							fmt.Printf("File transfer completed (fdtID=%d): %d/%d chunks\n", r.fdtID, finished, r.expectedChunks)
 						}

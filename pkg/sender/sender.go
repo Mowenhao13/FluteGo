@@ -14,14 +14,12 @@ import (
 	pool "FluteGo/pkg/pool"
 	"context"
 	"encoding/binary"
-	"encoding/csv"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"sync/atomic"
 
 	"sync"
@@ -617,51 +615,6 @@ func (s *Sender) Start(ctx context.Context) error {
 		// fmt.Printf("Garbage Collection Count: %v\n", memStatsEnd.NumGC-memStatsStart.NumGC)
 		// fmt.Printf("Memory Allocation Count: %v\n", memStatsEnd.Mallocs-memStatsStart.Mallocs)
 		// fmt.Printf("Heap Objects Count: %v\n", memStatsEnd.HeapObjects)
-
-		// Write to CSV
-		csvFile, err := os.OpenFile("sender_performance.csv", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err == nil {
-			defer csvFile.Close()
-			writer := csv.NewWriter(csvFile)
-			defer writer.Flush()
-
-			// Check if file is empty to write header
-			stat, _ := csvFile.Stat()
-			if stat.Size() == 0 {
-				writer.Write([]string{"Timestamp", "FdtID", "FileSize", "Duration(s)", "Throughput(Mbps)", "Goodput(Mbps)", "TotalAlloc(Bytes)", "PeakHeap(Bytes)", "SysMem(MB)", "HeapIdle(MB)", "GCCount", "Mallocs", "HeapObjects", "FEC_Type", "RateLimit(Mbps)", "MaxConcurrent"})
-			}
-
-			fecType := "Unknown"
-			switch s.config.Type {
-			case encoder.EncoderNoCode:
-				fecType = "NoCode"
-			case encoder.EncoderRaptorQ:
-				fecType = "RaptorQ"
-			case encoder.EncoderReedSolomon:
-				fecType = "ReedSolomon"
-			}
-
-			writer.Write([]string{
-				time.Now().Format(time.RFC3339),
-				strconv.Itoa(int(s.fdtID)),
-				strconv.FormatInt(s.fileSize, 10),
-				fmt.Sprintf("%.6f", dur.Seconds()),
-				fmt.Sprintf("%.6f", mbps),
-				fmt.Sprintf("%.6f", goodput),
-				strconv.FormatUint(memStatsEnd.TotalAlloc-memStatsStart.TotalAlloc, 10),
-				strconv.FormatUint(memStatsEnd.HeapAlloc, 10),
-				strconv.FormatUint(memStatsEnd.Sys/(1024*1024), 10),
-				strconv.FormatUint(memStatsEnd.HeapIdle/(1024*1024), 10),
-				strconv.FormatUint(uint64(memStatsEnd.NumGC-memStatsStart.NumGC), 10),
-				strconv.FormatUint(memStatsEnd.Mallocs-memStatsStart.Mallocs, 10),
-				strconv.FormatUint(memStatsEnd.HeapObjects, 10),
-				fecType,
-				fmt.Sprintf("%d", constant.DefaultSendRateLimitMbps),
-				strconv.Itoa(s.MaxConcurrentSends),
-			})
-		} else {
-			log.Printf("Failed to open sender_performance.csv: %v", err)
-		}
 	}
 	return err
 }
