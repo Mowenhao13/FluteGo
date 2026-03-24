@@ -286,7 +286,7 @@ func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, 
 //
 // 算法逻辑：
 //  1. 转换为每秒字节数
-//  2. 设置合适的突发大小
+//  2. 设置较大的突发大小以避免限制过严
 //  3. 考虑包大小对突发大小的影响
 func CreateRateLimiter(limitMbps float64, maxPacketSize int) (*rate.Limiter, int) {
 	log.Printf("Configured rate limit: %.2f Mbps", limitMbps)
@@ -302,8 +302,9 @@ func CreateRateLimiter(limitMbps float64, maxPacketSize int) (*rate.Limiter, int
 		return nil, 0
 	}
 
-	// 计算突发大小（桶容量）
-	burst := bytesPerSec / 10
+	// 计算突发大小（桶容量）- 使用较大的突发以避免限制过严
+	// 设置为 0.5 秒的数据量，这样可以容纳短暂的突发流量
+	burst := bytesPerSec / 2
 	if burst <= 0 {
 		burst = bytesPerSec
 	}
@@ -316,6 +317,8 @@ func CreateRateLimiter(limitMbps float64, maxPacketSize int) (*rate.Limiter, int
 	if burst < packetSize {
 		burst = packetSize
 	}
+
+	log.Printf("Rate limiter: %d bytes/sec, burst: %d bytes", bytesPerSec, burst)
 
 	// 创建令牌桶速率限制器
 	limiter := rate.NewLimiter(rate.Limit(float64(bytesPerSec)), burst)
