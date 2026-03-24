@@ -28,12 +28,7 @@ const (
 
 // Arp param
 const (
-	SourceIP        = "192.168.0.10"
-	SourceMAC       = "10:7c:61:10:a5:47"
-	SourceInterface = "enp3s0"
-	DestIP          = "192.168.0.10"
-	DestMAC         = "88:a2:9e:3f:be:2c"
-	DestInterface   = "eth0"
+	DestIP          = "192.168.0.12"
 )
 
 const (
@@ -65,7 +60,7 @@ const (
 
 const (
 	TX_BUF = 8 * 1024 * 1024  // 8 MB send buffer (reduced for Windows compatibility)
-	RX_BUF = 16 * 1024 * 1024 // 16 MB recv buffer (reduced for Windows compatibility)
+	RX_BUF = 32 * 1024 * 1024 // 16 MB recv buffer (reduced for Windows compatibility)
 )
 
 const (

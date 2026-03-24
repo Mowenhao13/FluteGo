@@ -60,7 +60,7 @@ func main() {
 	runtime.ReadMemStats(&memStatsStart)
 
 	// 解析Input参数
-	fmt.Println("Enter dest IP, example: 127.0.0.1")
+	fmt.Println("Enter dest IP, example: 192.168.0.12")
 	fmt.Scanln(&destIP)
 	// testing
 	if destIP == "" {
