@@ -33,3 +33,6 @@ vendor/
 go.sum.bak
 cmd/cmd/
 bin/
+tmp/
+test/
+.claude
