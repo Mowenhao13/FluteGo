@@ -77,21 +77,47 @@ func (p *ConnPool) createNewConn(ip string, port int) (*sock.MsSocket, error) {
 		return nil, err
 	}
 
-	// 设置接收缓冲区为 256MB，防止高吞吐下丢包
-	// 2Gbps = 250MB/s，256MB 可以缓冲约 1秒 的数据
-	const RCVBUF_SIZE = 256 * 1024 * 1024
-	if err := msck.Socket.SetReadBuffer(RCVBUF_SIZE); err != nil {
-		// 如果设置失败，尝试设置一个较小的值 (e.g. 64MB)
-		msck.Socket.SetReadBuffer(64 * 1024 * 1024)
+	// 设置接收缓冲区，防止高吞吐下丢包
+	// 尝试设置较大的缓冲区，如果失败则逐步降级
+	bufferSizes := []int{64 * 1024 * 1024, 32 * 1024 * 1024, 16 * 1024 * 1024, 8 * 1024 * 1024, 4 * 1024 * 1024}
+	setSuccess := false
+	for _, bufSize := range bufferSizes {
+		if err := msck.Socket.SetReadBuffer(bufSize); err == nil {
+			setSuccess = true
+			break
+		}
+	}
+	if !setSuccess {
+		// 最后尝试系统默认值（不设置）
 	}
 
 	if p.Mode == POOL_SEND {
 		msck.Socket.Shutdown(0)
-		msck.Socket.SetWriteBuffer(constant.TX_BUF)
+		// 尝试设置发送缓冲区，如果失败则逐步降级
+		if err := msck.Socket.SetWriteBuffer(constant.TX_BUF); err != nil {
+			// 尝试 4MB
+			if err := msck.Socket.SetWriteBuffer(4 * 1024 * 1024); err != nil {
+				// 尝试 2MB
+				if err := msck.Socket.SetWriteBuffer(2 * 1024 * 1024); err != nil {
+					// 尝试 1MB
+					msck.Socket.SetWriteBuffer(1 * 1024 * 1024)
+				}
+			}
+		}
 	}
 	if p.Mode == POOL_RECV {
 		msck.Socket.Shutdown(1)
-		msck.Socket.SetReadBuffer(constant.RX_BUF)
+		// 尝试设置接收缓冲区，如果失败则逐步降级
+		if err := msck.Socket.SetReadBuffer(constant.RX_BUF); err != nil {
+			// 尝试 8MB
+			if err := msck.Socket.SetReadBuffer(8 * 1024 * 1024); err != nil {
+				// 尝试 4MB
+				if err := msck.Socket.SetReadBuffer(4 * 1024 * 1024); err != nil {
+					// 尝试 2MB
+					msck.Socket.SetReadBuffer(2 * 1024 * 1024)
+				}
+			}
+		}
 	}
 
 	flags := uint32(0)

@@ -17,12 +17,10 @@ const (
 const (
 	SendFileDir_unix         = "cmd/send_files/"
 	SaveFileDir_unix         = "cmd/received_files/"
-	SendFileDir_win_t        = "C:\\Users\\mowen\\Desktop\\FluteGo\\FluteGo\\cmd\\send_files\\"
-	SaveFileDir_win_t        = "C:\\Users\\mowen\\Desktop\\FluteGo\\FluteGo\\cmd\\received_files\\"
 	SendFileDir_win          = "cmd\\send_files\\"
 	SaveFileDir_win          = "cmd\\received_files\\"
 	SendRedundancyRatio      = 1.15
-	DefaultSendRateLimitMbps = 300 // default send rate limit; 0 disables throttling
+	DefaultSendRateLimitMbps = 800 // default send rate limit; 0 disables throttling (reduced for Windows compatibility)
 	WindowsSize              = 10
 
 	START_SEND_WAIT = 1 // seconds to wait before starting to send data
@@ -66,8 +64,8 @@ const (
 )
 
 const (
-	TX_BUF = 32 * 1024 * 1024 // 64 MB
-	RX_BUF = 32 * 1024 * 1024 // 64 MB
+	TX_BUF = 8 * 1024 * 1024  // 8 MB send buffer (reduced for Windows compatibility)
+	RX_BUF = 16 * 1024 * 1024 // 16 MB recv buffer (reduced for Windows compatibility)
 )
 
 const (
