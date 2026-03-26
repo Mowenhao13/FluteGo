@@ -23,19 +23,21 @@ type TransferRecord struct {
 // StateStore maintains in-memory snapshots of all active transfers and
 // broadcasts state changes to the WebSocket hub.
 type StateStore struct {
-	mu        sync.RWMutex
-	records   map[uint8]*TransferRecord
-	prevBytes map[uint8]int64
-	prevTime  map[uint8]time.Time
-	hub       *Hub
+	mu            sync.RWMutex
+	records       map[uint8]*TransferRecord
+	prevBytes     map[uint8]int64
+	prevTime      map[uint8]time.Time
+	lastBroadcast map[uint8]time.Time
+	hub           *Hub
 }
 
 func newStateStore(hub *Hub) *StateStore {
 	return &StateStore{
-		records:   make(map[uint8]*TransferRecord),
-		prevBytes: make(map[uint8]int64),
-		prevTime:  make(map[uint8]time.Time),
-		hub:       hub,
+		records:       make(map[uint8]*TransferRecord),
+		prevBytes:     make(map[uint8]int64),
+		prevTime:      make(map[uint8]time.Time),
+		lastBroadcast: make(map[uint8]time.Time),
+		hub:           hub,
 	}
 }
 
@@ -152,8 +154,21 @@ func (s *StateStore) broadcastUpdate(rec TransferRecord) {
 	if s.hub == nil {
 		return
 	}
-	msg := encodeWSMsg("update", rec)
-	if msg != nil {
-		s.hub.Broadcast(msg)
+
+	now := time.Now()
+	last, ok := s.lastBroadcast[rec.FdtID]
+
+	// 总是广播完成或失败状态，其他状态最多每 50ms 广播一次（20fps）
+	shouldBroadcast := !ok ||
+		rec.Status == "completed" ||
+		rec.Status == "failed" ||
+		now.Sub(last) >= 50*time.Millisecond
+
+	if shouldBroadcast {
+		s.lastBroadcast[rec.FdtID] = now
+		msg := encodeWSMsg("update", rec)
+		if msg != nil {
+			s.hub.Broadcast(msg)
+		}
 	}
 }
