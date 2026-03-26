@@ -115,6 +115,7 @@ type Receiver struct {
 	writerWg         sync.WaitGroup
 	writeRequestPool sync.Pool
 	enableMd5        bool // 是否启用MD5校验
+	reportChan       chan<- Report // 保存报告通道用于发送进度更新
 	// 统计
 	currWritten   int64     // 当前已写入字节数
 	totalReceived int64     // 总共接收字节数
@@ -357,23 +358,6 @@ func (r *Receiver) startWriterLoop() {
 
 				// log.Printf("Writer worker %d completed write for chunkIdx=%d, total written=%d", id, req.ChunkIdx, atomic.LoadInt64(&r.currWritten))
 
-				// 发送进度报告
-				if ch, ok := GetReportChan(context.Background()); ok {
-					report := Report{
-						FdtID:    r.fdtID,
-						Received: atomic.LoadInt64(&r.currWritten),
-						Total:    int64(r.config.FileSize),
-						Status:   0,
-					}
-					select {
-					case ch <- report:
-						// log.Printf("Progress report sent: fdtID=%d, received=%d, total=%d", report.FdtID, report.Received, report.Total)
-					default:
-						// 非阻塞发送，避免阻塞写入循环
-						// log.Printf("Progress report skipped (channel full): fdtID=%d, received=%d, total=%d", report.FdtID, report.Received, report.Total)
-					}
-				}
-
 				// 检查是否所有分片都已接收完成
 				// 使用双重保险：1. chunk去重计数 2. 字节数检查
 				_, loaded := r.completedChunks.LoadOrStore(req.ChunkIdx, true)
@@ -387,6 +371,28 @@ func (r *Receiver) startWriterLoop() {
 				// 检查完成条件：chunk数够了，或者字节数够了
 				bytesWritten := atomic.LoadInt64(&r.currWritten)
 				shouldFinish := finished >= r.expectedChunks || bytesWritten >= int64(r.config.FileSize)
+
+				var reportStatus uint8 = 0
+				if shouldFinish {
+					reportStatus = 1
+				}
+
+				// 发送进度报告
+				if r.reportChan != nil {
+					report := Report{
+						FdtID:    r.fdtID,
+						Received: bytesWritten,
+						Total:    int64(r.config.FileSize),
+						Status:   reportStatus,
+					}
+					select {
+					case r.reportChan <- report:
+						// log.Printf("Progress report sent: fdtID=%d, received=%d, total=%d, status=%d", report.FdtID, report.Received, report.Total, report.Status)
+					default:
+						// 非阻塞发送，避免阻塞写入循环
+						// log.Printf("Progress report skipped (channel full): fdtID=%d, received=%d, total=%d", report.FdtID, report.Received, report.Total)
+					}
+				}
 
 				if shouldFinish {
 					r.closeOnce.Do(func() {
@@ -558,6 +564,11 @@ func (r *Receiver) ShowBasicInfo() {
 //   - 错误传播和上下文取消链
 func (r *Receiver) Start(ctx context.Context) error {
 	runtime.ReadMemStats(&r.memStatsStart)
+
+	// 保存报告通道以便在写入协程中使用
+	if ch, ok := GetReportChan(ctx); ok {
+		r.reportChan = ch
+	}
 
 	// 获取全局连接池
 	p := pool.GetConnPool()

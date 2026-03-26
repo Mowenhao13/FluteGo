@@ -370,9 +370,177 @@ func ListDir(path string) {
 	fmt.Println()
 }
 
-// func GetRateLimit() int {
+// GetLocalIPv4 获取本机的以太网 IPv4 地址
+//
+// # 描述
+//
+//	优先返回局域网地址 (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+//	跳过回环地址 (127.x.x.x) 和 Docker/VMware 等虚拟网络
+//
+// # 返回值
+//
+//   - `string`: 检测到的 IPv4 地址，如果失败返回 "127.0.0.1"
+func GetLocalIPv4() string {
+	// 方法 1: 通过连接到外部地址获取（最快）
+	if ip := getLocalIPByUDP(); ip != "" {
+		return ip
+	}
 
-// }
+	// 方法 2: 枚举所有网络接口
+	if ip := getLocalIPFromInterfaces(); ip != "" {
+		return ip
+	}
+
+	// 默认返回回环地址
+	return "127.0.0.1"
+}
+
+// getLocalIPByUDP 通过连接到外部地址获取本机 IP
+func getLocalIPByUDP() string {
+	// 连接到 Google DNS (不会真正建立连接)
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+
+	localAddr := conn.LocalAddr().String()
+	// localAddr 格式是 "IP:Port"，需要提取 IP
+	host, _, err := net.SplitHostPort(localAddr)
+	if err != nil {
+		return ""
+	}
+
+	// 验证不是回环地址
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsLoopback() {
+		return ""
+	}
+
+	return host
+}
+
+// getLocalIPFromInterfaces 通过枚举网络接口获取 IP
+func getLocalIPFromInterfaces() string {
+	var candidates []string
+
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+
+	for _, iface := range interfaces {
+		// 跳过未启动的接口
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+
+		// 跳过回环接口
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		// 获取接口的地址
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			// 解析 IP 地址
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			if ip == nil {
+				continue
+			}
+
+			// 只使用 IPv4
+			if ip.To4() == nil {
+				continue
+			}
+
+			ipStr := ip.String()
+
+			// 跳过回环地址
+			if ip.IsLoopback() {
+				continue
+			}
+
+			// 跳过链路本地地址 (169.254.x.x)
+			if ip.IsLinkLocalUnicast() {
+				continue
+			}
+
+			// 跳过 Docker 网络 (172.17-19.x.x)
+			if isDockerIP(ipStr) {
+				continue
+			}
+
+			// 跳过 VMware 网络 (192.168.132.x, 192.168.174.x)
+			if isVMwareIP(ipStr) {
+				continue
+			}
+
+			candidates = append(candidates, ipStr)
+		}
+	}
+
+	return selectPreferredIP(candidates)
+}
+
+// isDockerIP 检查是否是 Docker 网络地址
+func isDockerIP(ip string) bool {
+	// Docker 常用网段: 172.17.x.x - 172.19.x.x
+	return len(ip) >= 7 && ip[:7] == "172.17." ||
+		(len(ip) >= 7 && ip[:7] == "172.18.") ||
+		(len(ip) >= 7 && ip[:7] == "172.19.")
+}
+
+// isVMwareIP 检查是否是 VMware 网络地址
+func isVMwareIP(ip string) bool {
+	return len(ip) >= 12 && ip[:12] == "192.168.132." ||
+		(len(ip) >= 12 && ip[:12] == "192.168.174.")
+}
+
+// selectPreferredIP 从候选 IP 中选择一个优先使用的
+func selectPreferredIP(candidates []string) string {
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	// 1. 优先选择 192.168.x.x (常见局域网)
+	for _, ip := range candidates {
+		if len(ip) >= 8 && ip[:8] == "192.168." {
+			return ip
+		}
+	}
+
+	// 2. 其次选择 10.x.x.x
+	for _, ip := range candidates {
+		if len(ip) >= 3 && ip[:3] == "10." {
+			return ip
+		}
+	}
+
+	// 3. 再次选择 172.16-31.x.x
+	for _, ip := range candidates {
+		if len(ip) >= 6 && ip[:3] == "172." {
+			parts := net.ParseIP(ip).To4()
+			if parts != nil && parts[1] >= 16 && parts[1] <= 31 {
+				return ip
+			}
+		}
+	}
+
+	// 默认返回第一个
+	return candidates[0]
+}
 
 func GetTransferringFiles(transferringFiles sync.Map) []string {
 	var files []string

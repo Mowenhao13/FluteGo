@@ -4,88 +4,23 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FluteGo — File Transfer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
   <style>
-    /* ─── Critical Offline-First CSS (no CDN required) ─── */
+    /* ─── Base Reset ─── */
     *, *::before, *::after { box-sizing: border-box; }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-      background-color: #F9F8F6;
-      color: #1A1A1A;
-      margin: 0;
-      padding: 0;
+      font-family: 'Inter', system-ui, sans-serif !important;
+      background-color: #F9F8F6 !important;
+      color: #1A1A1A !important;
+      margin: 0 !important;
+      padding: 0 !important;
       min-height: 100vh;
-    }
-
-    /* Hide lucide icons placeholders when library not loaded */
-    [data-lucide] { display: none; }
-  </style>
-  <!-- Try to load CDN resources, but continue if they fail -->
-  <script>
-    // Stub for lucide if it fails to load
-    window.lucide = window.lucide || { createIcons: function() {} };
-
-    // 设置资源加载超时
-    function loadScriptWithTimeout(src, timeout) {
-      return new Promise(function(resolve, reject) {
-        var script = document.createElement('script');
-        script.src = src;
-        script.async = true;
-
-        var timer = setTimeout(function() {
-          reject(new Error('Script load timeout'));
-        }, timeout);
-
-        script.onload = function() {
-          clearTimeout(timer);
-          resolve();
-        };
-        script.onerror = function() {
-          clearTimeout(timer);
-          reject(new Error('Script load failed'));
-        };
-
-        document.head.appendChild(script);
-      });
-    }
-
-    // 在 DOM 加载完成后尝试加载外部资源
-    document.addEventListener('DOMContentLoaded', function() {
-      // 3 秒超时加载 Tailwind，失败则继续使用内联 CSS
-      loadScriptWithTimeout('https://cdn.tailwindcss.com', 3000)
-        .then(function() {
-          console.log('Tailwind loaded');
-        })
-        .catch(function() {
-          console.log('Using inline CSS only (offline mode)');
-        });
-
-      // 3 秒超时加载 Lucide 图标
-      loadScriptWithTimeout('https://unpkg.com/lucide@latest/dist/umd/lucide.min.js', 3000)
-        .then(function() {
-          if (window.lucide && window.lucide.createIcons) {
-            window.lucide.createIcons();
-          }
-        })
-        .catch(function() {
-          console.log('Lucide icons not available (offline mode)');
-        });
-    });
-  </script>
-  <!-- 预连接但不阻塞 -->
-  <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <!-- 字体使用低优先级异步加载 -->
-  <link rel="preload" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
-        as="style"
-        onload="this.onload=null;this.rel='stylesheet';document.body.classList.add('fonts-loaded');" />
-  <noscript>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  </noscript>
-  <style>
-    /* Reset font after Google Fonts loads (if available) */
-    body.fonts-loaded {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
 
     /* ─── Colour tokens ─── */
@@ -274,7 +209,7 @@
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-family: 'JetBrains Mono', monospace !important;
       font-size: 11.5px !important;
       font-weight: 500 !important;
       color: var(--text-sec) !important;
@@ -394,7 +329,7 @@
 
     /* MD5 */
     .md5 {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-family: 'JetBrains Mono', monospace !important;
       font-size: 11px !important;
       font-weight: 500 !important;
       color: var(--text-sec) !important;
@@ -523,7 +458,7 @@
     /* ─── FEC selector ─── */
     .fec-select {
       font-size: 11.5px !important;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      font-family: 'Inter', sans-serif;
       padding: 3px 8px;
       border-radius: 6px;
       border: 1px solid var(--border-md);
@@ -571,7 +506,7 @@
       border-radius: 6px;
       border: 1px solid var(--border-md);
       font-size: 12px !important;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-family: 'JetBrains Mono', monospace !important;
       color: var(--text-pri) !important;
       background: var(--bg);
     }
@@ -981,8 +916,7 @@
     updateSendAllButton();
 
     // Re-render lucide icons for any new SVG placeholders
-    // lucide.createIcons() - offline fallback
-    try { if (typeof lucide !== 'undefined') lucide.createIcons(); } catch (_) {}
+    lucide.createIcons();
   }
 
   function setCount(id, n) {
@@ -1460,8 +1394,7 @@
       activeTab.disabled = false;
     }
 
-    // lucide.createIcons() - offline fallback
-    try { if (typeof lucide !== 'undefined') lucide.createIcons(); } catch (_) {}
+    lucide.createIcons();
   }
 
   // ══════════════════════════════════════════════════════════════════
