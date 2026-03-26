@@ -1,0 +1,1408 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FluteGo — File Transfer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ─── Base Reset ─── */
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif !important;
+      background-color: #F9F8F6 !important;
+      color: #1A1A1A !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      min-height: 100vh;
+    }
+
+    /* ─── Colour tokens ─── */
+    :root {
+      --bg:          #F9F8F6;
+      --surface:     #FFFFFF;
+      --border:      #E8E6E1;
+      --border-md:   #D4D1CB;
+      --text-pri:    #1A1A1A;
+      --text-sec:    #6B6860;
+      --text-mute:   #9E9B94;
+
+      --green:       #2D6A4F;
+      --green-bg:    #D8F3DC;
+      --amber:       #92400E;
+      --amber-bg:    #FEF3C7;
+      --red:         #991B1B;
+      --red-bg:      #FEE2E2;
+      --gray:        #4B5563;
+      --gray-bg:     #F3F4F6;
+
+      --radius-sm: 4px;
+      --radius:    8px;
+      --radius-lg: 12px;
+    }
+
+    /* ─── Page wrapper ─── */
+    .page { max-width: 1440px; margin: 0 auto; padding: 0 28px 80px; }
+
+    /* ─── Top nav bar ─── */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 28px;
+      height: 52px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(249,248,246,0.95);
+      backdrop-filter: blur(10px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .topbar-brand {
+      font-size: 20px !important;
+      font-weight: 600 !important;
+      letter-spacing: -0.6px;
+      color: var(--text-pri) !important;
+    }
+
+    /* ─── Mode switcher tabs ─── */
+    .mode-tabs {
+      display: flex;
+      align-items: center;
+      background: #EFEDE9;
+      border-radius: 8px;
+      padding: 3px;
+      gap: 2px;
+    }
+    .mode-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 14px;
+      border-radius: 6px;
+      font-size: 12.5px !important;
+      font-weight: 500 !important;
+      color: var(--text-sec) !important;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      transition: background 0.15s, color 0.15s, box-shadow 0.15s, opacity 0.15s;
+      user-select: none;
+    }
+    .mode-tab:hover:not(:disabled) { color: var(--text-pri) !important; }
+    .mode-tab:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .mode-tab.active {
+      background: #FFFFFF !important;
+      color: var(--text-pri) !important;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.10), 0 1px 1px rgba(0,0,0,0.06);
+    }
+    .mode-tab .tab-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--text-mute);
+    }
+    .mode-tab.active.tab-sender .tab-dot { background: #64748B; }
+    .mode-tab.active.tab-receiver .tab-dot {
+      background: #22C55E;
+      animation: pulse 1.5s infinite;
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    /* ─── Connection status (topbar) ─── */
+    .topbar-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11.5px !important;
+      font-weight: 500 !important;
+      color: #16A34A !important;
+    }
+    .topbar-status::before {
+      content: '';
+      display: inline-block;
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #22C55E;
+      animation: pulse 1.5s infinite;
+    }
+    /* Disconnected state */
+    .topbar-status.disconnected {
+      color: var(--red) !important;
+    }
+    .topbar-status.disconnected::before {
+      background: #EF4444;
+      animation: none;
+    }
+
+    .topbar-meta {
+      font-size: 11px !important;
+      color: var(--text-mute) !important;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.35; }
+    }
+
+    /* ─── Mode section ─── */
+    .mode-section { display: none; padding: 36px 0 60px; }
+    .mode-section.active { display: block; }
+
+    /* ─── Section page header ─── */
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 28px;
+      flex-wrap: wrap;
+    }
+    .section-logo {
+      font-size: 22px !important;
+      font-weight: 600 !important;
+      letter-spacing: -0.5px;
+      color: var(--text-pri) !important;
+    }
+
+    /* Mode badge */
+    .mode-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px !important;
+      font-weight: 500 !important;
+      border: 1px solid var(--border-md);
+    }
+    .mode-badge.sender {
+      background: #F0F4FF;
+      border-color: #CBD5E1;
+      color: #334155;
+    }
+    .mode-badge.receiver {
+      background: #F0FDF4;
+      border-color: #BBF7D0;
+      color: #166534;
+    }
+    .mode-badge .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+    }
+    .mode-badge.sender .dot { background: #64748B; }
+    .mode-badge.receiver .dot { background: #22C55E; animation: pulse 1.5s infinite; }
+
+    /* IP + port info */
+    .conn-info {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-family: 'JetBrains Mono', monospace !important;
+      font-size: 11.5px !important;
+      font-weight: 500 !important;
+      color: var(--text-sec) !important;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 3px 10px;
+    }
+    .conn-info .sep {
+      color: var(--border-md);
+      margin: 0 3px;
+    }
+    .conn-info .port {
+      color: var(--text-pri) !important;
+      font-weight: 600 !important;
+    }
+
+    /* ─── Two-column panels ─── */
+    .panels {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 13px 18px;
+      border-bottom: 1px solid var(--border);
+      background: #FAFAF9;
+    }
+    .panel-title {
+      font-size: 13px !important;
+      font-weight: 600 !important;
+      color: var(--text-pri) !important;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .panel-count {
+      font-size: 11px !important;
+      font-weight: 500 !important;
+      color: var(--text-mute) !important;
+      background: var(--gray-bg);
+      padding: 1px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+    }
+
+    /* ─── Add files button ─── */
+    .add-files-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 10px;
+      border-radius: 6px;
+      font-size: 11.5px !important;
+      font-weight: 500 !important;
+      color: var(--text-sec) !important;
+      background: transparent;
+      border: 1px solid var(--border-md);
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .add-files-btn:hover {
+      background: var(--surface);
+      color: var(--text-pri) !important;
+    }
+
+    /* ─── Table ─── */
+    .file-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .file-table th {
+      font-size: 10.5px !important;
+      font-weight: 600 !important;
+      color: var(--text-mute) !important;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      padding: 9px 16px;
+      text-align: left;
+      background: #FAFAF9;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .file-table td {
+      font-size: 12.5px !important;
+      color: var(--text-pri) !important;
+      padding: 10px 16px;
+      vertical-align: middle;
+      border-bottom: 1px solid #F0EEE9;
+    }
+    .file-table tr:last-child td { border-bottom: none; }
+    .file-table tr:hover td { background: #FAFAF8; }
+
+    /* ─── File name cell ─── */
+    .file-name {
+      font-weight: 500 !important;
+      max-width: 160px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .file-icon { color: var(--text-mute); flex-shrink: 0; }
+
+    /* MD5 */
+    .md5 {
+      font-family: 'JetBrains Mono', monospace !important;
+      font-size: 11px !important;
+      font-weight: 500 !important;
+      color: var(--text-sec) !important;
+      letter-spacing: -0.2px;
+    }
+
+    /* ─── FEC badge ─── */
+    .fec-badge {
+      display: inline-flex;
+      align-items: center;
+      font-size: 10px !important;
+      font-weight: 600 !important;
+      padding: 2px 7px;
+      border-radius: var(--radius-sm);
+      white-space: nowrap;
+    }
+    .fec-raptorq {
+      background: #EFF6FF;
+      color: #1E40AF;
+      border: 1px solid #BFDBFE;
+    }
+    .fec-nocode {
+      background: var(--gray-bg);
+      color: var(--gray);
+      border: 1px solid var(--border-md);
+    }
+    .fec-rs {
+      background: #FFF7ED;
+      color: #9A3412;
+      border: 1px solid #FDBA74;
+    }
+
+    /* ─── Status badge ─── */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px !important;
+      font-weight: 500 !important;
+      padding: 2px 8px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    .status-started   { background: var(--green-bg); color: var(--green); }
+    .status-waiting   { background: var(--amber-bg); color: var(--amber); }
+    .status-failed    { background: var(--red-bg);   color: var(--red); }
+    .status-passed    { background: var(--green-bg); color: var(--green); }
+    .status-receiving { background: var(--green-bg); color: var(--green); }
+
+    .status-badge .s-dot {
+      width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0;
+    }
+    .status-started   .s-dot { background: var(--green); }
+    .status-waiting   .s-dot { background: var(--amber); }
+    .status-failed    .s-dot { background: var(--red); }
+    .status-passed    .s-dot { background: var(--green); }
+    .status-receiving .s-dot { background: var(--green); animation: pulse 1.5s infinite; }
+
+    /* ─── Progress bar ─── */
+    .progress-wrap {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .progress-bar {
+      width: 60px;
+      height: 5px;
+      background: #E8E6E1;
+      border-radius: 999px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .progress-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: #1A1A1A;
+      transition: width 0.4s ease;
+    }
+    .progress-fill.failed { background: #EF4444; }
+    .progress-pct {
+      font-size: 11px !important;
+      font-weight: 600 !important;
+      color: var(--text-sec) !important;
+      min-width: 28px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ─── Speed / Size cells ─── */
+    .speed {
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      color: var(--text-sec) !important;
+      font-size: 12px !important;
+    }
+    .speed.active { color: #16A34A !important; font-weight: 500 !important; }
+    .speed.idle   { color: var(--text-mute) !important; }
+    .size {
+      font-variant-numeric: tabular-nums;
+      color: var(--text-sec) !important;
+      font-size: 12px !important;
+      white-space: nowrap;
+    }
+
+    /* ─── Scrollable table container ─── */
+    .table-scroll {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* ─── Row highlight for failed ─── */
+    tr.row-failed td {
+      background: #FFF8F8 !important;
+    }
+    tr.row-failed:hover td {
+      background: #FFF0F0 !important;
+    }
+
+    /* ─── Empty state ─── */
+    .empty-state {
+      text-align: center;
+      color: var(--text-mute) !important;
+      font-size: 12px !important;
+      padding: 24px 0;
+    }
+
+    /* ─── FEC selector ─── */
+    .fec-select {
+      font-size: 11.5px !important;
+      font-family: 'Inter', sans-serif;
+      padding: 3px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border-md);
+      color: var(--text-sec) !important;
+      background: var(--surface);
+      cursor: pointer;
+    }
+
+    /* ─── Action buttons (send / delete) ─── */
+    .action-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 3px 8px;
+      border-radius: 5px;
+      font-size: 11px !important;
+      font-weight: 500 !important;
+      border: 1px solid var(--border-md);
+      cursor: pointer;
+      transition: background 0.15s;
+      background: var(--surface);
+      color: var(--text-sec) !important;
+    }
+    .send-btn   { color: #16A34A !important; border-color: #86EFAC; background: #F0FDF4; }
+    .send-btn:hover   { background: #DCFCE7; }
+    .delete-btn { color: var(--red) !important; border-color: #FECACA; background: #FFF5F5; }
+    .delete-btn:hover { background: var(--red-bg); }
+
+    /* ─── Save-dir bar (receiver section) ─── */
+    .save-dir-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 20px;
+      padding: 10px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 12px !important;
+      color: var(--text-sec) !important;
+    }
+    .dir-input {
+      flex: 1;
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border-md);
+      font-size: 12px !important;
+      font-family: 'JetBrains Mono', monospace !important;
+      color: var(--text-pri) !important;
+      background: var(--bg);
+    }
+    .dir-status { font-size: 11px !important; }
+    .dir-status.ok  { color: #16A34A !important; }
+    .dir-status.err { color: var(--red) !important; }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<!--  TOP NAV                                                           -->
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<header class="topbar">
+  <span class="topbar-brand">FluteGo</span>
+
+  <div class="mode-tabs" role="tablist">
+    <button class="mode-tab tab-sender active"
+            id="mode-tab-sender" disabled role="tab" aria-selected="true">
+      <span class="tab-dot"></span>
+      Sender
+    </button>
+    <button class="mode-tab tab-receiver"
+            id="mode-tab-receiver" disabled role="tab" aria-selected="false">
+      <span class="tab-dot"></span>
+      Receiver
+    </button>
+  </div>
+
+  <div class="topbar-right">
+    <span class="topbar-status disconnected" id="conn-status">Connecting…</span>
+    <span class="topbar-meta">v1.0</span>
+  </div>
+</header>
+
+
+<div class="page">
+
+  <!-- ════════════════════════════════════════════════════════════════ -->
+  <!--  SENDER MODE                                                     -->
+  <!-- ════════════════════════════════════════════════════════════════ -->
+  <section class="mode-section active" id="section-sender" role="tabpanel">
+
+    <div class="section-header">
+      <span class="section-logo">FluteGo</span>
+      <span class="mode-badge sender">
+        <span class="dot"></span>
+        Sender
+      </span>
+      <span class="conn-info">
+        <i data-lucide="send" style="width:11px;height:11px;color:#9E9B94"></i>
+        <span id="sender-dest-ip">—</span>
+        <span class="sep">·</span>
+        <span class="port" id="sender-dest-port">:—</span>
+      </span>
+    </div>
+
+    <div class="save-dir-bar" id="dest-ip-bar">
+      <i data-lucide="map-pin" style="width:14px;height:14px;color:#9E9B94;flex-shrink:0"></i>
+      <span>目标 IP：</span>
+      <input type="text" id="dest-ip-input" class="dir-input" placeholder="接收端 IP，例如 192.168.1.100" />
+      <button class="action-btn" onclick="setDestIP()">设置</button>
+      <span id="dest-ip-status" class="dir-status"></span>
+    </div>
+
+    <div class="panels">
+
+      <!-- Left: Active / Pending -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">
+            <i data-lucide="upload-cloud" style="width:14px;height:14px;color:#64748B"></i>
+            待传输文件
+          </span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <select class="fec-select" id="fec-select">
+              <option value="NoCode">NoCode</option>
+              <option value="RaptorQ">RaptorQ</option>
+              <option value="ReedSolomon">ReedSolomon</option>
+            </select>
+            <button class="add-files-btn" id="add-files-btn" onclick="openFilePicker()">
+              <i data-lucide="plus" style="width:12px;height:12px"></i>
+              选择文件
+            </button>
+            <button class="action-btn send-btn" id="send-all-btn" onclick="sendAllQueuedFiles()" style="display:none;">
+              <i data-lucide="send" style="width:11px;height:11px"></i> 全部发送
+            </button>
+            <span class="panel-count" id="sender-active-count">0 files</span>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="file-table">
+            <thead>
+              <tr>
+                <th>文件名</th>
+                <th>大小</th>
+                <th>速度</th>
+                <th>FEC</th>
+                <th>状态</th>
+                <th>MD5</th>
+                <th>进度</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="sender-active-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Right: Completed -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">
+            <i data-lucide="check-circle-2" style="width:14px;height:14px;color:#16A34A"></i>
+            传输完成文件
+          </span>
+          <span class="panel-count" id="sender-done-count">0 files</span>
+        </div>
+        <div class="table-scroll">
+          <table class="file-table">
+            <thead>
+              <tr>
+                <th>文件名</th>
+                <th>大小</th>
+                <th>均速</th>
+                <th>FEC</th>
+                <th>MD5</th>
+              </tr>
+            </thead>
+            <tbody id="sender-done-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+
+  <!-- ════════════════════════════════════════════════════════════════ -->
+  <!--  RECEIVER MODE                                                   -->
+  <!-- ════════════════════════════════════════════════════════════════ -->
+  <section class="mode-section" id="section-receiver" role="tabpanel">
+
+    <div class="section-header">
+      <span class="section-logo">FluteGo</span>
+      <span class="mode-badge receiver">
+        <span class="dot"></span>
+        Receiver
+      </span>
+      <span class="conn-info">
+        <i data-lucide="download" style="width:11px;height:11px;color:#9E9B94"></i>
+        <span id="recv-dest-ip">—</span>
+        <span class="sep">·</span>
+        <span class="port" id="recv-dest-port">:—</span>
+      </span>
+    </div>
+
+    <div class="save-dir-bar">
+      <i data-lucide="folder" style="width:14px;height:14px;color:#9E9B94;flex-shrink:0"></i>
+      <span>保存目录：</span>
+      <input type="text" id="save-dir-input" class="dir-input" placeholder="输入服务器端保存路径" />
+      <button class="action-btn" onclick="setSaveDir()">设置</button>
+      <button class="action-btn" onclick="browseDir()">浏览</button>
+      <span id="save-dir-status" class="dir-status"></span>
+    </div>
+
+    <div class="panels">
+
+      <!-- Left: Incoming -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">
+            <i data-lucide="download-cloud" style="width:14px;height:14px;color:#64748B"></i>
+            待接收文件
+            <span id="recv-ready-badge"></span>
+          </span>
+          <span class="panel-count" id="recv-active-count">0 files</span>
+        </div>
+        <div class="table-scroll">
+          <table class="file-table">
+            <thead>
+              <tr>
+                <th>文件名</th>
+                <th>大小</th>
+                <th>速度</th>
+                <th>FEC</th>
+                <th>MD5</th>
+                <th>进度</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody id="recv-active-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Right: Received -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">
+            <i data-lucide="check-circle-2" style="width:14px;height:14px;color:#16A34A"></i>
+            接收完成文件
+          </span>
+          <span class="panel-count" id="recv-done-count">0 files</span>
+        </div>
+        <div class="table-scroll">
+          <table class="file-table">
+            <thead>
+              <tr>
+                <th>文件名</th>
+                <th>大小</th>
+                <th>均速</th>
+                <th>FEC</th>
+                <th>MD5</th>
+                <th>验证</th>
+              </tr>
+            </thead>
+            <tbody id="recv-done-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+</div><!-- /page -->
+
+<!-- Hidden file input -->
+<input type="file" id="file-input" multiple style="display:none" />
+
+<script>
+  // ══════════════════════════════════════════════════════════════════
+  //  Config — override with ?api=http://host:port
+  // ══════════════════════════════════════════════════════════════════
+  const params  = new URLSearchParams(location.search);
+  const API_BASE = params.get('api') ||
+      (location.protocol === 'file:' ? 'http://localhost:8080' : location.origin);
+  const WS_URL   = API_BASE.replace(/^http/, 'ws') + '/ws';
+
+  // ══════════════════════════════════════════════════════════════════
+  //  State
+  // ══════════════════════════════════════════════════════════════════
+  let transfers   = {};   // { [fdtId]: TransferRecord }
+  let queuedFiles = [];   // { key, file, sending, error } objects
+  let wsConnected = false;
+  let wsRetryDelay = 1000;
+  let modeAutoSwitched = false;
+
+  // ══════════════════════════════════════════════════════════════════
+  //  Init
+  // ══════════════════════════════════════════════════════════════════
+  async function init() {
+    // 1. Fetch /api/status
+    try {
+      const s = await fetch(API_BASE + '/api/status').then(r => r.json());
+      applyStatus(s);
+    } catch (_) {}
+
+    // 2. Fallback snapshot via REST (before WebSocket connects)
+    try {
+      const list = await fetch(API_BASE + '/api/transfers').then(r => r.json());
+      if (Array.isArray(list)) {
+        list.forEach(r => { transfers[r.fdtId] = r; });
+        renderAll();
+      }
+    } catch (_) {}
+
+    // 3. Open WebSocket with auto-reconnect
+    connectWS();
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  WebSocket
+  // ══════════════════════════════════════════════════════════════════
+  function connectWS() {
+    let ws;
+    try {
+      ws = new WebSocket(WS_URL);
+    } catch (_) {
+      scheduleReconnect();
+      return;
+    }
+
+    ws.onopen = () => {
+      wsConnected = true;
+      setConnUI(true);
+      wsRetryDelay = 1000;
+    };
+
+    ws.onclose = () => {
+      wsConnected = false;
+      setConnUI(false);
+      scheduleReconnect();
+    };
+
+    ws.onerror = () => {
+      // onclose will fire after onerror; nothing extra needed here
+    };
+
+    ws.onmessage = ({ data }) => {
+      let msg;
+      try { msg = JSON.parse(data); } catch (_) { return; }
+
+      if (msg.type === 'snapshot') {
+        transfers = {};
+        const list = msg.data;
+        if (Array.isArray(list)) {
+          list.forEach(r => { transfers[r.fdtId] = r; });
+        }
+      } else if (msg.type === 'update' && msg.data) {
+        transfers[msg.data.fdtId] = msg.data;
+      }
+      renderAll();
+    };
+  }
+
+  function scheduleReconnect() {
+    setTimeout(() => {
+      wsRetryDelay = Math.min(wsRetryDelay * 2, 30000);
+      connectWS();
+    }, wsRetryDelay);
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  UI helpers — status bar + IP/port
+  // ══════════════════════════════════════════════════════════════════
+  function setConnUI(connected) {
+    const el = document.getElementById('conn-status');
+    if (connected) {
+      el.className = 'topbar-status';
+      // Extract port from API_BASE, e.g. "http://localhost:8080" → "8080"
+      const portMatch = API_BASE.match(/:(\d+)$/);
+      const port = portMatch ? portMatch[1] : '8080';
+      el.textContent = 'Connected · :' + port;
+    } else {
+      el.className = 'topbar-status disconnected';
+      el.textContent = 'Disconnected';
+    }
+  }
+
+  function applyStatus(s) {
+    const ip   = s.destIP   || '—';
+    const port = s.filePort ? ':' + s.filePort : ':—';
+
+    document.getElementById('sender-dest-ip').textContent   = ip;
+    document.getElementById('sender-dest-port').textContent = port;
+    document.getElementById('recv-dest-ip').textContent     = ip;
+    document.getElementById('recv-dest-port').textContent   = port;
+
+    if (s.saveDir) {
+      document.getElementById('save-dir-input').value = s.saveDir;
+    }
+    if (s.destIP && s.mode === 'sender') {
+      document.getElementById('dest-ip-input').value = s.destIP;
+    }
+    updateRecvReadyBadge(s.receiverReady);
+
+    // 自动根据后端 mode 设置前端显示
+    if (!modeAutoSwitched && s.mode) {
+      console.log('[applyStatus] switching to mode:', s.mode);
+      switchMode(s.mode);
+      modeAutoSwitched = true;
+    }
+  }
+
+  function updateRecvReadyBadge(ready) {
+    const el = document.getElementById('recv-ready-badge');
+    if (!el) return;
+    if (ready) {
+      el.innerHTML = `<span class="status-badge status-receiving" style="margin-left:6px">
+        <span class="s-dot"></span>就绪
+      </span>`;
+    } else {
+      el.innerHTML = `<span class="status-badge status-waiting" style="margin-left:6px">
+        <span class="s-dot"></span>等待启动
+      </span>`;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  Render
+  // ══════════════════════════════════════════════════════════════════
+  function isActive(s) {
+    return s === 'pending' || s === 'transferring' || s === 'queued';
+  }
+
+  function renderAll() {
+    const list = Object.values(transfers);
+    const sA = list.filter(r => r.role === 'sender'   && isActive(r.status));
+    const sD = list.filter(r => r.role === 'sender'   && !isActive(r.status));
+    const rA = list.filter(r => r.role === 'receiver' && isActive(r.status));
+    const rD = list.filter(r => r.role === 'receiver' && !isActive(r.status));
+
+    // Merge locally queued files into sender active
+    const queuedNorm = queuedFiles.map(normalizeQueued);
+    renderActiveSenderTable('sender-active-tbody', [...sA, ...queuedNorm]);
+    renderDoneSenderTable  ('sender-done-tbody',   sD);
+    renderActiveReceiverTable('recv-active-tbody', rA);
+    renderDoneReceiverTable  ('recv-done-tbody',   rD);
+
+    setCount('sender-active-count', sA.length + queuedFiles.length);
+    setCount('sender-done-count',   sD.length);
+    setCount('recv-active-count',   rA.length);
+    setCount('recv-done-count',     rD.length);
+
+    // 更新"全部发送"按钮显示状态
+    updateSendAllButton();
+
+    // Re-render lucide icons for any new SVG placeholders
+    lucide.createIcons();
+  }
+
+  function setCount(id, n) {
+    document.getElementById(id).textContent = n + ' file' + (n === 1 ? '' : 's');
+  }
+
+  // ── Sender active table (cols: 文件名 大小 速度 FEC 状态 MD5 进度 操作) ──
+  function renderActiveSenderTable(tbodyId, items) {
+    const tbody = document.getElementById(tbodyId);
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">暂无传输任务</td></tr>';
+      return;
+    }
+    tbody.innerHTML = items.map(r => {
+      const si      = statusInfo(r.role, r.status);
+      const pct     = progressPct(r.progress);
+      const isFailed = r.status === 'failed';
+      const actionCell = r._isQueued
+        ? `<td>
+            <div style="display:flex;gap:4px;">
+              <button class="action-btn send-btn" data-qkey="${escHtml(r._qkey)}">
+                <i data-lucide="send" style="width:11px;height:11px"></i> 发送
+              </button>
+              <button class="action-btn delete-btn" data-qkey="${escHtml(r._qkey)}">
+                <i data-lucide="trash-2" style="width:11px;height:11px"></i>
+              </button>
+            </div>
+           </td>`
+        : '<td></td>';
+      return `
+        <tr${isFailed ? ' class="row-failed"' : ''}>
+          <td><div class="file-name">
+            <i data-lucide="${fileIcon(r.fileName)}" class="file-icon" style="width:13px;height:13px"></i>
+            ${truncName(r.fileName)}
+          </div></td>
+          <td><span class="size">${fmtSize(r.fileSize)}</span></td>
+          <td><span class="speed${r.speedMbps > 0 ? ' active' : ' idle'}">${fmtSpeed(r.speedMbps)}</span></td>
+          <td><span class="fec-badge ${fecClass(r.fecType)}">${escHtml(r.fecType || '—')}</span></td>
+          <td>
+            <span class="status-badge ${si.cssClass}">
+              <span class="s-dot"></span>${si.label}
+            </span>
+          </td>
+          <td><span class="md5">${fmtMd5(r.md5)}</span></td>
+          <td>
+            <div class="progress-wrap">
+              <div class="progress-bar">
+                <div class="progress-fill${isFailed ? ' failed' : ''}" style="width:${pct}%"></div>
+              </div>
+              <span class="progress-pct">${pct}%</span>
+            </div>
+          </td>
+          ${actionCell}
+        </tr>`;
+    }).join('');
+
+    // Bind action buttons using event delegation (XSS-safe)
+    tbody.querySelectorAll('.send-btn').forEach(btn => {
+      btn.addEventListener('click', () => sendQueuedFile(btn.dataset.qkey));
+    });
+    tbody.querySelectorAll('.delete-btn').forEach(btn => {
+      btn.addEventListener('click', () => deleteQueuedFile(btn.dataset.qkey));
+    });
+  }
+
+  // ── Sender done table (cols: 文件名 大小 均速 FEC MD5) ──
+  function renderDoneSenderTable(tbodyId, items) {
+    const tbody = document.getElementById(tbodyId);
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">暂无完成记录</td></tr>';
+      return;
+    }
+    tbody.innerHTML = items.map(r => {
+      const isFailed = r.status === 'failed';
+      return `
+        <tr${isFailed ? ' class="row-failed"' : ''}>
+          <td><div class="file-name">
+            <i data-lucide="${fileIcon(r.fileName)}" class="file-icon" style="width:13px;height:13px"></i>
+            ${truncName(r.fileName)}
+          </div></td>
+          <td><span class="size">${fmtSize(r.fileSize)}</span></td>
+          <td><span class="speed">${fmtSpeed(r.speedMbps)}</span></td>
+          <td><span class="fec-badge ${fecClass(r.fecType)}">${escHtml(r.fecType || '—')}</span></td>
+          <td><span class="md5">${fmtMd5(r.md5)}</span></td>
+        </tr>`;
+    }).join('');
+  }
+
+  // ── Receiver active table (cols: 文件名 大小 速度 FEC MD5 进度 状态) ──
+  function renderActiveReceiverTable(tbodyId, items) {
+    const tbody = document.getElementById(tbodyId);
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty-state">暂无传输任务</td></tr>';
+      return;
+    }
+    tbody.innerHTML = items.map(r => {
+      const si      = statusInfo(r.role, r.status);
+      const pct     = progressPct(r.progress);
+      const isFailed = r.status === 'failed';
+      return `
+        <tr${isFailed ? ' class="row-failed"' : ''}>
+          <td><div class="file-name">
+            <i data-lucide="${fileIcon(r.fileName)}" class="file-icon" style="width:13px;height:13px"></i>
+            ${truncName(r.fileName)}
+          </div></td>
+          <td><span class="size">${fmtSize(r.fileSize)}</span></td>
+          <td><span class="speed${r.speedMbps > 0 ? ' active' : ' idle'}">${fmtSpeed(r.speedMbps)}</span></td>
+          <td><span class="fec-badge ${fecClass(r.fecType)}">${escHtml(r.fecType || '—')}</span></td>
+          <td><span class="md5">${fmtMd5(r.md5)}</span></td>
+          <td>
+            <div class="progress-wrap">
+              <div class="progress-bar">
+                <div class="progress-fill${isFailed ? ' failed' : ''}" style="width:${pct}%"></div>
+              </div>
+              <span class="progress-pct">${pct}%</span>
+            </div>
+          </td>
+          <td>
+            <span class="status-badge ${si.cssClass}">
+              <span class="s-dot"></span>${si.label}
+            </span>
+          </td>
+        </tr>`;
+    }).join('');
+  }
+
+  // ── Receiver done table (cols: 文件名 大小 均速 FEC MD5 验证) ──
+  function renderDoneReceiverTable(tbodyId, items) {
+    const tbody = document.getElementById(tbodyId);
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-state">暂无完成记录</td></tr>';
+      return;
+    }
+    tbody.innerHTML = items.map(r => {
+      const si       = statusInfo(r.role, r.status);
+      const isFailed = r.status === 'failed';
+      return `
+        <tr${isFailed ? ' class="row-failed"' : ''}>
+          <td><div class="file-name">
+            <i data-lucide="${fileIcon(r.fileName)}" class="file-icon" style="width:13px;height:13px"></i>
+            ${truncName(r.fileName)}
+          </div></td>
+          <td><span class="size">${fmtSize(r.fileSize)}</span></td>
+          <td><span class="speed">${fmtSpeed(r.speedMbps)}</span></td>
+          <td><span class="fec-badge ${fecClass(r.fecType)}">${escHtml(r.fecType || '—')}</span></td>
+          <td><span class="md5">${fmtMd5(r.md5)}</span></td>
+          <td>
+            <span class="status-badge ${si.cssClass}">
+              <span class="s-dot"></span>${si.label}
+            </span>
+          </td>
+        </tr>`;
+    }).join('');
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  Format helpers
+  // ══════════════════════════════════════════════════════════════════
+  function fmtSize(bytes) {
+    if (!bytes || bytes <= 0) return '—';
+    if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB';
+    if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + ' MB';
+    if (bytes >= 1e3) return (bytes / 1e3).toFixed(1) + ' KB';
+    return bytes + ' B';
+  }
+
+  function fmtSpeed(mbps) {
+    if (!mbps || mbps <= 0) return '—';
+    return mbps.toFixed(1) + ' MB/s';
+  }
+
+  function fmtMd5(md5) {
+    if (!md5 || md5 === '—' || md5.length < 8) return md5 || '—';
+    return md5.slice(0, 4) + '…' + md5.slice(-4);
+  }
+
+  function progressPct(p) {
+    if (!p || p <= 0) return 0;
+    if (p > 1) return Math.min(100, Math.round(p));       // already 0-100
+    return Math.min(100, Math.round(p * 100));             // 0.0-1.0
+  }
+
+  function truncName(name) {
+    if (!name) return '—';
+    if (name.length <= 20) return escHtml(name);
+    const ext = name.includes('.') ? '.' + name.split('.').pop() : '';
+    return escHtml(name.slice(0, 16) + '…' + ext);
+  }
+
+  function escHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // ── FEC CSS class ──
+  function fecClass(fecType) {
+    switch (fecType) {
+      case 'RaptorQ':     return 'fec-raptorq';
+      case 'ReedSolomon': return 'fec-rs';
+      default:            return 'fec-nocode';
+    }
+  }
+
+  // ── File icon by extension ──
+  function fileIcon(name) {
+    if (!name) return 'file';
+    const ext = name.split('.').pop().toLowerCase();
+    const map = {
+      mp4: 'film', mkv: 'film', avi: 'film', mov: 'film', wmv: 'film',
+      zip: 'archive', gz: 'archive', tar: 'archive', rar: 'archive', '7z': 'archive',
+      pdf: 'file-text', txt: 'file-text', md: 'file-text', log: 'file-text',
+      json: 'file-json', xml: 'file-code', yaml: 'file-code', yml: 'file-code',
+      jpg: 'image', jpeg: 'image', png: 'image', gif: 'image', webp: 'image',
+      mp3: 'music', wav: 'music', flac: 'music', aac: 'music',
+      pkg: 'package', deb: 'package', rpm: 'package', exe: 'package',
+      dat: 'database', db: 'database', sql: 'database',
+    };
+    return map[ext] || 'file';
+  }
+
+  // ── Status badge info ──
+  function statusInfo(role, status) {
+    if (status === 'queued') {
+      return { cssClass: 'status-waiting', label: '已选择' };
+    }
+    if (status === 'completed') {
+      return { cssClass: 'status-passed',  label: '完成' };
+    }
+    if (status === 'failed') {
+      return { cssClass: 'status-failed',  label: '失败' };
+    }
+    if (status === 'transferring') {
+      return role === 'receiver'
+        ? { cssClass: 'status-receiving', label: '正在接收' }
+        : { cssClass: 'status-started',  label: '发送中' };
+    }
+    // pending (or any unknown)
+    return { cssClass: 'status-waiting', label: '等待中' };
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  File picker (pure UI — no backend call)
+  // ══════════════════════════════════════════════════════════════════
+  function normalizeQueued(entry) {
+    const file = entry.file;
+    return {
+      _isQueued: true,
+      _qkey:     entry.key,
+      fdtId:    'q_' + entry.key,
+      fileName:  file.name,
+      fileSize:  file.size,
+      role:      'sender',
+      status:    entry.sending ? 'transferring' : (entry.error ? 'failed' : 'queued'),
+      progress:  0,
+      speedMbps: 0,
+      fecType:   '—',
+      md5:       '—',
+    };
+  }
+
+  function openFilePicker() {
+    document.getElementById('file-input').click();
+  }
+
+  document.getElementById('file-input').addEventListener('change', function () {
+    const files = Array.from(this.files);
+    if (!files.length) return;
+    const existing = new Set(queuedFiles.map(e => e.key));
+    files.forEach(f => {
+      const key = f.name + '_' + f.size;
+      if (!existing.has(key)) {
+        queuedFiles.push({ key, file: f, sending: false, error: false });
+        existing.add(key);
+      }
+    });
+    renderAll();
+    this.value = '';
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  //  Queued-file actions
+  // ══════════════════════════════════════════════════════════════════
+  async function sendQueuedFile(key) {
+    const entry = queuedFiles.find(e => e.key === key);
+    if (!entry || entry.sending) return;
+    const fecType = document.getElementById('fec-select').value;
+    const fd = new FormData();
+    fd.append('file', entry.file);
+    fd.append('fecType', fecType);
+
+    entry.sending = true;
+    entry.error   = false;
+    renderAll();
+
+    try {
+      const resp = await fetch(API_BASE + '/api/send', { method: 'POST', body: fd });
+      if (resp.ok) {
+        // Remove from local queue; WS will show progress
+        queuedFiles = queuedFiles.filter(e => e.key !== key);
+      } else {
+        entry.error   = true;
+        entry.sending = false;
+      }
+    } catch (_) {
+      entry.error   = true;
+      entry.sending = false;
+    }
+    renderAll();
+  }
+
+  function deleteQueuedFile(key) {
+    queuedFiles = queuedFiles.filter(e => e.key !== key);
+    renderAll();
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  Send all queued files
+  // ══════════════════════════════════════════════════════════════════
+  function updateSendAllButton() {
+    const btn = document.getElementById('send-all-btn');
+    if (!btn) return;
+    // 只有当有待发送的文件时才显示按钮
+    const hasQueued = queuedFiles.some(e => !e.sending && !e.error);
+    btn.style.display = hasQueued ? 'inline-flex' : 'none';
+  }
+
+  async function sendAllQueuedFiles() {
+    const fecType = document.getElementById('fec-select').value;
+    // 获取所有未发送的文件
+    const toSend = queuedFiles.filter(e => !e.sending && !e.error);
+    if (!toSend.length) return;
+
+    // 依次发送所有文件
+    for (const entry of toSend) {
+      entry.sending = true;
+      renderAll();
+
+      const fd = new FormData();
+      fd.append('file', entry.file);
+      fd.append('fecType', fecType);
+
+      try {
+        const resp = await fetch(API_BASE + '/api/send', { method: 'POST', body: fd });
+        if (resp.ok) {
+          queuedFiles = queuedFiles.filter(e => e.key !== entry.key);
+        } else {
+          entry.error = true;
+          entry.sending = false;
+        }
+      } catch (_) {
+        entry.error = true;
+        entry.sending = false;
+      }
+      renderAll();
+      // 每个文件之间短暂延迟，避免并发冲突
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  Sender dest IP
+  // ══════════════════════════════════════════════════════════════════
+  async function setDestIP() {
+    const ip = document.getElementById('dest-ip-input').value.trim();
+    if (!ip) return;
+    const statusEl = document.getElementById('dest-ip-status');
+    statusEl.textContent = '';
+    statusEl.className   = 'dir-status';
+    try {
+      const resp = await fetch(API_BASE + '/api/sender/set-dest', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ destIP: ip }),
+      });
+      if (resp.ok) {
+        statusEl.textContent = '✓ 已设置';
+        statusEl.className   = 'dir-status ok';
+        document.getElementById('sender-dest-ip').textContent = ip;
+      } else {
+        const j = await resp.json().catch(() => ({}));
+        statusEl.textContent = '✗ ' + (j.error || '设置失败');
+        statusEl.className   = 'dir-status err';
+      }
+    } catch (_) {
+      statusEl.textContent = '✗ 连接失败';
+      statusEl.className   = 'dir-status err';
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  Receiver save-dir
+  // ══════════════════════════════════════════════════════════════════
+  async function setSaveDir() {
+    const dir = document.getElementById('save-dir-input').value.trim();
+    if (!dir) return;
+    const statusEl = document.getElementById('save-dir-status');
+    statusEl.textContent = '';
+    statusEl.className   = 'dir-status';
+    try {
+      const resp = await fetch(API_BASE + '/api/receive/set-dir', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ saveDir: dir }),
+      });
+      if (resp.ok) {
+        statusEl.textContent = '✓ 已设置';
+        statusEl.className   = 'dir-status ok';
+      } else {
+        const j = await resp.json().catch(() => ({}));
+        statusEl.textContent = '✗ ' + (j.error || '设置失败');
+        statusEl.className   = 'dir-status err';
+      }
+    } catch (_) {
+      statusEl.textContent = '✗ 连接失败';
+      statusEl.className   = 'dir-status err';
+    }
+  }
+
+  async function browseDir() {
+    const statusEl = document.getElementById('save-dir-status');
+    statusEl.textContent = '等待选择…';
+    statusEl.className = 'dir-status';
+    try {
+      const resp = await fetch(API_BASE + '/api/receiver/browse-dir', { method: 'POST' });
+      if (resp.status === 204) {
+        statusEl.textContent = '已取消';
+        return;
+      }
+      if (resp.ok) {
+        const j = await resp.json();
+        if (j.dir) {
+          document.getElementById('save-dir-input').value = j.dir;
+          statusEl.textContent = '';
+          await setSaveDir();
+        }
+      } else {
+        statusEl.textContent = '✗ 出错';
+        statusEl.className = 'dir-status err';
+      }
+    } catch (_) {
+      statusEl.textContent = '✗ 连接失败';
+      statusEl.className = 'dir-status err';
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  Tab switching (auto-only, user cannot switch manually)
+  // ══════════════════════════════════════════════════════════════════
+  function switchMode(mode) {
+    console.log('[switchMode] switching to mode:', mode);
+    // 切换显示的区域
+    document.querySelectorAll('.mode-section').forEach(s => s.classList.remove('active'));
+    const section = document.getElementById('section-' + mode);
+    if (section) {
+      section.classList.add('active');
+      console.log('[switchMode] activated section:', 'section-' + mode);
+    } else {
+      console.error('[switchMode] section not found:', 'section-' + mode);
+    }
+
+    // 更新选项卡状态：当前 mode 高亮，另一个禁用变灰
+    document.querySelectorAll('.mode-tab').forEach(t => {
+      t.classList.remove('active');
+      t.setAttribute('aria-selected', 'false');
+      t.disabled = true;
+    });
+    const activeTab = document.querySelector('.mode-tab.tab-' + mode);
+    console.log('[switchMode] activeTab selector:', '.mode-tab.tab-' + mode, 'found:', activeTab);
+    if (activeTab) {
+      activeTab.classList.add('active');
+      activeTab.setAttribute('aria-selected', 'true');
+      activeTab.disabled = false;
+    }
+
+    lucide.createIcons();
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  Bootstrap
+  // ══════════════════════════════════════════════════════════════════
+  lucide.createIcons();
+  renderAll();   // show empty-state placeholders immediately
+  init();        // kick off API calls + WebSocket
+</script>
+</body>
+</html>

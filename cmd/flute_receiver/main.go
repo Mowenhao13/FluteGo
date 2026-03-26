@@ -1,92 +1,124 @@
 package main
 
 import (
-	"FluteGo/constant"
+	"FluteGo/pkg/apiserver"
+	"FluteGo/pkg/config"
 	"FluteGo/pkg/system"
-	"FluteGo/pkg/utils"
+	"FluteGo/pkg/web"
 	"context"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
-	"runtime/pprof"
 	"syscall"
 	"time"
 
+	"github.com/ncruces/zenity"
 	"github.com/schollz/progressbar/v3"
 )
 
-var (
-	saveFileDir string
-	destIP      string
-)
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	cmd.Start() //nolint:errcheck
+}
+
+func defaultDownloadsDir() string {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		d := filepath.Join(home, "Downloads")
+		if _, statErr := os.Stat(d); statErr == nil {
+			return d
+		}
+	}
+	if runtime.GOOS == "windows" {
+		return `C:\Downloads`
+	}
+	return "."
+}
 
 func main() {
-	// 创建内存profile文件
-	memProfile, err := os.Create("receiver_mem_profile.pprof")
+	cfg, err := config.Load("config_receiver.json")
 	if err != nil {
-		log.Printf("Failed to create memory profile: %v", err)
-		fmt.Println("按回车键退出...")
-		fmt.Scanln()
-	}
-	defer memProfile.Close()
-
-	// 在测试开始时获取内存快照
-	runtime.GC()
-	if err := pprof.WriteHeapProfile(memProfile); err != nil {
-		log.Printf("Failed to write initial heap profile: %v", err)
-		fmt.Println("按回车键退出...")
-		fmt.Scanln()
+		log.Printf("[config] load error: %v, using defaults", err)
+		cfg = config.Default()
 	}
 
-	fmt.Println("Enter dest IP, example: 192.168.0.12")
-	fmt.Scanln(&destIP)
-	if destIP == "" {
-		destIP = constant.DestIP
-		fmt.Printf("Using default dest ip: %s\n", destIP)
+	destIP      := cfg.DestIP
+	saveFileDir := cfg.Receiver.SaveFileDir
+	if saveFileDir == "" || saveFileDir == "cmd/received_files/" {
+		saveFileDir = defaultDownloadsDir()
 	}
 
-	fmt.Println("\nEnter save file dir, example: ./received_files/")
-	fmt.Scanln(&saveFileDir)
-	if saveFileDir == "" {
-		saveFileDir = utils.SelectSaveFileDir()
+	if err := os.MkdirAll(saveFileDir, 0755); err != nil {
+		log.Printf("Warning: could not create save dir %s: %v", saveFileDir, err)
 	}
-	fmt.Printf("Files will be saved to: %s\n", saveFileDir)
-
-	// 记录开始时的内存状态
-	var memStatsStart, memStatsEnd runtime.MemStats
-	runtime.ReadMemStats(&memStatsStart)
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Println("Starting Receiver System...")
 
-	// 1. Initialize System
-	// Use default max workers (0 = auto)
+	// 1. Initialize System.
 	sys, err := system.InitReceiverSystem(0, destIP, saveFileDir, true)
 	if err != nil {
 		log.Fatalf("Failed to initialize system: %v", err)
-		fmt.Println("按回车键退出...")
-		fmt.Scanln()
 	}
 
-	// Handle OS signals for graceful shutdown
+	// Handle OS signals for graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// 2. Start Error Handling
+	// API server — set up before starting subsystems so OnMetaReceived is wired.
+	srv := apiserver.New(cfg.Server.Port, "receiver").
+		WithDestIP(destIP).
+		WithFilePort(cfg.Network.BaseFilePort)
+	sys.OnMetaReceived = func(fdtID uint8, name string, size int64, fec, md5 string) {
+		srv.State().RegisterFile("receiver", fdtID, name, size, fec, md5)
+	}
+	srv.WithStaticContent(web.HTML)
+	srv.SetBrowseDirFunc(func() (string, error) {
+		return zenity.SelectFile(
+			zenity.Title("选择接收目录"),
+			zenity.Directory(),
+			zenity.Filename(saveFileDir),
+		)
+	})
+
+	if cfg.Server.Enabled {
+		go srv.Start(ctx) //nolint:errcheck
+		time.Sleep(300 * time.Millisecond)
+		openBrowser(fmt.Sprintf("http://localhost:%d", cfg.Server.Port))
+	}
+
+	// 2. Start Error Handling.
 	sys.StartErrorProgram()
 	log.Println("Error handling subsystem started.")
 
-	// 3. Start Meta Receiver
+	// 3. Start Meta Receiver.
 	sys.StartMetaProgram()
 	log.Println("Meta receiver subsystem started.")
 
-	// 4. Start File Receiver Workers
+	// 4. Start File Receiver Workers.
 	sys.StartFileProgram()
 	log.Println("File receiver subsystem started.")
 
-	// 5. Monitor Progress
+	// Wire API server controls now that the receiver is running.
+	srv.SetReceiverReady(true)
+	srv.WithSaveDir(saveFileDir)
+	srv.SetSaveDirFunc(func(dir string) error {
+		return sys.SetSaveDir(dir)
+	})
+
+	// 5. Monitor Progress.
 	go func() {
 		log.Println("Monitoring file progress...")
 		completedFiles := 0
@@ -99,6 +131,13 @@ func main() {
 			case <-ctx.Done():
 				return
 			case report := <-sys.FileReporter.ReportChan:
+				// Update API state for WebSocket clients.
+				srv.State().UpdateFromReceiverReport(
+					report.FdtID,
+					int64(report.ReceivedBytes),
+					int64(report.TotalBytes),
+					report.Status,
+				)
 				switch report.Status {
 				case 0: // Transferring
 					if totalFiles == -1 && report.TotalFiles > 0 {
@@ -124,71 +163,38 @@ func main() {
 						)
 						bars[report.FdtID] = bar
 					}
-					bar.Set64(int64(report.ReceivedBytes))
+					bar.Set64(int64(report.ReceivedBytes)) //nolint:errcheck
 
 				case 1: // Completed
 					completedFiles++
 					if bar, ok := bars[report.FdtID]; ok {
-						bar.Finish()
+						bar.Finish() //nolint:errcheck
 						delete(bars, report.FdtID)
 					}
 
-					fmt.Printf("✅ File %d transfer COMPLETED. Total: %d bytes. Progress: %d/%d\n",
+					log.Printf("✅ File %d transfer COMPLETED. Total: %d bytes. Progress: %d/%d",
 						report.FdtID, report.TotalBytes, completedFiles, totalFiles)
 
 					if totalFiles > 0 && completedFiles >= totalFiles {
-						fmt.Println("All files received. Initiating shutdown...")
-						stop() // Trigger graceful shutdown
+						log.Println("All files received. Initiating shutdown...")
+						stop()
 						return
 					}
 				case 2: // Error
 					if bar, ok := bars[report.FdtID]; ok {
-						bar.Finish()
+						bar.Finish() //nolint:errcheck
 						delete(bars, report.FdtID)
 					}
-					fmt.Printf("❌ File %d transfer ERROR.\n", report.FdtID)
+					log.Printf("❌ File %d transfer ERROR.", report.FdtID)
 				}
 			}
 		}
 	}()
 
-	// Wait for signal
+	// Wait for signal.
 	<-ctx.Done()
 	log.Println("Shutdown signal received. Cleaning up...")
 
-	// Give some time for cleanup if needed, though system context cancellation should handle it
 	time.Sleep(1 * time.Second)
 	log.Println("System shutdown complete.")
-
-	runtime.ReadMemStats(&memStatsEnd)
-
-	// 写入最终的内存profile
-	if err := pprof.WriteHeapProfile(memProfile); err != nil {
-		log.Printf("Failed to write final heap profile: %v", err)
-		fmt.Println("按回车键退出...")
-		fmt.Scanln()
-	}
-
-	// 输出详细的内存分析结果
-	fmt.Printf("=== Memory Profile Results for Current Send Session ===\n")
-	fmt.Printf("Total Allocated Memory: %v bytes\n", memStatsEnd.TotalAlloc-memStatsStart.TotalAlloc)
-	fmt.Printf("Peak Heap Memory: %v bytes, %v MB\n", memStatsEnd.HeapAlloc, memStatsEnd.HeapAlloc/(1024*1024))
-	fmt.Printf("System Memory (Sys): %d MB\n", memStatsEnd.Sys/(1024*1024))
-	fmt.Printf("Heap Idle Memory: %d MB\n", memStatsEnd.HeapIdle/(1024*1024))
-	fmt.Printf("Garbage Collection Count: %v\n", memStatsEnd.NumGC-memStatsStart.NumGC)
-	fmt.Printf("Memory Allocation Count: %v\n", memStatsEnd.Mallocs-memStatsStart.Mallocs)
-	fmt.Printf("Heap Objects Count: %v\n", memStatsEnd.HeapObjects)
-	// ctxx, cancel := context.WithCancel(context.Background())
-	// defer cancel()
-
-	// sigChan := make(chan os.Signal, 1)
-	// signal.Notify(sigChan, syscall.SIGABRT, syscall.SIGALRM)
-
-	// go func() {
-	// 	<-sigChan
-	// 	cancel()
-	// }()
-
-	// <-ctxx.Done()
-	// fmt.Println("Exit program")
 }
