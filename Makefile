@@ -30,14 +30,18 @@ receiver:
 
 # 平台特定编译
 windows:
-	GOOS=windows GOARCH=amd64 $(MAKE) release
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(DIST)/flute_sender.exe ./cmd/flute_sender/
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(DIST)/flute_receiver.exe ./cmd/flute_receiver/
 
 darwin:
-	GOOS=darwin GOARCH=amd64 $(MAKE) release
-	GOOS=darwin GOARCH=arm64 $(MAKE) release
+	GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(DIST)/flute_sender_darwin_amd64 ./cmd/flute_sender/
+	GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(DIST)/flute_receiver_darwin_amd64 ./cmd/flute_receiver/
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(DIST)/flute_sender_darwin_arm64 ./cmd/flute_sender/
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(DIST)/flute_receiver_darwin_arm64 ./cmd/flute_receiver/
 
 linux:
-	GOOS=linux GOARCH=amd64 $(MAKE) release
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(DIST)/flute_sender_linux_amd64 ./cmd/flute_sender/
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(DIST)/flute_receiver_linux_amd64 ./cmd/flute_receiver/
 
 clean:
 	rm -rf $(DIST)

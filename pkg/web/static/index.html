@@ -488,6 +488,10 @@
       white-space: nowrap;
       color: var(--text-sec) !important;
       font-size: 12px !important;
+      width: 70px;
+      min-width: 70px;
+      max-width: 70px;
+      display: inline-block;
     }
     .speed.active { color: #16A34A !important; font-weight: 500 !important; }
     .speed.idle   { color: var(--text-mute) !important; }
@@ -650,7 +654,6 @@
             <select class="fec-select" id="fec-select">
               <option value="NoCode">NoCode</option>
               <option value="RaptorQ">RaptorQ</option>
-              <option value="ReedSolomon">ReedSolomon</option>
             </select>
             <button class="add-files-btn" id="add-files-btn" onclick="openFilePicker()">
               <i data-lucide="plus" style="width:12px;height:12px"></i>
@@ -757,7 +760,6 @@
                 <th>文件名</th>
                 <th>大小</th>
                 <th>速度</th>
-                <th>FEC</th>
                 <th>MD5</th>
                 <th>进度</th>
                 <th>状态</th>
@@ -1007,7 +1009,7 @@
                 <i data-lucide="send" style="width:11px;height:11px"></i> 发送
               </button>
               <button class="action-btn delete-btn" data-qkey="${escHtml(r._qkey)}">
-                <i data-lucide="trash-2" style="width:11px;height:11px"></i>
+                <i data-lucide="trash-2" style="width:11px;height:11px"></i> 删除
               </button>
             </div>
            </td>`
@@ -1071,11 +1073,11 @@
     }).join('');
   }
 
-  // ── Receiver active table (cols: 文件名 大小 速度 FEC MD5 进度 状态) ──
+  // ── Receiver active table (cols: 文件名 大小 速度 MD5 进度 状态) ──
   function renderActiveReceiverTable(tbodyId, items) {
     const tbody = document.getElementById(tbodyId);
     if (!items.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="empty-state">暂无传输任务</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-state">暂无传输任务</td></tr>';
       return;
     }
     tbody.innerHTML = items.map(r => {
@@ -1090,7 +1092,6 @@
           </div></td>
           <td><span class="size">${fmtSize(r.fileSize)}</span></td>
           <td><span class="speed${r.speedMbps > 0 ? ' active' : ' idle'}">${fmtSpeed(r.speedMbps)}</span></td>
-          <td><span class="fec-badge ${fecClass(r.fecType)}">${escHtml(r.fecType || '—')}</span></td>
           <td><span class="md5">${fmtMd5(r.md5)}</span></td>
           <td>
             <div class="progress-wrap">
@@ -1151,7 +1152,8 @@
 
   function fmtSpeed(mbps) {
     if (!mbps || mbps <= 0) return '—';
-    return mbps.toFixed(1) + ' MB/s';
+    const mbPerSec = mbps / 8.0;
+    return mbPerSec.toFixed(1) + ' MB/s';
   }
 
   function fmtMd5(md5) {

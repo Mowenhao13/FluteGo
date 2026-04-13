@@ -1,6 +1,6 @@
 {
   "destIP": "100.66.224.25",
   "network": { "maxPacketSize": 1408, "baseFilePort": 3400, "metaPort": 3399, "numPorts": 1 },
-  "receiver": { "saveFileDir": "cmd/received_files/", "recvRedundancyRatio": 1.05, "defaultChunkSize": 65536 },
+  "receiver": { "saveFileDir": "received_files/", "recvRedundancyRatio": 1.05, "defaultChunkSize": 65536 },
   "server": { "port": 8080, "enabled": true }
 }

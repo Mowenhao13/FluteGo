@@ -14,7 +14,7 @@ type TransferRecord struct {
 	FileSize  int64   `json:"fileSize"`
 	BytesDone int64   `json:"bytesDone"`
 	Progress  float64 `json:"progress"`  // 0.0–1.0
-	SpeedMbps float64 `json:"speedMbps"` // sliding window rate (1 s)
+	SpeedMbps float64 `json:"speedMbps"` // average speed in Mbps
 	FECType   string  `json:"fecType"`   // "NoCode"|"RaptorQ"|"ReedSolomon"
 	MD5       string  `json:"md5"`
 	Status    string  `json:"status"` // "pending"|"transferring"|"completed"|"failed"
@@ -25,8 +25,7 @@ type TransferRecord struct {
 type StateStore struct {
 	mu            sync.RWMutex
 	records       map[uint8]*TransferRecord
-	prevBytes     map[uint8]int64
-	prevTime      map[uint8]time.Time
+	startTime     map[uint8]time.Time // 记录每个文件的开始时间
 	lastBroadcast map[uint8]time.Time
 	hub           *Hub
 }
@@ -34,8 +33,7 @@ type StateStore struct {
 func newStateStore(hub *Hub) *StateStore {
 	return &StateStore{
 		records:       make(map[uint8]*TransferRecord),
-		prevBytes:     make(map[uint8]int64),
-		prevTime:      make(map[uint8]time.Time),
+		startTime:     make(map[uint8]time.Time),
 		lastBroadcast: make(map[uint8]time.Time),
 		hub:           hub,
 	}
@@ -54,8 +52,7 @@ func (s *StateStore) RegisterFile(role string, fdtID uint8, fileName string,
 		MD5:      md5,
 		Status:   "pending",
 	}
-	s.prevBytes[fdtID] = 0
-	s.prevTime[fdtID] = time.Now()
+	s.startTime[fdtID] = time.Now()
 	rec := *s.records[fdtID]
 	s.mu.Unlock()
 
@@ -80,11 +77,11 @@ func (s *StateStore) SenderProgressAdapter(fdtID uint8, totalBytes int64) func(i
 				rec.Progress = 1.0
 			}
 		}
+		// 计算平均速率：总字节数 / 总时间
 		now := time.Now()
-		dt := now.Sub(s.prevTime[fdtID]).Seconds()
+		dt := now.Sub(s.startTime[fdtID]).Seconds()
 		if dt > 0 {
-			db := bytesDone - s.prevBytes[fdtID]
-			rec.SpeedMbps = float64(db) * 8.0 / dt / 1e6
+			rec.SpeedMbps = float64(bytesDone) * 8.0 / dt / 1e6
 		}
 		if bytesDone > 0 && rec.Status == "pending" {
 			rec.Status = "transferring"
@@ -92,8 +89,6 @@ func (s *StateStore) SenderProgressAdapter(fdtID uint8, totalBytes int64) func(i
 		if rec.Progress >= 1.0 {
 			rec.Status = "completed"
 		}
-		s.prevBytes[fdtID] = bytesDone
-		s.prevTime[fdtID] = now
 		snapshot := *rec
 		s.mu.Unlock()
 
@@ -117,11 +112,11 @@ func (s *StateStore) UpdateFromReceiverReport(fdtID uint8, received, total int64
 			rec.Progress = 1.0
 		}
 	}
+	// 计算平均速率：总字节数 / 总时间
 	now := time.Now()
-	dt := now.Sub(s.prevTime[fdtID]).Seconds()
+	dt := now.Sub(s.startTime[fdtID]).Seconds()
 	if dt > 0 {
-		db := received - s.prevBytes[fdtID]
-		rec.SpeedMbps = float64(db) * 8.0 / dt / 1e6
+		rec.SpeedMbps = float64(received) * 8.0 / dt / 1e6
 	}
 	switch status {
 	case 0:
@@ -131,8 +126,6 @@ func (s *StateStore) UpdateFromReceiverReport(fdtID uint8, received, total int64
 	case 2:
 		rec.Status = "failed"
 	}
-	s.prevBytes[fdtID] = received
-	s.prevTime[fdtID] = now
 	snapshot := *rec
 	s.mu.Unlock()
 
@@ -155,17 +148,22 @@ func (s *StateStore) broadcastUpdate(rec TransferRecord) {
 		return
 	}
 
+	s.mu.Lock()
 	now := time.Now()
 	last, ok := s.lastBroadcast[rec.FdtID]
 
-	// 总是广播完成或失败状态，其他状态最多每 50ms 广播一次（20fps）
+	// 总是广播完成或失败状态，其他状态最多每 1s 广播一次
 	shouldBroadcast := !ok ||
 		rec.Status == "completed" ||
 		rec.Status == "failed" ||
-		now.Sub(last) >= 50*time.Millisecond
+		now.Sub(last) >= 1*time.Second
 
 	if shouldBroadcast {
 		s.lastBroadcast[rec.FdtID] = now
+	}
+	s.mu.Unlock()
+
+	if shouldBroadcast {
 		msg := encodeWSMsg("update", rec)
 		if msg != nil {
 			s.hub.Broadcast(msg)

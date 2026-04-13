@@ -57,10 +57,11 @@ func main() {
 
 	// Receiver 模式：获取本机实际 IP 地址而不是使用配置中的 127.0.0.1
 	destIP := utils.GetLocalIPv4()
+	// destIP := "127.0.0.1"
 	log.Printf("[receiver] Using local IP: %s", destIP)
 
 	saveFileDir := cfg.Receiver.SaveFileDir
-	if saveFileDir == "" || saveFileDir == "cmd/received_files/" {
+	if saveFileDir == "" {
 		saveFileDir = defaultDownloadsDir()
 	}
 
