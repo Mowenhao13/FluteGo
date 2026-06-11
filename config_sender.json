@@ -1,5 +1,5 @@
 {
-  "destIP": "100.66.224.25",
+  "destIP": "192.168.0.10",
   "network": { "maxPacketSize": 1408, "baseFilePort": 3400, "metaPort": 3399, "numPorts": 1 },
   "sender": { "sendFileDir": "cmd/send_files/", "sendRedundancyRatio": 1.05, "rateLimitMbps": 0, "startSendWait": 1 },
   "server": { "port": 8081, "enabled": true }
