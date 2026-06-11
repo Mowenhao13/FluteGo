@@ -7,6 +7,17 @@ cmd/received_files/
 tmp/
 test/tmp/
 test/tmp_recv/
+
+# Build output
+dist/
+
+# Test data
+test_data/
+test_files/
+
+# Log files
+*.log
+
 # Memory profiles
 *.pprof
 
@@ -33,6 +44,4 @@ vendor/
 go.sum.bak
 cmd/cmd/
 bin/
-tmp/
-test/
 .claude

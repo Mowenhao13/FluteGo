@@ -422,11 +422,65 @@ func getLocalIPByUDP() string {
 
 // getLocalIPFromInterfaces 通过枚举网络接口获取 IP
 func getLocalIPFromInterfaces() string {
-	var candidates []string
+	var ethCandidates, otherCandidates []string
 
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return ""
+	}
+
+	// 已知虚拟网卡名称关键词（各平台）
+	virtNames := []string{"tailscale", "radmin", "vmware", "virtualbox",
+		"docker", "veth", "br-", "docker0", "tun", "tap",
+		"utun", "awdl", "llw", "anpi", "vnic"}
+
+	// 已知虚拟 IP 段
+	virtIPBlocks := []string{"100.", "26.", "25.", "172.17.", "172.18.",
+		"172.19.", "192.168.132.", "192.168.174."}
+
+	// 接口名中标识有线网的关键词
+	ethNames := []string{"以太网", "ethernet", "eth", "enp", "enx",
+		"enp0", "enp1", "enp2", "enp3", "enp4", "enp5",
+		"eno", "ens", "wired"}
+
+	isVirtualName := func(name string) bool {
+		lower := strings.ToLower(name)
+		for _, v := range virtNames {
+			if strings.Contains(lower, v) {
+				return true
+			}
+		}
+		return false
+	}
+
+	isVirtualIP := func(ip string) bool {
+		for _, block := range virtIPBlocks {
+			if strings.HasPrefix(ip, block) {
+				return true
+			}
+		}
+		// 检查 CGNAT (100.64.0.0/10)
+		if strings.HasPrefix(ip, "100.") {
+			parts := net.ParseIP(ip).To4()
+			if parts != nil && parts[1] >= 64 && parts[1] <= 127 {
+				return true
+			}
+		}
+		return false
+	}
+
+	isEthernetName := func(name string) bool {
+		lower := strings.ToLower(name)
+		for _, e := range ethNames {
+			if strings.Contains(lower, e) {
+				// 排除 macOS 的 en0/en1 等（通常是 Wi-Fi）
+				if strings.HasPrefix(lower, "en") && len(lower) <= 3 {
+					continue
+				}
+				return true
+			}
+		}
+		return false
 	}
 
 	for _, iface := range interfaces {
@@ -440,6 +494,11 @@ func getLocalIPFromInterfaces() string {
 			continue
 		}
 
+		// 跳过已知的虚拟网卡
+		if isVirtualName(iface.Name) {
+			continue
+		}
+
 		// 获取接口的地址
 		addrs, err := iface.Addrs()
 		if err != nil {
@@ -447,7 +506,6 @@ func getLocalIPFromInterfaces() string {
 		}
 
 		for _, addr := range addrs {
-			// 解析 IP 地址
 			var ip net.IP
 			switch v := addr.(type) {
 			case *net.IPNet:
@@ -477,21 +535,24 @@ func getLocalIPFromInterfaces() string {
 				continue
 			}
 
-			// 跳过 Docker 网络 (172.17-19.x.x)
-			if isDockerIP(ipStr) {
+			// 跳过已知虚拟 IP 段
+			if isVirtualIP(ipStr) {
 				continue
 			}
 
-			// 跳过 VMware 网络 (192.168.132.x, 192.168.174.x)
-			if isVMwareIP(ipStr) {
-				continue
+			if isEthernetName(iface.Name) {
+				ethCandidates = append(ethCandidates, ipStr)
+			} else {
+				otherCandidates = append(otherCandidates, ipStr)
 			}
-
-			candidates = append(candidates, ipStr)
 		}
 	}
 
-	return selectPreferredIP(candidates)
+	// 优先从有线网卡候选 IP 中选，回退到其他候选
+	if len(ethCandidates) > 0 {
+		return selectPreferredIP(ethCandidates)
+	}
+	return selectPreferredIP(otherCandidates)
 }
 
 // isDockerIP 检查是否是 Docker 网络地址
