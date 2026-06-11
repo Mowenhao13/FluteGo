@@ -4,6 +4,7 @@ import (
 	"FluteGo/constant"
 	"FluteGo/pkg/apiserver"
 	"FluteGo/pkg/config"
+	"FluteGo/pkg/encoder"
 	"FluteGo/pkg/meta"
 	"FluteGo/pkg/oti"
 	"FluteGo/pkg/pool"
@@ -11,6 +12,7 @@ import (
 	"FluteGo/pkg/sock"
 	"FluteGo/pkg/web"
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -80,6 +82,29 @@ func openBrowser(url string) {
 }
 
 func main() {
+	// --- CLI mode flags ---
+	cliMode := flag.Bool("cli", false, "Run in CLI mode (no JSON config, no API server)")
+	destIPFlag := flag.String("dest-ip", "", "Destination IP address (required in CLI mode)")
+	filePathFlag := flag.String("file", "", "File to send (required in CLI mode)")
+	fecTypeFlag := flag.String("fec", "RaptorQ", "FEC type: NoCode, RaptorQ, ReedSolomon")
+	fdtIDFlag := flag.Int("fdt-id", 1, "File transfer ID (1-255, change per test to reuse receiver)")
+	maxPacketSizeFlag := flag.Int("max-packet-size", 1408, "Maximum UDP packet size")
+	baseFilePortFlag := flag.Int("base-file-port", 3400, "Base file transfer port")
+	metaPortFlag := flag.Int("meta-port", 3399, "Meta port")
+	numPortsFlag := flag.Int("num-ports", 1, "Number of transfer ports")
+	sendFileDirFlag := flag.String("send-file-dir", "cmd/send_files/", "Directory for sent files")
+	sendRedundancyRatioFlag := flag.Float64("send-redundancy-ratio", 1.05, "Redundancy ratio")
+	rateLimitMbpsFlag := flag.Int("rate-limit-mbps", 500, "Rate limit in Mbps")
+	startSendWaitFlag := flag.Int("start-send-wait", 1, "Seconds to wait before sending")
+	flag.Parse()
+
+	if *cliMode {
+		runCLISender(*destIPFlag, *filePathFlag, *fecTypeFlag, uint8(*fdtIDFlag),
+			*maxPacketSizeFlag, *baseFilePortFlag, *metaPortFlag, *numPortsFlag,
+			*sendFileDirFlag, *sendRedundancyRatioFlag, *rateLimitMbpsFlag, *startSendWaitFlag)
+		return
+	}
+
 	cfg, err := config.Load("config_sender.json")
 	if err != nil {
 		log.Printf("[config] load error: %v, using defaults", err)
@@ -314,4 +339,149 @@ func senderFECTypeName(id uint8) string {
 	default:
 		return "Unknown"
 	}
+}
+
+// runCLISender runs the sender in CLI mode (no JSON config, no API server).
+func runCLISender(destIP, filePath, fecType string, fid uint8,
+	maxPacketSize, baseFilePort, metaPort, numPorts int,
+	sendFileDir string, sendRedundancyRatio float64,
+	rateLimitMbps, startSendWait int) {
+
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	log.Printf("[CLI] ===== Sender CLI Mode =====")
+	log.Printf("[CLI] Target: %s, File: %s, FEC: %s, Ratio: %.2f, Rate: %d Mbps",
+		destIP, filePath, fecType, sendRedundancyRatio, rateLimitMbps)
+
+	// Validate required parameters
+	if destIP == "" {
+		log.Fatal("[CLI] --dest-ip is required")
+	}
+	if filePath == "" {
+		log.Fatal("[CLI] --file is required")
+	}
+
+	// Check file exists
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		log.Fatalf("[CLI] Cannot access file %s: %v", filePath, err)
+	}
+	fileSizeMB := float64(fileInfo.Size()) / (1024 * 1024)
+	log.Printf("[CLI] File: %s, Size: %d bytes (%.2f MB)", filepath.Base(filePath), fileInfo.Size(), fileSizeMB)
+
+	// Build OTI from FEC type
+	// Note: SymbolSize = maxPacketSize - 8 (8 bytes for seqNum header)
+	payloadSize := uint16(maxPacketSize - 8)
+	var o oti.Oti
+	switch fecType {
+	case "RaptorQ":
+		o = oti.NewRaptorQ(payloadSize)
+	case "ReedSolomon":
+		o = oti.NewReedSolomon(12, 4)
+	default:
+		o = oti.NewNoCode(payloadSize)
+	}
+	log.Printf("[CLI] OTI: FEC=%d, Symbol=%d (payload), Chunk=%d",
+		o.FECEncodingID, o.SymbolSize, o.MaximumChunkSize)
+
+	// Init connection pool (sender mode)
+	pool.InitConnPool(destIP, constant.POOL_SEND)
+	p := pool.GetConnPool()
+	if p == nil {
+		log.Fatal("[CLI] Failed to initialize connection pool")
+	}
+	_, metaInitErr := p.InitMetaConn()
+	if metaInitErr != nil {
+		log.Fatalf("[CLI] Failed to init meta connection: %v", metaInitErr)
+	}
+	defer func() {
+		p.CloseMetaConn()
+		p.CloseAllConns()
+	}()
+
+	// Create file connections
+	// fid from CLI --fdt-id flag
+	conns, connErrs := p.CreateFileConn(fid, uint8(numPorts), baseFilePort)
+	for _, cerr := range connErrs {
+		if cerr != nil {
+			log.Printf("[CLI] Connection warning: %v", cerr)
+		}
+	}
+	if len(conns) == 0 {
+		log.Fatal("[CLI] No file connections available")
+	}
+	defer p.CloseFileConn(fid)
+
+	// Build MetaPkt
+	f, openErr := os.Open(filePath)
+	if openErr != nil {
+		log.Fatalf("[CLI] Cannot open file: %v", openErr)
+	}
+	mt, metaErr := meta.InitMetaPkt(f, o, baseFilePort, uint16(numPorts), fid)
+	f.Close()
+	if metaErr != nil {
+		log.Fatalf("[CLI] Failed to build MetaPkt: %v", metaErr)
+	}
+
+	// Send MetaPkt to receiver
+	metaConn, mcErr := p.GetMetaConn()
+	if mcErr != nil {
+		log.Fatalf("[CLI] Failed to get meta connection: %v", mcErr)
+	}
+	metaData := mt.Serialize()
+	destAddr := &net.UDPAddr{IP: net.ParseIP(destIP), Port: metaPort}
+	log.Printf("[CLI] Sending MetaPkt (%d bytes) to %s:%d ...", len(metaData), destIP, metaPort)
+	if _, wErr := metaConn.Socket.WriteToUDP(metaData, destAddr); wErr != nil {
+		log.Fatalf("[CLI] Failed to send MetaPkt: %v", wErr)
+	}
+	log.Printf("[CLI] MetaPkt sent. Waiting %d seconds before data...", startSendWait)
+	time.Sleep(time.Duration(startSendWait) * time.Second)
+
+	// Build encoder config WITH overridden redundancy ratio
+	chunkSize := mt.Oti.MaximumChunkSize
+	if chunkSize == 0 {
+		chunkSize = uint32(constant.DefaultChunkSize)
+	}
+	config := encoder.EncoderConfig{
+		Type:            encoder.EncoderType(mt.Oti.FECEncodingID),
+		FileSize:        mt.File.TransferLen,
+		ChunkSize:       chunkSize,
+		SymbolSize:      mt.Oti.SymbolSize,
+		DataShards:      uint16(mt.Oti.DataShards),
+		ParityShards:    uint16(mt.Oti.ParityShards),
+		RedundancyRatio: sendRedundancyRatio, // From CLI flag, not constant!
+		MaxPacketSize:   uint16(maxPacketSize),
+	}
+	log.Printf("[CLI] Encoder config: ratio=%.2f, chunk=%d, symbol=%d",
+		config.RedundancyRatio, config.ChunkSize, config.SymbolSize)
+
+	// Create rate limiter
+	limiter, _ := sender.CreateRateLimiter(float64(rateLimitMbps), maxPacketSize)
+
+	// Create sender via NewSender (bypasses InitSender's constant-based config)
+	s, sErr := sender.NewSender(filePath, config, fid, 1, limiter, runtime.NumCPU())
+	if sErr != nil {
+		log.Fatalf("[CLI] Failed to create sender: %v", sErr)
+	}
+
+	// Progress callback - print at every percent change
+	totalToSend := s.GetTotalBytesToSend()
+	var lastPct int64 = -1
+	s.SetProgressCallback(func(sent int64) {
+		pct := sent * 100 / totalToSend
+		if pct != lastPct {
+			lastPct = pct
+			log.Printf("[CLI] Sending: %d%% (%d/%d bytes)", pct, sent, totalToSend)
+		}
+	})
+
+	// Start sending
+	log.Printf("[CLI] Starting data transmission (ratio=%.2f, rate=%dMbps)...", sendRedundancyRatio, rateLimitMbps)
+	sendStart := time.Now()
+	if err := s.Start(context.Background()); err != nil {
+		log.Fatalf("[CLI] Send error: %v", err)
+	}
+	duration := time.Since(sendStart)
+	mbps := (float64(totalToSend) * 8.0 / duration.Seconds()) / 1e6
+	log.Printf("[CLI] ===== SEND COMPLETE =====")
+	log.Printf("[CLI] Duration: %v, Throughput: %.2f Mbps", duration, mbps)
 }
