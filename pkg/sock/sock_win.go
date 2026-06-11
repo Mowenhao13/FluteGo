@@ -65,13 +65,10 @@ func createWinSocket(ip string, port int) (windows.Handle, error) {
 		return 0, fmt.Errorf("Set SO_REUSEADDR failed: %v", err)
 	}
 
-	if err := windows.SetsockoptInt(sock, windows.IPPROTO_UDP, windows.TCP_NODELAY, 1); err != nil {
-		windows.CloseHandle(sock)
-		return 0, fmt.Errorf("Set TCP_NODELAY failed: %v", err)
-	}
+	// 注意：不在 UDP socket 上设置 TCP_NODELAY —— 它是 TCP 选项，对 UDP 无效且可能引发问题
 
 	sockaddr := &windows.SockaddrInet4{
-		Port: int(uint16((port>>8)&0xFF) | uint16((port&0xFF)<<8)), // 转换端口到网络字节序
+		Port: port, // SockaddrInet4.Port 使用主机字节序，内核会自动转换
 	}
 	ipAddr := net.ParseIP(ip).To4()
 	copy(sockaddr.Addr[:], ipAddr)
