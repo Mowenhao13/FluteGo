@@ -375,14 +375,14 @@ func ListDir(path string) {
 // # 描述
 //
 //	优先返回局域网地址 (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
-//	跳过回环地址 (127.x.x.x) 和 Docker/VMware 等虚拟网络
+//	跳过回环地址 (127.x.x.x) 和 Docker/VMware/Tailscale 等虚拟网络
 //
 // # 返回值
 //
 //   - `string`: 检测到的 IPv4 地址，如果失败返回 "127.0.0.1"
 func GetLocalIPv4() string {
 	// 方法 1: 通过连接到外部地址获取（最快）
-	if ip := getLocalIPByUDP(); ip != "" {
+	if ip := getLocalIPByUDP(); ip != "" && !isUndesiredIP(ip) {
 		return ip
 	}
 
@@ -429,45 +429,10 @@ func getLocalIPFromInterfaces() string {
 		return ""
 	}
 
-	// 已知虚拟网卡名称关键词（各平台）
-	virtNames := []string{"tailscale", "radmin", "vmware", "virtualbox",
-		"docker", "veth", "br-", "docker0", "tun", "tap",
-		"utun", "awdl", "llw", "anpi", "vnic"}
-
-	// 已知虚拟 IP 段
-	virtIPBlocks := []string{"100.", "26.", "25.", "172.17.", "172.18.",
-		"172.19.", "192.168.132.", "192.168.174."}
-
 	// 接口名中标识有线网的关键词
 	ethNames := []string{"以太网", "ethernet", "eth", "enp", "enx",
 		"enp0", "enp1", "enp2", "enp3", "enp4", "enp5",
 		"eno", "ens", "wired"}
-
-	isVirtualName := func(name string) bool {
-		lower := strings.ToLower(name)
-		for _, v := range virtNames {
-			if strings.Contains(lower, v) {
-				return true
-			}
-		}
-		return false
-	}
-
-	isVirtualIP := func(ip string) bool {
-		for _, block := range virtIPBlocks {
-			if strings.HasPrefix(ip, block) {
-				return true
-			}
-		}
-		// 检查 CGNAT (100.64.0.0/10)
-		if strings.HasPrefix(ip, "100.") {
-			parts := net.ParseIP(ip).To4()
-			if parts != nil && parts[1] >= 64 && parts[1] <= 127 {
-				return true
-			}
-		}
-		return false
-	}
 
 	isEthernetName := func(name string) bool {
 		lower := strings.ToLower(name)
@@ -495,7 +460,7 @@ func getLocalIPFromInterfaces() string {
 		}
 
 		// 跳过已知的虚拟网卡
-		if isVirtualName(iface.Name) {
+		if isVirtualInterfaceName(iface.Name) {
 			continue
 		}
 
@@ -536,7 +501,7 @@ func getLocalIPFromInterfaces() string {
 			}
 
 			// 跳过已知虚拟 IP 段
-			if isVirtualIP(ipStr) {
+			if isUndesiredIP(ipStr) {
 				continue
 			}
 
@@ -601,6 +566,40 @@ func selectPreferredIP(candidates []string) string {
 
 	// 默认返回第一个
 	return candidates[0]
+}
+
+// isUndesiredIP 检查 IP 是否属于虚拟网卡或不应使用的网络
+func isUndesiredIP(ip string) bool {
+	// 已知虚拟 IP 段
+	blocks := []string{"100.", "26.", "25.", "172.17.", "172.18.",
+		"172.19.", "192.168.132.", "192.168.174."}
+	for _, b := range blocks {
+		if strings.HasPrefix(ip, b) {
+			return true
+		}
+	}
+	// 检查 CGNAT (100.64.0.0/10) — Tailscale 常用
+	if strings.HasPrefix(ip, "100.") {
+		parts := net.ParseIP(ip).To4()
+		if parts != nil && parts[1] >= 64 && parts[1] <= 127 {
+			return true
+		}
+	}
+	return false
+}
+
+// isVirtualInterfaceName 检查接口名是否为已知虚拟网卡
+func isVirtualInterfaceName(name string) bool {
+	names := []string{"tailscale", "radmin", "vmware", "virtualbox",
+		"docker", "veth", "br-", "docker0", "tun", "tap",
+		"utun", "awdl", "llw", "anpi", "vnic"}
+	lower := strings.ToLower(name)
+	for _, v := range names {
+		if strings.Contains(lower, v) {
+			return true
+		}
+	}
+	return false
 }
 
 func GetTransferringFiles(transferringFiles sync.Map) []string {
