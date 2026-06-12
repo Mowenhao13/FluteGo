@@ -370,28 +370,22 @@ func ListDir(path string) {
 	fmt.Println()
 }
 
-// GetLocalIPv4 获取本机的以太网 IPv4 地址
+// GetLocalIPv4 获取本机以太网接口上以 192.168 开头的 IPv4 地址。
 //
 // # 描述
 //
-//	优先返回局域网地址 (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
-//	跳过回环地址 (127.x.x.x) 和 Docker/VMware/Tailscale 等虚拟网络
+//	仅扫描物理以太网接口，跳过虚拟网卡（Docker、Tailscale、VMware 等）。
+//	优先返回 192.168.x.x 地址，若以太网接口无 192.168 地址则回退到
+//	其他物理接口上的 192.168 地址，最后才考虑任意非虚拟接口的任何 IPv4。
 //
 // # 返回值
 //
 //   - `string`: 检测到的 IPv4 地址，如果失败返回 "127.0.0.1"
 func GetLocalIPv4() string {
-	// 方法 1: 通过连接到外部地址获取（最快）
-	if ip := getLocalIPByUDP(); ip != "" && !isUndesiredIP(ip) {
-		return ip
-	}
-
-	// 方法 2: 枚举所有网络接口
+	// 只通过枚举接口获取，避免 UDP 拨号返回意外子网
 	if ip := getLocalIPFromInterfaces(); ip != "" {
 		return ip
 	}
-
-	// 默认返回回环地址
 	return "127.0.0.1"
 }
 
@@ -420,7 +414,13 @@ func getLocalIPByUDP() string {
 	return host
 }
 
-// getLocalIPFromInterfaces 通过枚举网络接口获取 IP
+// getLocalIPFromInterfaces 通过枚举网络接口获取本地 IPv4 地址。
+//
+// 优先级：
+//  1. 以太网接口上的 192.168.x.x（立即返回）
+//  2. 其他物理接口上的 192.168.x.x
+//  3. 以太网接口上的其他合法 IPv4
+//  4. 其他物理接口上的其他合法 IPv4
 func getLocalIPFromInterfaces() string {
 	var ethCandidates, otherCandidates []string
 
@@ -506,6 +506,11 @@ func getLocalIPFromInterfaces() string {
 			}
 
 			if isEthernetName(iface.Name) {
+				// 以太网接口上的 192.168.x.x → 立即返回
+				if strings.HasPrefix(ipStr, "192.168.") {
+					log.Printf("[GetLocalIPv4] found 192.168.x.x on ethernet %s: %s", iface.Name, ipStr)
+					return ipStr
+				}
 				ethCandidates = append(ethCandidates, ipStr)
 			} else {
 				otherCandidates = append(otherCandidates, ipStr)
@@ -513,11 +518,32 @@ func getLocalIPFromInterfaces() string {
 		}
 	}
 
-	// 优先从有线网卡候选 IP 中选，回退到其他候选
+	// 优先从以太网候选 IP 中选 192.168.x.x
 	if len(ethCandidates) > 0 {
-		return selectPreferredIP(ethCandidates)
+		for _, ip := range ethCandidates {
+			if strings.HasPrefix(ip, "192.168.") {
+				log.Printf("[GetLocalIPv4] found 192.168.x.x on ethernet (delayed): %s", ip)
+				return ip
+			}
+		}
+		// 没有 192.168 则返回以太网第一个合法 IP
+		log.Printf("[GetLocalIPv4] no 192.168 on ethernet, using: %s", ethCandidates[0])
+		return ethCandidates[0]
 	}
-	return selectPreferredIP(otherCandidates)
+
+	// 回退到其他物理接口
+	if len(otherCandidates) > 0 {
+		for _, ip := range otherCandidates {
+			if strings.HasPrefix(ip, "192.168.") {
+				log.Printf("[GetLocalIPv4] found 192.168.x.x on other interface: %s", ip)
+				return ip
+			}
+		}
+		log.Printf("[GetLocalIPv4] no 192.168 on any interface, using: %s", otherCandidates[0])
+		return otherCandidates[0]
+	}
+
+	return ""
 }
 
 // isDockerIP 检查是否是 Docker 网络地址
