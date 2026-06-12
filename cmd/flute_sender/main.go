@@ -134,6 +134,10 @@ func main() {
 
 	// Register setDestFn — lets the frontend update the destination IP at runtime.
 	srv.SetDestFunc(func(ip string) error {
+		// Validate and recreate the connection pool with the new IP.
+		if err := ensurePool(ip); err != nil {
+			return fmt.Errorf("无法连接到目标 IP: %w", err)
+		}
 		currentDestIPMu.Lock()
 		currentDestIP = ip
 		currentDestIPMu.Unlock()

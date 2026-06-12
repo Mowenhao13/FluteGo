@@ -37,24 +37,39 @@ type PoolStats struct {
 }
 
 var (
-	connPool *ConnPool
-	poolOnce sync.Once
-	stats    PoolStats
+	connPool   *ConnPool
+	poolMu     sync.Mutex
+	poolInited bool
+	stats      PoolStats
 )
 
+// InitConnPool initializes (or reinitializes) the global connection pool.
+// If called with a different destIP or mode, the old pool is stopped and a new one is created.
 func InitConnPool(destIP string, mode uint8) {
-	poolOnce.Do(func() {
-		connPool = &ConnPool{
-			Mode:        mode,
-			MaxConns:    100,
-			ConnTimeout: -1,
-			DestIP:      destIP,
-			StopChan:    make(chan struct{}),
-		}
-		stats.LastPort = constant.META_PORT
-		go connPool.healthCheck()
-		go connPool.idleSenderMonitor()
-	})
+	poolMu.Lock()
+	defer poolMu.Unlock()
+
+	// If already initialized with the same destIP and mode, skip.
+	if poolInited && connPool != nil && connPool.DestIP == destIP && connPool.Mode == mode {
+		return
+	}
+
+	// Stop old pool goroutines if reinitializing.
+	if connPool != nil {
+		close(connPool.StopChan)
+	}
+
+	connPool = &ConnPool{
+		Mode:        mode,
+		MaxConns:    100,
+		ConnTimeout: -1,
+		DestIP:      destIP,
+		StopChan:    make(chan struct{}),
+	}
+	stats.LastPort = constant.META_PORT
+	poolInited = true
+	go connPool.healthCheck()
+	go connPool.idleSenderMonitor()
 }
 
 func GetConnPool() *ConnPool {
