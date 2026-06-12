@@ -106,6 +106,7 @@ type Receiver struct {
 	outputPath       string
 	expectedMd5      string
 	expectedChunks   uint32
+	expectedPackets  int64    // 预期总数据包数（根据FEC参数计算）
 	finishedChunks   uint32
 	completedChunks  sync.Map // 用于跟踪已完成的chunk，避免重复计数
 	finishChan       chan struct{}
@@ -172,7 +173,6 @@ func initDecoderConfig(mt *meta.MetaPkt, saveDir string) decoder.DecoderConfig {
 	symbolSize := mt.Oti.SymbolSize
 	dataShards := mt.Oti.DataShards
 	parityShards := mt.Oti.ParityShards
-	redundancyRatio := constant.RecvRedundancyRatio
 	maxPacketSize := mt.MaxPacketSize
 
 	decoderConfig := decoder.DecoderConfig{
@@ -182,7 +182,6 @@ func initDecoderConfig(mt *meta.MetaPkt, saveDir string) decoder.DecoderConfig {
 		SymbolSize:      symbolSize,
 		DataShards:      uint16(dataShards),
 		ParityShards:    uint16(parityShards),
-		RedundancyRatio: redundancyRatio,
 		MaxPacketSize:   maxPacketSize,
 		FName:           constant.RsTmpRecvInDir + mt.File.Name,
 		OutputPath:      saveDir + mt.File.Name, // RS解码器的最终输出路径
@@ -227,8 +226,66 @@ func InitReceiver(mt *meta.MetaPkt, saveDir string, enableMd5 bool) (*Receiver, 
 		chunkCount = 1
 	}
 	expectedMd5 := mt.File.Md5
+	expectedPackets := calcExpectedPackets(config, chunkCount)
 
-	return newReceiver(outFilePath, config, mt.File.FdtID, chunkCount, expectedMd5, enableMd5)
+	return newReceiver(outFilePath, config, mt.File.FdtID, chunkCount, expectedPackets, expectedMd5, enableMd5)
+}
+
+// calcExpectedPackets 计算文件传输预期的总数据包数
+// 功能说明：
+//
+//	根据FEC编码类型和参数估算预期的数据包总数，用于传输完成后统计丢包率
+//
+// 计算规则：
+//
+//	NoCode:   ≈ ceil(fileSize/SymbolSize) — 每个符号一个数据包
+//	RaptorQ:  与NoCode类似，乘以冗余比例
+//	ReedSolomon: chunkCount × (DataShards + ParityShards) — 精确值
+func calcExpectedPackets(config decoder.DecoderConfig, chunkCount uint32) int64 {
+	switch config.Type {
+	case decoder.DecoderReedSolomon:
+		// RS: 每个chunk固定产生 DataShards + ParityShards 个符号
+		return int64(chunkCount) * int64(config.DataShards+config.ParityShards)
+
+	case decoder.DecoderNoCode, decoder.DecoderRaptorQ:
+		chunkSize := int64(config.ChunkSize)
+		if chunkSize <= 0 {
+			chunkSize = int64(constant.DefaultChunkSize)
+		}
+		symSize := int64(config.SymbolSize)
+		if symSize <= 0 {
+			symSize = 1
+		}
+		fileSize := int64(config.FileSize)
+		if fileSize <= 0 {
+			return int64(chunkCount)
+		}
+
+		// 前 N-1 个完整chunk
+		fullChunks := int64(chunkCount) - 1
+		if fullChunks < 0 {
+			fullChunks = 0
+		}
+		symbolsPerChunk := (chunkSize + symSize - 1) / symSize
+
+		// 最后一个chunk（可能不完整）
+		lastChunkSize := fileSize - fullChunks*chunkSize
+		if lastChunkSize <= 0 {
+			lastChunkSize = chunkSize
+		}
+		symbolsLastChunk := (lastChunkSize + symSize - 1) / symSize
+
+		expected := fullChunks*symbolsPerChunk + symbolsLastChunk
+
+			expected = int64(float64(expected) * config.RedundancyRatio)
+		if expected <= 0 {
+			expected = int64(chunkCount)
+		}
+		return expected
+
+	default:
+		return int64(chunkCount)
+	}
 }
 
 // newReceiver 创建新的接收端实例
@@ -241,8 +298,9 @@ func InitReceiver(mt *meta.MetaPkt, saveDir string, enableMd5 bool) (*Receiver, 
 //	outFilePath   - 输出文件完整路径
 //	config        - 解码器配置
 //	fdtID         - 文件数据传输标识符
-//	expectedChunks - 预期总分块数
-//	expectedMd5   - 期望的MD5校验值
+//	expectedChunks   - 预期总分块数
+//	expectedPackets  - 预期总数据包数（根据FEC参数计算）
+//	expectedMd5      - 期望的MD5校验值
 //
 // 返回值：
 //
@@ -258,7 +316,7 @@ func InitReceiver(mt *meta.MetaPkt, saveDir string, enableMd5 bool) (*Receiver, 
 // 资源管理：
 //
 //	使用对象池复用写入请求对象，减少GC压力
-func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, expectedChunks uint32, expectedMd5 string, enableMd5 bool) (*Receiver, error) {
+func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, expectedChunks uint32, expectedPackets int64, expectedMd5 string, enableMd5 bool) (*Receiver, error) {
 	// 确保目录存在
 	dir := filepath.Dir(outFilePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -281,8 +339,9 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 		outputFile:     file,
 		startTime:      time.Now(),
 		outputPath:     outFilePath,
-		expectedChunks: expectedChunks,
-		expectedMd5:    expectedMd5,
+		expectedChunks:  expectedChunks,
+		expectedPackets: expectedPackets,
+		expectedMd5:     expectedMd5,
 		enableMd5:      enableMd5,
 		finishChan:     make(chan struct{}),
 		OnComplete:     nil,
@@ -412,6 +471,15 @@ func (r *Receiver) startWriterLoop() {
 							fmt.Printf("File transfer completed (fdtID=%d): %d/%d chunks, duration=%s\n", r.fdtID, finished, r.expectedChunks, dur.String())
 							fmt.Printf("fdtID(%d): bytes received=%d, duration=%s, throughput=%.4f Mbps\n", r.fdtID, bytesWritten, dur.String(), mbps)
 
+							// 包统计：预期 vs 实际
+							receivedPkts := atomic.LoadInt64(&r.totalPackets)
+							if r.expectedPackets > 0 {
+								pktRatio := float64(receivedPkts) / float64(r.expectedPackets) * 100
+								fmt.Printf("fdtID(%d): packets received=%d/%d, ratio=%.2f%%\n", r.fdtID, receivedPkts, r.expectedPackets, pktRatio)
+							} else {
+								fmt.Printf("fdtID(%d): packets received=%d (expected unknown)\n", r.fdtID, receivedPkts)
+							}
+
 							// Memory Profile
 							var memStatsEnd runtime.MemStats
 							runtime.ReadMemStats(&memStatsEnd)
@@ -516,11 +584,8 @@ func (r *Receiver) showDecoderInfo() {
 	case decoder.DecoderRaptorQ, decoder.DecoderNoCode:
 		log.Printf("符号大小: %d bytes", config.SymbolSize)
 		log.Printf("Chunk大小: %d bytes", config.ChunkSize)
-		if config.Type == decoder.DecoderRaptorQ {
-			log.Printf("冗余比例: %.2f%%", config.RedundancyRatio*100)
-		}
 
-	case decoder.DecoderReedSolomon:
+case decoder.DecoderReedSolomon:
 		log.Printf("数据分片: %d", config.DataShards)
 		log.Printf("校验分片: %d", config.ParityShards)
 		log.Printf("总分片: %d", config.DataShards+config.ParityShards)
@@ -742,6 +807,7 @@ func (r *Receiver) processPacket(ctx context.Context, msck *sock.MsSocket, data 
 	// 更新统计
 	atomic.StoreInt64(&msck.LastUsed, time.Now().Unix())
 	atomic.AddInt64(&r.totalReceived, int64(n))
+	atomic.AddInt64(&r.totalPackets, 1)
 	pool.GetConnPool().AddReceived(uint64(n))
 
 	if n < 8 {
