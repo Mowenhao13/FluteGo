@@ -30,7 +30,8 @@ func newUnixSocket(addr *net.UDPAddr, mode uint8) (Socket, error) {
 		sockAddr.Port = 0
 	} else {
 		// 对于接收者，绑定到指定的端口
-		sockAddr.Port = htons(uint16(addr.Port))
+		// 注意：SockaddrInet4.Port 使用主机字节序，内核会自动转换
+		sockAddr.Port = addr.Port
 		copy(sockAddr.Addr[:], addr.IP.To4())
 	}
 
@@ -55,8 +56,9 @@ func (s *UnixSocket) WriteToUDP(buf []byte, addr *net.UDPAddr) (int, error) {
 	}
 
 	// 构建 sockaddr_in 结构
+	// 注意：SockaddrInet4.Port 使用主机字节序，内核会自动转换
 	var sockAddr syscall.SockaddrInet4
-	sockAddr.Port = htons(uint16(addr.Port))
+	sockAddr.Port = addr.Port
 	copy(sockAddr.Addr[:], addr.IP.To4())
 
 	err := syscall.Sendto(s.fd, buf, 0, &sockAddr)
