@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"path/filepath"
 )
 
 // Config holds all runtime-configurable parameters for FluteGo.
@@ -94,4 +95,42 @@ func Default() *Config {
 			Enabled: true,
 		},
 	}
+}
+
+// ConfigDir returns ~/.flutego/config/, auto-creating the directory.
+func ConfigDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("[config] cannot get user home dir: %v, using ./", err)
+		return "./.flutego/config/"
+	}
+	dir := filepath.Join(home, ".flutego", "config")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("[config] cannot create config dir %s: %v", dir, err)
+	}
+	return dir
+}
+
+// ConfigPath returns the full path to a config file under ConfigDir,
+// falling back to the bare name if the file doesn't exist in ConfigDir.
+func ConfigPath(name string) string {
+	full := filepath.Join(ConfigDir(), name)
+	if _, err := os.Stat(full); err == nil {
+		return full
+	}
+	return name
+}
+
+// PerformanceDir returns ~/.flutego/performance/, auto-creating the directory.
+func PerformanceDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("[config] cannot get user home dir: %v, using ./", err)
+		return "./.flutego/performance/"
+	}
+	dir := filepath.Join(home, ".flutego", "performance")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("[config] cannot create performance dir %s: %v", dir, err)
+	}
+	return dir
 }

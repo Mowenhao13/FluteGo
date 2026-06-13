@@ -96,12 +96,14 @@ func main() {
 	sendRedundancyRatioFlag := flag.Float64("send-redundancy-ratio", 1.05, "Redundancy ratio")
 	rateLimitMbpsFlag := flag.Int("rate-limit-mbps", 500, "Rate limit in Mbps")
 	startSendWaitFlag := flag.Int("start-send-wait", 1, "Seconds to wait before sending")
+	csvFlag := flag.Bool("csv", false, "Save transfer results to CSV file alongside the sent file")
 	flag.Parse()
 
 	if *cliMode {
-		runCLISender(*destIPFlag, *filePathFlag, *fecTypeFlag, uint8(*fdtIDFlag),
+	runCLISender(*destIPFlag, *filePathFlag, *fecTypeFlag, uint8(*fdtIDFlag),
 			*maxPacketSizeFlag, *baseFilePortFlag, *metaPortFlag, *numPortsFlag,
-			*sendFileDirFlag, *sendRedundancyRatioFlag, *rateLimitMbpsFlag, *startSendWaitFlag)
+			*sendFileDirFlag, *sendRedundancyRatioFlag, *rateLimitMbpsFlag, *startSendWaitFlag,
+			*csvFlag)
 		return
 	}
 
@@ -209,7 +211,7 @@ func main() {
 		go func() {
 			defer p.CloseFileConn(fid)
 			defer f.Close()
-			if err := SendFile(p, metaPkt, limiter, nil, nil, 1, srv, cfg.Sender.SendRedundancyRatio); err != nil {
+			if err := SendFile(p, metaPkt, limiter, nil, nil, 1, srv, cfg.Sender.SendRedundancyRatio, *csvFlag); err != nil {
 				log.Printf("[sendFn] SendFile error fdtID %d: %v", fid, err)
 			}
 		}()
@@ -259,7 +261,7 @@ func sendData(p *pool.ConnPool, wsck *sock.MsSocket, data []byte) error {
 	return err
 }
 
-func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverhead func(int64), onProgress func(int64), maxConcurrentSends int, srv *apiserver.Server, redundancyRatio float64) error {
+func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverhead func(int64), onProgress func(int64), maxConcurrentSends int, srv *apiserver.Server, redundancyRatio float64, csvEnabled bool) error {
 	metaConn, err := p.GetMetaConn()
 	if err != nil {
 		return err
@@ -312,6 +314,7 @@ func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverh
 		s.SetProgressCallback(onProgress)
 	}
 
+	s.CSVEnabled = csvEnabled
 	return s.Start(context.Background())
 }
 
@@ -345,7 +348,7 @@ func senderFECTypeName(id uint8) string {
 func runCLISender(destIP, filePath, fecType string, fid uint8,
 	maxPacketSize, baseFilePort, metaPort, numPorts int,
 	sendFileDir string, sendRedundancyRatio float64,
-	rateLimitMbps, startSendWait int) {
+	rateLimitMbps, startSendWait int, csvEnabled bool) {
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("[CLI] ===== Sender CLI Mode =====")
@@ -489,6 +492,7 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 
 	// Start sending
 	log.Printf("[CLI] Starting data transmission (ratio=%.2f, rate=%dMbps)...", sendRedundancyRatio, rateLimitMbps)
+	s.CSVEnabled = csvEnabled
 	sendStart := time.Now()
 	if err := s.Start(context.Background()); err != nil {
 		log.Fatalf("[CLI] Send error: %v", err)

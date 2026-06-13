@@ -14,12 +14,14 @@ import (
 	pool "FluteGo/pkg/pool"
 	"context"
 	"encoding/binary"
+	"encoding/csv"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync/atomic"
 
 	"sync"
@@ -67,6 +69,7 @@ type Sender struct {
 	sentChunkBytes       int64
 	onProgress           func(int64)
 	MaxConcurrentSends   int
+	CSVEnabled           bool
 }
 
 // SetProgressCallback 设置进度回调函数
@@ -639,19 +642,20 @@ func (s *Sender) Start(ctx context.Context) error {
 		log.Printf("fdtID(%d):   wire layer:   total=%d bytes, ratio=%.4f, overhead=+%d bytes (+%.2f%%)",
 			s.fdtID, totalBytes, wireRatio, wireOverhead, (wireRatio-1.0)*100)
 
-		// FEC-specific details
+		// FEC-specific details — also compute baseSymbols for CSV logging
+		var baseSymbols int64
 		switch s.config.Type {
 		case encoder.EncoderRaptorQ:
-			symSize := int64(s.config.SymbolSize)
-			if symSize == 0 {
-				symSize = 1
+			symSz := int64(s.config.SymbolSize)
+			if symSz == 0 {
+				symSz = 1
 			}
-			chunkSize := int64(s.config.ChunkSize)
-			lastChunkSize := s.fileSize % chunkSize
-			fullChunks := s.fileSize / chunkSize
-			baseSymbols := fullChunks * ((chunkSize + symSize - 1) / symSize)
-			if lastChunkSize > 0 {
-				baseSymbols += (lastChunkSize + symSize - 1) / symSize
+			chunkSz := int64(s.config.ChunkSize)
+			lastSz := s.fileSize % chunkSz
+			fullCh := s.fileSize / chunkSz
+			baseSymbols = fullCh * ((chunkSz + symSz - 1) / symSz)
+			if lastSz > 0 {
+				baseSymbols += (lastSz + symSz - 1) / symSz
 			}
 			totalSymWithRatio := int64(float64(baseSymbols) * s.config.RedundancyRatio)
 			log.Printf("fdtID(%d):   RaptorQ detail: baseSymbols~%d, withRatio=%d, actualSent=%d, extra=%+d",
@@ -659,17 +663,34 @@ func (s *Sender) Start(ctx context.Context) error {
 		case encoder.EncoderReedSolomon:
 			totalShards := int64(s.config.DataShards + s.config.ParityShards)
 			dataSymbols := int64(s.chunkCount) * int64(s.config.DataShards)
+			baseSymbols = dataSymbols
 			expectedSymbols := int64(s.chunkCount) * totalShards
 			log.Printf("fdtID(%d):   ReedSolomon detail: dataSymbols=%d, totalShards=%d, expectedSymbols=%d, actualSent=%d",
 				s.fdtID, dataSymbols, totalShards, expectedSymbols, totalPackets)
 		case encoder.EncoderNoCode:
-			symSize := int64(s.config.SymbolSize)
-			if symSize == 0 {
-				symSize = 1
+			symSz := int64(s.config.SymbolSize)
+			if symSz == 0 {
+				symSz = 1
 			}
-			baseSymbols := (s.fileSize + symSize - 1) / symSize
+			baseSymbols = (s.fileSize + symSz - 1) / symSz
 			log.Printf("fdtID(%d):   NoCode detail: baseSymbols=%d, actualSent=%d, overhead=0",
 				s.fdtID, baseSymbols, totalPackets)
+		}
+
+		// Write CSV performance record (if enabled)
+		if s.CSVEnabled {
+			csvDir := filepath.Dir(s.config.FName)
+			csvPath := filepath.Join(csvDir, "sender_performance.csv")
+			writeSendCSV(
+				csvPath,
+				s.fdtID, fecTypeName(s.config.Type), filepath.Base(s.config.FName),
+				s.fileSize, s.config.ChunkSize, s.config.SymbolSize, s.chunkCount,
+				s.config.RedundancyRatio,
+				s.sendEnd, dur, mbps, goodput,
+				totalPackets, totalBytes, headerBytes, symbolPayload,
+				symRatio, wireRatio, symOverhead, wireOverhead,
+				baseSymbols,
+			)
 		}
 
 		// Memory Profile
@@ -698,5 +719,70 @@ func fecTypeName(t encoder.EncoderType) string {
 		return "ReedSolomon"
 	default:
 		return "Unknown"
+	}
+}
+
+// writeSendCSV appends a single sender performance record to the CSV file,
+// creating the file with a header row if it does not exist yet.
+func writeSendCSV(csvPath string,
+	fdtID uint8, fecType string, fileName string, fileSize int64,
+	chunkSize uint32, symbolSize uint16, chunks uint32, configRatio float64,
+	sendEnd time.Time, dur time.Duration, throughputMbps float64, goodputMbps float64,
+	totalPackets int64, totalBytes int64, headerBytes int64, symbolPayload int64,
+	symRatio float64, wireRatio float64, symOverhead int64, wireOverhead int64,
+	baseSymbols int64) {
+
+	needHeader := false
+	if _, err := os.Stat(csvPath); os.IsNotExist(err) {
+		needHeader = true
+	}
+
+	f, err := os.OpenFile(csvPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Printf("[CSV] failed to open/create %s: %v", csvPath, err)
+		return
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if needHeader {
+		w.Write([]string{
+			"Timestamp", "FdtID", "FEC", "FileName", "FileSize",
+			"ChunkSize", "SymbolSize", "Chunks", "ConfigRatio",
+			"DurationSec", "ThroughputMbps", "GoodputMbps",
+			"TotalPackets", "TotalBytes", "HeaderBytes", "SymbolPayload",
+			"SymRatio", "WireRatio", "SymOverheadBytes", "WireOverheadBytes",
+			"BaseSymbols~",
+		})
+	}
+
+	record := []string{
+		sendEnd.Format(time.RFC3339),
+		strconv.Itoa(int(fdtID)),
+		fecType,
+		fileName,
+		strconv.FormatInt(fileSize, 10),
+		strconv.FormatUint(uint64(chunkSize), 10),
+		strconv.Itoa(int(symbolSize)),
+		strconv.FormatUint(uint64(chunks), 10),
+		strconv.FormatFloat(configRatio, 'f', 2, 64),
+		strconv.FormatFloat(dur.Seconds(), 'f', 6, 64),
+		strconv.FormatFloat(throughputMbps, 'f', 4, 64),
+		strconv.FormatFloat(goodputMbps, 'f', 4, 64),
+		strconv.FormatInt(totalPackets, 10),
+		strconv.FormatInt(totalBytes, 10),
+		strconv.FormatInt(headerBytes, 10),
+		strconv.FormatInt(symbolPayload, 10),
+		strconv.FormatFloat(symRatio, 'f', 4, 64),
+		strconv.FormatFloat(wireRatio, 'f', 4, 64),
+		strconv.FormatInt(symOverhead, 10),
+		strconv.FormatInt(wireOverhead, 10),
+		strconv.FormatInt(baseSymbols, 10),
+	}
+
+	if err := w.Write(record); err != nil {
+		log.Printf("[CSV] write error: %v", err)
 	}
 }
