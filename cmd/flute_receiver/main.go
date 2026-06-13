@@ -49,6 +49,7 @@ func defaultDownloadsDir() string {
 }
 
 func main() {
+	runtime.GOMAXPROCS(8)
 	cfg, err := config.Load("config_receiver.json")
 	if err != nil {
 		log.Printf("[config] load error: %v, using defaults", err)
