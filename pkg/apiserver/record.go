@@ -194,11 +194,11 @@ func (s *StateStore) broadcastUpdate(rec TransferRecord) {
 	now := time.Now()
 	last, ok := s.lastBroadcast[rec.FdtID]
 
-	// 总是广播完成或失败状态，其他状态最多每 1s 广播一次
+	// 总是广播完成或失败状态，其他状态最多每 100ms 广播一次
 	shouldBroadcast := !ok ||
 		rec.Status == "completed" ||
 		rec.Status == "failed" ||
-		now.Sub(last) >= 1*time.Second
+		now.Sub(last) >= 100*time.Millisecond
 
 	if shouldBroadcast {
 		s.lastBroadcast[rec.FdtID] = now

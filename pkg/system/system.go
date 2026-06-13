@@ -19,9 +19,9 @@ import (
 	"log"
 	"net"
 	"os"
-	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // ReceiverSystem 接收端系统
@@ -131,7 +131,7 @@ var (
 func InitReceiverSystem(maxWorkers int32, destIP string, saveDir string, enableMd5 bool) (*ReceiverSystem, error) {
 	// 参数验证和默认值设置
 	if maxWorkers <= 0 {
-		maxWorkers = int32(runtime.NumCPU() / 2)
+		maxWorkers = 10 // 扩大槽位以支持快速连续传输
 	}
 
 	// 创建可取消的上下文
@@ -141,7 +141,7 @@ func InitReceiverSystem(maxWorkers int32, destIP string, saveDir string, enableM
 	s := &ReceiverSystem{
 		ctx:        ctx,
 		cancel:     cancel,
-		metaChan:   make(chan *meta.MetaPkt, 10),
+		metaChan:   make(chan *meta.MetaPkt, 20),
 		errChans:   errs.InitErrorChannels(),
 		workerPool: make(chan struct{}, maxWorkers),
 		maxWorkers: maxWorkers,
@@ -509,16 +509,25 @@ func (s *ReceiverSystem) processMeta(mainCtx context.Context, metaPkt *meta.Meta
 	}
 
 	// 通过工作池控制并发
+	log.Printf("[processMeta] fdtID=%d: acquiring workerPool slot (%d/%d)", metaPkt.File.FdtID, len(s.workerPool)+1, cap(s.workerPool))
 	s.workerPool <- struct{}{}
+	log.Printf("[processMeta] fdtID=%d: acquired workerPool slot", metaPkt.File.FdtID)
 	s.wg.Add(1)
 	go func(ctx context.Context, task *meta.MetaPkt) {
 		defer s.wg.Done()
-		defer func() { <-s.workerPool }()
+		defer func() { <-s.workerPool; log.Printf("[processMeta] fdtID=%d: released workerPool slot", task.File.FdtID) }()
+		defer s.targets.Delete(task.File.FdtID) // 传输完成后释放 FDT ID 槽位
 
 		atomic.AddInt32(&s.activeReceivers, 1)
 		defer atomic.AddInt32(&s.activeReceivers, -1)
 
+		log.Printf("[processMeta] goroutine started for fdtID=%d", task.File.FdtID)
 		s.runReceiver(ctx, task)
+
+		// 传输间 2s 冷却，避免连续发送导致干扰
+		time.Sleep(2 * time.Second)
+
+		log.Printf("[processMeta] goroutine finished for fdtID=%d", task.File.FdtID)
 	}(mainCtx, metaPkt)
 }
 
@@ -590,12 +599,17 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 	go func() {
 		defer s.wg.Done()
 		for r := range recvReportChan {
-			s.FileReporter.ReportChan <- FileReport{
+			// 非阻塞发送，防止 FileReporter.ReportChan 满时级联阻塞
+			select {
+			case s.FileReporter.ReportChan <- FileReport{
 				FdtID:         r.FdtID,
 				TotalBytes:    uint64(r.Total),
 				ReceivedBytes: uint64(r.Received),
 				Status:        r.Status,
 				TotalFiles:    task.TotalFiles,
+			}:
+			default:
+				// 通道满时丢弃
 			}
 			if r.Status == 1 {
 				return
@@ -603,14 +617,24 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 		}
 	}()
 
+	log.Printf("[runReceiver] fdtID=%d, basePort=%d, numPorts=%d, file=%s",
+		fdtID, task.BasePort, task.NumPorts, task.File.Name)
+
 	// 为文件创建连接
-	conns, _ := s.recvPool.CreateFileConn(fdtID, uint8(task.NumPorts), task.BasePort)
+	conns, connErrs := s.recvPool.CreateFileConn(fdtID, uint8(task.NumPorts), task.BasePort)
+	for _, cerr := range connErrs {
+		if cerr != nil {
+			log.Printf("[runReceiver] fdtID=%d: connection error: %v", fdtID, cerr)
+		}
+	}
 	if len(conns) == 0 {
-		err := fmt.Errorf("failed to create connections for fdtID %d", fdtID)
+		log.Printf("[runReceiver] fdtID=%d: ALL connections failed (basePort=%d)", fdtID, task.BasePort)
+		err := fmt.Errorf("failed to create connections for fdtID %d (basePort=%d)", fdtID, task.BasePort)
 		s.reportError(ctx, uint8(errs.LevelError), err, fdtID)
 		close(recvReportChan)
 		return
 	}
+	log.Printf("[runReceiver] fdtID=%d: %d connections created, starting receiver", fdtID, len(conns))
 	defer s.recvPool.CloseFileConn(fdtID)
 
 	// 初始化接收器
@@ -619,6 +643,7 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 	s.saveDirMu.RUnlock()
 	recv, err := receiver.InitReceiver(task, saveDir, s.enableMd5)
 	if err != nil {
+		log.Printf("[runReceiver] fdtID=%d: InitReceiver failed: %v", fdtID, err)
 		s.reportError(ctx, uint8(errs.LevelError), err, fdtID)
 		close(recvReportChan)
 		return
@@ -627,12 +652,27 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 
 	// 设置完成回调，关闭报告通道
 	recv.OnComplete = func() {
-		s.FileReporter.ReportChan <- FileReport{
+		actualBytes := recv.GetBytesWritten()
+		if actualBytes <= 0 {
+			actualBytes = int64(task.File.TransferLen)
+		}
+		// 超时时报告失败，而非虚假完成
+		status := uint8(1) // Completed
+		if recv.IsTimedOut() {
+			status = 2 // Failed
+			log.Printf("fdtID(%d): transfer timed out, reporting as failed (%d/%d bytes)\n", fdtID, actualBytes, task.File.TransferLen)
+		}
+		// 非阻塞发送完成报告（防止阻塞导致 close(recvReportChan) 不执行）
+		select {
+		case s.FileReporter.ReportChan <- FileReport{
 			FdtID:         fdtID,
-			Status:        1, // Completed
+			Status:        status,
 			TotalFiles:    task.TotalFiles,
 			TotalBytes:    task.File.TransferLen,
-			ReceivedBytes: task.File.TransferLen,
+			ReceivedBytes: uint64(actualBytes),
+		}:
+		default:
+			log.Printf("WARNING: report channel full, completion for fdtId=%d dropped\n", fdtID)
 		}
 		close(recvReportChan)
 	}
