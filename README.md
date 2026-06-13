@@ -181,3 +181,47 @@ Test environment: Windows 11 (sender/receiver) ↔ macOS (receiver/sender), 192.
    - `--rate-limit-mbps 200` (balances speed vs WinDivert stability)
    - For higher loss (20%+), increase ratio to 2.0-2.5
 5. **MetaPkt is a single point of failure** — it is sent once; if dropped by filtering, the entire transfer fails. The receiver ignores duplicate fdtIDs.
+
+./flute_sender_cli --cli --dest-ip 192.168.0.10 --file test_data/test_100mb.dat --fec RaptorQ --rate-limit-mbps 200 --fdt-id 300
+
+
+
+## Test-case-1:
+Receiver: mac
+Sender: win
+Fec: RaptorQ
+FileSize: 104857600 bytes (100.00 MB)
+SymbolSize: 1400 bytes
+ChunkSize: 32768 bytes
+RedundancyRatio: 115.00%
+MaxPacketSize: 1408 bytes
+bytes received=104857600, duration=1.519069125s, throughput=552.2203 Mbps
+Total Allocated Memory: 2043596688 bytes
+Peak Heap Memory: 31799352 bytes, 30 MB
+System Memory (Sys): 50 MB
+Heap Idle Memory: 9 MB
+Garbage Collection Count: 320
+Memory Allocation Count: 707185
+Heap Objects Count: 52252
+Clumsy drop chance: 0%
+
+## Test-case-2:
+Receiver: mac
+Sender: win
+Fec: RaptorQ
+FileSize: 104857600 bytes (100.00 MB)
+SymbolSize: 1400 bytes
+ChunkSize: 32768 bytes
+RedundancyRatio: 115.00%
+MaxPacketSize: 1408 bytes
+
+Clumsy drop chance: 1%
+
+panic: send on closed channel
+
+goroutine 22 [running]:
+FluteGo/pkg/io.(*UnixIOHandler).Start.func1()
+        /Users/halllo/projects/local/FluteGo/pkg/io/io_unix.go:47 +0x60
+created by FluteGo/pkg/io.(*UnixIOHandler).Start in goroutine 85
+        /Users/halllo/projects/local/FluteGo/pkg/io/io_unix.go:34 +0x5c
+exit status 2
