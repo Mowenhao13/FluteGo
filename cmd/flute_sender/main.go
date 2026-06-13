@@ -290,7 +290,7 @@ func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverh
 		fecType := senderFECTypeName(mt.Oti.FECEncodingID)
 		srv.State().RegisterFile("sender", mt.File.FdtID, mt.File.Name,
 			int64(mt.File.TransferLen), fecType, mt.File.Md5)
-		stateAdapter := srv.State().SenderProgressAdapter(mt.File.FdtID, totalBytes)
+		stateAdapter := srv.State().SenderProgressAdapter(mt.File.FdtID, int64(mt.File.TransferLen), totalBytes)
 		if onProgress != nil {
 			orig := onProgress
 			onProgress = func(sent int64) {
@@ -465,12 +465,25 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 
 	// Progress callback - print at every percent change
 	totalToSend := s.GetTotalBytesToSend()
+	fileSize := int64(mt.File.TransferLen)
 	var lastPct int64 = -1
 	s.SetProgressCallback(func(sent int64) {
-		pct := sent * 100 / totalToSend
+		// 将 wire 字节转换为 payload 字节，使进度与接收端可比
+		var payloadBytes int64
+		if sent >= totalToSend {
+			payloadBytes = fileSize
+		} else if totalToSend > 0 && fileSize > 0 {
+			payloadBytes = int64(float64(sent) * float64(fileSize) / float64(totalToSend))
+		} else {
+			payloadBytes = sent
+		}
+		if payloadBytes > fileSize {
+			payloadBytes = fileSize
+		}
+		pct := payloadBytes * 100 / fileSize
 		if pct != lastPct {
 			lastPct = pct
-			log.Printf("[CLI] Sending: %d%% (%d/%d bytes)", pct, sent, totalToSend)
+			log.Printf("[CLI] Sending: %d%% (%d/%d bytes)", pct, payloadBytes, fileSize)
 		}
 	})
 
@@ -481,7 +494,8 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 		log.Fatalf("[CLI] Send error: %v", err)
 	}
 	duration := time.Since(sendStart)
-	mbps := (float64(totalToSend) * 8.0 / duration.Seconds()) / 1e6
+	// 使用 payload 字节计算速率，与接收端保持一致
+	mbps := (float64(fileSize) * 8.0 / duration.Seconds()) / 1e6
 	log.Printf("[CLI] ===== SEND COMPLETE =====")
-	log.Printf("[CLI] Duration: %v, Throughput: %.2f Mbps", duration, mbps)
+	log.Printf("[CLI] Duration: %v, Throughput (payload): %.2f Mbps", duration, mbps)
 }

@@ -25,7 +25,8 @@ type TransferRecord struct {
 type StateStore struct {
 	mu            sync.RWMutex
 	records       map[uint8]*TransferRecord
-	startTime     map[uint8]time.Time // 记录每个文件的开始时间
+	startTime     map[uint8]time.Time // 记录每个文件注册/开始时间
+	dataStartTime map[uint8]time.Time // 记录首次实际数据传输的时间（用于速率计算）
 	lastBroadcast map[uint8]time.Time
 	hub           *Hub
 }
@@ -34,6 +35,7 @@ func newStateStore(hub *Hub) *StateStore {
 	return &StateStore{
 		records:       make(map[uint8]*TransferRecord),
 		startTime:     make(map[uint8]time.Time),
+		dataStartTime: make(map[uint8]time.Time),
 		lastBroadcast: make(map[uint8]time.Time),
 		hub:           hub,
 	}
@@ -60,30 +62,60 @@ func (s *StateStore) RegisterFile(role string, fdtID uint8, fileName string,
 }
 
 // SenderProgressAdapter returns an onProgress func(int64) callback suitable
-// for sender.SetProgressCallback. totalBytes should come from
-// sender.GetTotalBytesToSend().
-func (s *StateStore) SenderProgressAdapter(fdtID uint8, totalBytes int64) func(int64) {
-	return func(bytesDone int64) {
+// for sender.SetProgressCallback. fileSize is the original file payload size;
+// totalBytesWire is sender.GetTotalBytesToSend() which includes headers + FEC.
+//
+// The returned function translates wire bytes into estimated payload bytes
+// so that progress and speedMbps are reported on the same basis as the receiver.
+func (s *StateStore) SenderProgressAdapter(fdtID uint8, fileSize, totalBytesWire int64) func(int64) {
+	return func(bytesDoneWire int64) {
 		s.mu.Lock()
 		rec, ok := s.records[fdtID]
 		if !ok {
 			s.mu.Unlock()
 			return
 		}
-		rec.BytesDone = bytesDone
-		if totalBytes > 0 {
-			rec.Progress = float64(bytesDone) / float64(totalBytes)
+
+		// 将 wire 字节转换为估算的 payload 字节，使进度基准与接收端一致
+		var payloadBytes int64
+		if bytesDoneWire >= totalBytesWire {
+			payloadBytes = fileSize // 发送完成 = 全部 payload 已覆盖
+		} else if totalBytesWire > 0 && fileSize > 0 {
+			payloadBytes = int64(float64(bytesDoneWire) * float64(fileSize) / float64(totalBytesWire))
+		} else {
+			payloadBytes = bytesDoneWire
+		}
+		if payloadBytes > fileSize {
+			payloadBytes = fileSize
+		}
+
+		rec.BytesDone = payloadBytes
+		if fileSize > 0 {
+			rec.Progress = float64(payloadBytes) / float64(fileSize)
 			if rec.Progress > 1.0 {
 				rec.Progress = 1.0
 			}
 		}
-		// 计算平均速率：总字节数 / 总时间
+
+		// 记录首次实际数据传输时间（用于速率计算，排除 START_SEND_WAIT 等延迟）
 		now := time.Now()
-		dt := now.Sub(s.startTime[fdtID]).Seconds()
-		if dt > 0 {
-			rec.SpeedMbps = float64(bytesDone) * 8.0 / dt / 1e6
+		if bytesDoneWire > 0 {
+			if _, hasData := s.dataStartTime[fdtID]; !hasData {
+				s.dataStartTime[fdtID] = now
+			}
 		}
-		if bytesDone > 0 && rec.Status == "pending" {
+
+		// 计算速率：以 payload 字节为基准，使用 dataStartTime（回退到 startTime）
+		rateStart, ok := s.dataStartTime[fdtID]
+		if !ok {
+			rateStart = s.startTime[fdtID]
+		}
+		dt := now.Sub(rateStart).Seconds()
+		if dt > 0 {
+			rec.SpeedMbps = float64(payloadBytes) * 8.0 / dt / 1e6
+		}
+
+		if bytesDoneWire > 0 && rec.Status == "pending" {
 			rec.Status = "transferring"
 		}
 		if rec.Progress >= 1.0 {
@@ -112,9 +144,19 @@ func (s *StateStore) UpdateFromReceiverReport(fdtID uint8, received, total int64
 			rec.Progress = 1.0
 		}
 	}
-	// 计算平均速率：总字节数 / 总时间
+	// 记录首次实际接收数据时间
 	now := time.Now()
-	dt := now.Sub(s.startTime[fdtID]).Seconds()
+	if received > 0 {
+		if _, hasData := s.dataStartTime[fdtID]; !hasData {
+			s.dataStartTime[fdtID] = now
+		}
+	}
+	// 计算平均速率：以 payload 字节为基准，使用 dataStartTime（回退到 startTime）
+	rateStart, ok := s.dataStartTime[fdtID]
+	if !ok {
+		rateStart = s.startTime[fdtID]
+	}
+	dt := now.Sub(rateStart).Seconds()
 	if dt > 0 {
 		rec.SpeedMbps = float64(received) * 8.0 / dt / 1e6
 	}

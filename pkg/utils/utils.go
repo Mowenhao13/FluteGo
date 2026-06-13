@@ -381,12 +381,8 @@ func ListDir(path string) {
 //
 //   - `string`: 检测到的 IPv4 地址，如果失败返回 "127.0.0.1"
 func GetLocalIPv4() string {
-	// 方法 1: 通过连接到外部地址获取（最快）
-	if ip := getLocalIPByUDP(); ip != "" && !isUndesiredIP(ip) {
-		return ip
-	}
 
-	// 方法 2: 枚举所有网络接口
+	// 枚举所有网络接口
 	if ip := getLocalIPFromInterfaces(); ip != "" {
 		return ip
 	}
@@ -592,7 +588,7 @@ func isUndesiredIP(ip string) bool {
 func isVirtualInterfaceName(name string) bool {
 	names := []string{"tailscale", "radmin", "vmware", "virtualbox",
 		"docker", "veth", "br-", "docker0", "tun", "tap",
-		"utun", "awdl", "llw", "anpi", "vnic"}
+		"utun", "awdl", "llw", "anpi", "vnic", "bridge"}
 	lower := strings.ToLower(name)
 	for _, v := range names {
 		if strings.Contains(lower, v) {

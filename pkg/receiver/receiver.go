@@ -768,22 +768,6 @@ func (r *Receiver) processPacket(ctx context.Context, msck *sock.MsSocket, data 
 		return
 	}
 
-	// 发送进度报告
-	if ch, ok := GetReportChan(ctx); ok {
-		report := Report{
-			FdtID:    r.fdtID,
-			Received: atomic.LoadInt64(&r.currWritten),
-			Total:    int64(r.config.FileSize),
-			Status:   0,
-		}
-		select {
-		case ch <- report:
-			// log.Printf("Progress report sent: fdtID=%d, received=%d, total=%d", report.FdtID, report.Received, report.Total)
-		default:
-			// 非阻塞发送，避免阻塞接收循环
-			// log.Printf("Progress report skipped (channel full): fdtID=%d, received=%d, total=%d", report.FdtID, report.Received, report.Total)
-		}
-	}
 }
 
 // Close 关闭接收端
