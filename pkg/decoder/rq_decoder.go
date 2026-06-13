@@ -11,7 +11,6 @@ import (
 	"FluteGo/pkg/shard_map"
 	"fmt"
 	"log"
-	"math"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -67,7 +66,7 @@ type rqChunkDecoder struct {
 //	需要接收的符号数量（uint16）。
 func (r *RqDecoder) calRequiredSymbols(actualChunkSize uint32) uint16 {
 	baseSymbols := uint16((actualChunkSize + uint32(r.Config.SymbolSize) - 1) / uint32(r.Config.SymbolSize))
-	return uint16(math.Ceil(float64(baseSymbols) * r.Config.RedundancyRatio))
+	return baseSymbols
 }
 
 // max chunkSize = 4096 MB

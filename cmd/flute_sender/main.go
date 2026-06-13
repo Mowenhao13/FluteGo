@@ -209,7 +209,7 @@ func main() {
 		go func() {
 			defer p.CloseFileConn(fid)
 			defer f.Close()
-			if err := SendFile(p, metaPkt, limiter, nil, nil, 1, srv); err != nil {
+			if err := SendFile(p, metaPkt, limiter, nil, nil, 1, srv, cfg.Sender.SendRedundancyRatio); err != nil {
 				log.Printf("[sendFn] SendFile error fdtID %d: %v", fid, err)
 			}
 		}()
@@ -259,7 +259,7 @@ func sendData(p *pool.ConnPool, wsck *sock.MsSocket, data []byte) error {
 	return err
 }
 
-func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverhead func(int64), onProgress func(int64), maxConcurrentSends int, srv *apiserver.Server) error {
+func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverhead func(int64), onProgress func(int64), maxConcurrentSends int, srv *apiserver.Server, redundancyRatio float64) error {
 	metaConn, err := p.GetMetaConn()
 	if err != nil {
 		return err
@@ -280,7 +280,7 @@ func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverh
 	log.Printf("Sender will be started after %d seconds\n", constant.START_SEND_WAIT)
 	time.Sleep(constant.START_SEND_WAIT * time.Second)
 
-	s, err := sender.InitSender(mt, limiter, maxConcurrentSends)
+	s, err := sender.InitSender(mt, limiter, maxConcurrentSends, redundancyRatio)
 	if err != nil {
 		return fmt.Errorf("Failed to init sender: %v", err)
 	}

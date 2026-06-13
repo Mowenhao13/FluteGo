@@ -200,8 +200,8 @@ func ipv4ToWindowsRawSockaddr(ipv4 net.IP, port int) (*windows.RawSockaddrAny, i
 	// 设置地址族
 	rawAddr.Family = windows.AF_INET
 
-	// 注意：RawSockaddrInet4 是 raw C 结构体 sockaddr_in 的直接映射，
-	// sin_port 必须是网络字节序（大端），手动转换
+	// Windows 的 RawSockaddrInet4 结构体与 SockaddrInet4 不同
+	// WSASendTo 函数会自动处理端口字节序，或者该结构体使用主机字节序
 	rawAddr.Port = uint16((port>>8)&0xFF) | uint16((port&0xFF)<<8)
 
 	// 复制IP地址

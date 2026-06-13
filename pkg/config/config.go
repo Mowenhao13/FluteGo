@@ -33,9 +33,8 @@ type SenderConfig struct {
 
 // ReceiverConfig holds receiver-side parameters.
 type ReceiverConfig struct {
-	SaveFileDir         string  `json:"saveFileDir"`
-	RecvRedundancyRatio float64 `json:"recvRedundancyRatio"` // 1.01
-	DefaultChunkSize    int     `json:"defaultChunkSize"`    // 65536
+	SaveFileDir      string `json:"saveFileDir"`
+	DefaultChunkSize int    `json:"defaultChunkSize"` // 65536
 }
 
 // ServerConfig holds API server parameters.
@@ -87,9 +86,8 @@ func Default() *Config {
 			StartSendWait:       1,
 		},
 		Receiver: ReceiverConfig{
-			SaveFileDir:         "cmd/received_files/", // 已包含尾部斜杠
-			RecvRedundancyRatio: 1.01,
-			DefaultChunkSize:    65536,
+			SaveFileDir:      "cmd/received_files/", // 已包含尾部斜杠
+			DefaultChunkSize: 65536,
 		},
 		Server: ServerConfig{
 			Port:    8080,

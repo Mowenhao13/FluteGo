@@ -9,8 +9,7 @@ const (
 
 // Receiver param
 const (
-	RecvRedundancyRatio = 1.15
-	DefaultChunkSize    = 64 * 1024 // 64KB chunks
+	DefaultChunkSize = 64 * 1024 // 64KB chunks
 )
 
 // Sender param
