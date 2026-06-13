@@ -105,6 +105,7 @@ type Receiver struct {
 	outputFile       *os.File
 	fileMutex        sync.Mutex
 	outputPath       string
+		saveDir          string // 保存目录，用于写入 CSV 统计文件
 	expectedMd5      string
 	expectedChunks   uint32
 	expectedPackets  int64    // 预期总数据包数（根据FEC参数计算）
@@ -124,6 +125,7 @@ type Receiver struct {
 	totalPackets  int64     // 总共接收数据包数
 	totalDropped  int64     // 总共丢包数
 	receiveErrs   int64     // 接收错误数
+		timedOut      int32     // 是否因超时而结束（原子操作）
 	lastDataTime  int64     // 最后接收数据时间戳
 	startTime     time.Time // 接收开始时间（如果在 newReceiver 初始化，则为创建时间）
 	// per-file receive timing
@@ -345,6 +347,7 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 		outputFile:     file,
 		startTime:      time.Now(),
 		outputPath:     outFilePath,
+			saveDir:        dir,
 		expectedChunks:  expectedChunks,
 		expectedPackets: expectedPackets,
 		expectedMd5:     expectedMd5,
@@ -497,8 +500,14 @@ func (r *Receiver) startWriterLoop() {
 							fmt.Printf("Garbage Collection Count: %v\n", memStatsEnd.NumGC-r.memStatsStart.NumGC)
 							fmt.Printf("Memory Allocation Count: %v\n", memStatsEnd.Mallocs-r.memStatsStart.Mallocs)
 							fmt.Printf("Heap Objects Count: %v\n", memStatsEnd.HeapObjects)
+							// 写入 CSV 统计
+							stats := r.CollectStats("completed")
+							go WriteTransferCSV(r.saveDir, stats)
 						} else {
 							fmt.Printf("File transfer completed (fdtID=%d): %d/%d chunks\n", r.fdtID, finished, r.expectedChunks)
+							// 写入 CSV 统计
+							stats := r.CollectStats("completed")
+							go WriteTransferCSV(r.saveDir, stats)
 						}
 					})
 				}
@@ -673,6 +682,43 @@ func (r *Receiver) Start(ctx context.Context) error {
 		}
 	}()
 
+	// 启动超时监控：如果超过 IDLE_DATA_TIMEOUT 秒无数据到达，自动结束接收
+	idleTimeout := time.Duration(constant.IDLE_DATA_TIMEOUT) * time.Second
+	idleCheckInterval := 3 * time.Second
+	go func() {
+		ticker := time.NewTicker(idleCheckInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-sessionCtx.Done():
+				return
+			case <-ticker.C:
+				last := atomic.LoadInt64(&r.lastDataTime)
+				// 场景1：数据传输中但中途停止 → lastDataTime 不再更新 → 15s后超时
+				if last > 0 && time.Since(time.Unix(last, 0)) > idleTimeout {
+					log.Printf("fdtID(%d): data idle timeout (%ds), finishing receive", r.fdtID, constant.IDLE_DATA_TIMEOUT)
+					// 标记超时，防止 OnComplete 报告虚假成功
+					r.MarkTimedOut()
+					// 写入 CSV 统计
+					stats := r.CollectStats("timeout")
+					go WriteTransferCSV(r.saveDir, stats)
+					r.closeOnce.Do(func() { close(r.finishChan) })
+					return
+				}
+				// 场景2：自创建以来从未收到任何数据 → lastDataTime == 0 → 30s后强制超时
+				if last == 0 && time.Since(r.startTime) > idleTimeout*2 {
+					log.Printf("fdtID(%d): no data received since start (%ds timeout), finishing receive", r.fdtID, constant.IDLE_DATA_TIMEOUT*2)
+					r.MarkTimedOut()
+					// 写入 CSV 统计（超时但未收到数据）
+					stats := r.CollectStats("timeout")
+					go WriteTransferCSV(r.saveDir, stats)
+					r.closeOnce.Do(func() { close(r.finishChan) })
+					return
+				}
+			}
+		}
+	}()
+
 	// 为每个连接启动接收协程
 	for _, conn := range conns {
 		wrapper := conn
@@ -740,7 +786,6 @@ func (r *Receiver) readLoop(ctx context.Context, msck *sock.MsSocket) error {
 		return fmt.Errorf("failed to create IO handler: %v", err)
 	}
 	ioHandler.Start()
-	defer ioHandler.Stop()
 
 	// 启动消费者协程处理数据
 	// 消费者负责解码，计算量大，但过多会导致上下文切换开销
@@ -762,6 +807,9 @@ func (r *Receiver) readLoop(ctx context.Context, msck *sock.MsSocket) error {
 
 	// 等待上下文取消
 	<-ctx.Done()
+
+	// 先停止 IO handler，唤醒阻塞在 TryDequeue 的消费者
+	ioHandler.Stop()
 
 	// 等待消费者退出
 	wg.Wait()
@@ -810,11 +858,13 @@ func (r *Receiver) consumeLoop(ctx context.Context, ioHandler io.IOHandler, msck
 func (r *Receiver) processPacket(ctx context.Context, msck *sock.MsSocket, data []byte) {
 	n := len(data)
 
-	// 更新统计
-	atomic.StoreInt64(&msck.LastUsed, time.Now().Unix())
-	atomic.AddInt64(&r.totalReceived, int64(n))
-	atomic.AddInt64(&r.totalPackets, 1)
-	pool.GetConnPool().AddReceived(uint64(n))
+		// 更新统计
+		now := time.Now().Unix()
+		atomic.StoreInt64(&msck.LastUsed, now)
+		atomic.StoreInt64(&r.lastDataTime, now)
+		atomic.AddInt64(&r.totalReceived, int64(n))
+		atomic.AddInt64(&r.totalPackets, 1)
+		pool.GetConnPool().AddReceived(uint64(n))
 
 	if n < 8 {
 		return
@@ -841,6 +891,22 @@ func (r *Receiver) processPacket(ctx context.Context, msck *sock.MsSocket, data 
 	}
 
 }
+
+// GetBytesWritten 返回当前已解码写入的字节数（线程安全）
+func (r *Receiver) GetBytesWritten() int64 {
+	return atomic.LoadInt64(&r.currWritten)
+}
+
+// MarkTimedOut 标记接收器因超时而结束
+func (r *Receiver) MarkTimedOut() {
+	atomic.StoreInt32(&r.timedOut, 1)
+}
+
+// IsTimedOut 返回是否因超时而结束
+func (r *Receiver) IsTimedOut() bool {
+	return atomic.LoadInt32(&r.timedOut) == 1
+}
+
 
 // Close 关闭接收端
 // 功能说明：

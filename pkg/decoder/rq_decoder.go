@@ -226,8 +226,7 @@ func (r *RqDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 			// log.Printf("chunk %d 数据已实时写入文件, 偏移量: %d, 大小: %d",
 			// 	chunkIdx, int64(chunkIdx)*int64(r.Config.ChunkSize), len(result))
 
-			// 删除已解码完成的 decoder
-			r.RqChunkDecoders.Delete(chunkIdx)
+			// 注意：不删除已解码完成 decoder，保留 decoded=true 标记
 			atomic.AddUint32(&r.DecoderCnt, ^uint32(0))
 		} else {
 			log.Printf("chunk %d 解码尝试失败，继续接收符号...", chunkIdx)
