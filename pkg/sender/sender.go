@@ -101,7 +101,7 @@ func (s *Sender) GetTotalSent() int64 {
 // 特殊处理：
 //
 //	对于Reed-Solomon编码，需要特殊处理符号大小
-func initEncoderConfig(mt *meta.MetaPkt) encoder.EncoderConfig {
+func initEncoderConfig(mt *meta.MetaPkt, redundancyRatio float64) encoder.EncoderConfig {
 	// 获取编码器类型
 	encoderType := mt.Oti.FECEncodingID
 
@@ -116,9 +116,8 @@ func initEncoderConfig(mt *meta.MetaPkt) encoder.EncoderConfig {
 	symbolSize := mt.Oti.SymbolSize
 
 	// 前向纠错参数
-	dataShards := mt.Oti.DataShards                 // Reed-Solomon
-	parityShards := mt.Oti.ParityShards             // Reed-Solomon
-	redundancyRatio := constant.SendRedundancyRatio // RaptorQ
+	dataShards := mt.Oti.DataShards      // Reed-Solomon
+	parityShards := mt.Oti.ParityShards  // Reed-Solomon
 	maxPacketSize := mt.MaxPacketSize
 
 	// 构建编码器配置
@@ -152,13 +151,13 @@ func initEncoderConfig(mt *meta.MetaPkt) encoder.EncoderConfig {
 // 路径解析：
 //
 //	尝试两种路径格式：直接文件路径和目录+文件名组合
-func InitSender(mt *meta.MetaPkt, limiter *rate.Limiter, maxConcurrentSends int) (*Sender, error) {
+func InitSender(mt *meta.MetaPkt, limiter *rate.Limiter, maxConcurrentSends int, redundancyRatio float64) (*Sender, error) {
 	inputFilePath := mt.File.SendPath
 	if _, err := os.Stat(inputFilePath); os.IsNotExist(err) {
 		inputFilePath = filepath.Join(mt.File.SendPath, mt.File.Name)
 	}
 
-	config := initEncoderConfig(mt)
+	config := initEncoderConfig(mt, redundancyRatio)
 	return NewSender(inputFilePath, config, mt.File.FdtID, mt.TotalFiles, limiter, maxConcurrentSends)
 }
 
@@ -265,6 +264,25 @@ func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, 
 		rateLimitBytesPerSec: rateBytesPerSec,
 		totalFiles:           totalFiles,
 		MaxConcurrentSends:   maxConcurrentSends,
+	}
+	// Log redundancy parameters
+	symPerChunk := (int64(config.ChunkSize) + int64(config.SymbolSize) - 1) / int64(config.SymbolSize)
+	switch config.Type {
+	case encoder.EncoderNoCode:
+		log.Printf("[Sender] fdtID(%d) FEC=NoCode, Symbol=%d, Chunk=%d, Chunks=%d, Symbols/Chunk~%d, Overhead=0%%",
+			fdtID, config.SymbolSize, config.ChunkSize, chunkCount, symPerChunk)
+	case encoder.EncoderRaptorQ:
+		overheadPct := (config.RedundancyRatio - 1.0) * 100
+		totalSym := int64(float64(symPerChunk) * config.RedundancyRatio)
+		log.Printf("[Sender] fdtID(%d) FEC=RaptorQ, Symbol=%d, Chunk=%d, Chunks=%d, Ratio=%.2f, Symbols/Chunk=%d→%d, Overhead=+%.2f%%",
+			fdtID, config.SymbolSize, config.ChunkSize, chunkCount,
+			config.RedundancyRatio, symPerChunk, totalSym, overheadPct)
+	case encoder.EncoderReedSolomon:
+		totalShards := config.DataShards + config.ParityShards
+		overheadPct := float64(config.ParityShards) / float64(config.DataShards) * 100
+		log.Printf("[Sender] fdtID(%d) FEC=ReedSolomon, Data=%d, Parity=%d, TotalShards=%d, Overhead=+%.2f%%, Symbol=%d, Chunk=%d, Chunks=%d",
+			fdtID, config.DataShards, config.ParityShards, totalShards,
+			overheadPct, config.SymbolSize, config.ChunkSize, chunkCount)
 	}
 	return sender, nil
 }
@@ -606,6 +624,53 @@ func (s *Sender) Start(ctx context.Context) error {
 		goodput := (float64(s.fileSize) * 8.0 / seconds) / 1e6
 
 		log.Printf("fdtID(%d): file size=%d, effective rate (goodput)=%.4f Mbps", s.fdtID, s.fileSize, goodput)
+		// Redundancy statistics
+		totalPackets := atomic.LoadInt64(&s.totalPackets)
+		headerBytes := totalPackets * 8
+		symbolPayload := totalBytes - headerBytes // pure symbol data, without 8-byte seq header
+		wireOverhead := totalBytes - s.fileSize
+		symOverhead := symbolPayload - s.fileSize
+		wireRatio := float64(totalBytes) / float64(s.fileSize)
+		symRatio := float64(symbolPayload) / float64(s.fileSize)
+		log.Printf("fdtID(%d): redundancy stats: packets=%d, file=%d bytes, header=%d bytes",
+			s.fdtID, totalPackets, s.fileSize, headerBytes)
+		log.Printf("fdtID(%d):   symbol layer: payload=%d bytes, ratio=%.4f, overhead=+%d bytes (+%.2f%%)",
+			s.fdtID, symbolPayload, symRatio, symOverhead, (symRatio-1.0)*100)
+		log.Printf("fdtID(%d):   wire layer:   total=%d bytes, ratio=%.4f, overhead=+%d bytes (+%.2f%%)",
+			s.fdtID, totalBytes, wireRatio, wireOverhead, (wireRatio-1.0)*100)
+
+		// FEC-specific details
+		switch s.config.Type {
+		case encoder.EncoderRaptorQ:
+			symSize := int64(s.config.SymbolSize)
+			if symSize == 0 {
+				symSize = 1
+			}
+			chunkSize := int64(s.config.ChunkSize)
+			lastChunkSize := s.fileSize % chunkSize
+			fullChunks := s.fileSize / chunkSize
+			baseSymbols := fullChunks * ((chunkSize + symSize - 1) / symSize)
+			if lastChunkSize > 0 {
+				baseSymbols += (lastChunkSize + symSize - 1) / symSize
+			}
+			totalSymWithRatio := int64(float64(baseSymbols) * s.config.RedundancyRatio)
+			log.Printf("fdtID(%d):   RaptorQ detail: baseSymbols~%d, withRatio=%d, actualSent=%d, extra=%+d",
+				s.fdtID, baseSymbols, totalSymWithRatio, totalPackets, totalPackets-int64(baseSymbols))
+		case encoder.EncoderReedSolomon:
+			totalShards := int64(s.config.DataShards + s.config.ParityShards)
+			dataSymbols := int64(s.chunkCount) * int64(s.config.DataShards)
+			expectedSymbols := int64(s.chunkCount) * totalShards
+			log.Printf("fdtID(%d):   ReedSolomon detail: dataSymbols=%d, totalShards=%d, expectedSymbols=%d, actualSent=%d",
+				s.fdtID, dataSymbols, totalShards, expectedSymbols, totalPackets)
+		case encoder.EncoderNoCode:
+			symSize := int64(s.config.SymbolSize)
+			if symSize == 0 {
+				symSize = 1
+			}
+			baseSymbols := (s.fileSize + symSize - 1) / symSize
+			log.Printf("fdtID(%d):   NoCode detail: baseSymbols=%d, actualSent=%d, overhead=0",
+				s.fdtID, baseSymbols, totalPackets)
+		}
 
 		// Memory Profile
 		var memStatsEnd runtime.MemStats
@@ -620,4 +685,18 @@ func (s *Sender) Start(ctx context.Context) error {
 		// fmt.Printf("Heap Objects Count: %v\n", memStatsEnd.HeapObjects)
 	}
 	return err
+}
+
+// fecTypeName returns human-readable name for the FEC encoder type.
+func fecTypeName(t encoder.EncoderType) string {
+	switch t {
+	case encoder.EncoderNoCode:
+		return "NoCode"
+	case encoder.EncoderRaptorQ:
+		return "RaptorQ"
+	case encoder.EncoderReedSolomon:
+		return "ReedSolomon"
+	default:
+		return "Unknown"
+	}
 }
