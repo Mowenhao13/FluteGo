@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/binary"
 	stdErrors "errors"
+	"math"
 	"fmt"
 	"log"
 	"net"
@@ -232,19 +233,17 @@ func InitReceiver(mt *meta.MetaPkt, saveDir string, enableMd5 bool) (*Receiver, 
 }
 
 // calcExpectedPackets 计算文件传输预期的总数据包数
-// 功能说明：
 //
-//	根据FEC编码类型和参数估算预期的数据包总数，用于传输完成后统计丢包率
+// 计算规则与发送端 `rq_encoder.go` 的 `Encode` 逻辑保持一致：
+//   - NoCode:   每个符号 = 1 个数据包
+//   - RaptorQ:  基符号数 × RedundancyRatio（与发送端一样用 Ceil 向上取整）
+//   - ReedSolomon: chunkCount × (DataShards + ParityShards)
 //
-// 计算规则：
-//
-//	NoCode:   ≈ ceil(fileSize/SymbolSize) — 每个符号一个数据包
-//	RaptorQ:  与NoCode类似，乘以冗余比例
-//	ReedSolomon: chunkCount × (DataShards + ParityShards) — 精确值
+// 注意：接收端只能使用配置中的 RecvRedundancyRatio 做估算，
+// 实际总包数以发送端日志为准。
 func calcExpectedPackets(config decoder.DecoderConfig, chunkCount uint32) int64 {
 	switch config.Type {
 	case decoder.DecoderReedSolomon:
-		// RS: 每个chunk固定产生 DataShards + ParityShards 个符号
 		return int64(chunkCount) * int64(config.DataShards+config.ParityShards)
 
 	case decoder.DecoderNoCode, decoder.DecoderRaptorQ:
@@ -261,27 +260,34 @@ func calcExpectedPackets(config decoder.DecoderConfig, chunkCount uint32) int64 
 			return int64(chunkCount)
 		}
 
-		// 前 N-1 个完整chunk
-		fullChunks := int64(chunkCount) - 1
-		if fullChunks < 0 {
-			fullChunks = 0
+		// 计算总基符号数（与发送端 RqEncoder 一致） = 每个完整chunk的符号数 + 最后一个chunk的符号数
+		totalBaseSymbols := int64(0)
+		for i := int64(0); i < int64(chunkCount); i++ {
+			var thisChunkSize int64
+			if i < int64(chunkCount)-1 {
+				thisChunkSize = chunkSize
+			} else {
+				// 最后一个chunk：剩余字节数
+				thisChunkSize = fileSize - i*chunkSize
+				if thisChunkSize <= 0 {
+					thisChunkSize = chunkSize
+				}
+			}
+			baseSymbols := (thisChunkSize + symSize - 1) / symSize
+			if baseSymbols <= 0 {
+				baseSymbols = 1
+			}
+			// 加冗余后向上取整（ceil），与发送端 RqEncoder.Encode 一致
+			totalSymbols := int64(math.Ceil(float64(baseSymbols) * config.RedundancyRatio))
+			if totalSymbols < int64(baseSymbols) {
+				totalSymbols = int64(baseSymbols)
+			}
+			totalBaseSymbols += totalSymbols
 		}
-		symbolsPerChunk := (chunkSize + symSize - 1) / symSize
-
-		// 最后一个chunk（可能不完整）
-		lastChunkSize := fileSize - fullChunks*chunkSize
-		if lastChunkSize <= 0 {
-			lastChunkSize = chunkSize
+		if totalBaseSymbols <= 0 {
+			return int64(chunkCount)
 		}
-		symbolsLastChunk := (lastChunkSize + symSize - 1) / symSize
-
-		expected := fullChunks*symbolsPerChunk + symbolsLastChunk
-
-			expected = int64(float64(expected) * config.RedundancyRatio)
-		if expected <= 0 {
-			expected = int64(chunkCount)
-		}
-		return expected
+		return totalBaseSymbols
 
 	default:
 		return int64(chunkCount)
