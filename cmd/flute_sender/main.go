@@ -95,6 +95,7 @@ func main() {
 	sendFileDirFlag := flag.String("send-file-dir", "cmd/send_files/", "Directory for sent files")
 	sendRedundancyRatioFlag := flag.Float64("send-redundancy-ratio", 1.05, "Redundancy ratio")
 	rateLimitMbpsFlag := flag.Int("rate-limit-mbps", 500, "Rate limit in Mbps")
+	percentageFlag := flag.Int("percentage", 100, "Send percentage of total data (1-100, for loss recovery testing)")
 	startSendWaitFlag := flag.Int("start-send-wait", 1, "Seconds to wait before sending")
 	csvFlag := flag.Bool("csv", false, "Save transfer results to CSV file alongside the sent file")
 	flag.Parse()
@@ -102,7 +103,7 @@ func main() {
 	if *cliMode {
 	runCLISender(*destIPFlag, *filePathFlag, *fecTypeFlag, uint8(*fdtIDFlag),
 			*maxPacketSizeFlag, *baseFilePortFlag, *metaPortFlag, *numPortsFlag,
-			*sendFileDirFlag, *sendRedundancyRatioFlag, *rateLimitMbpsFlag, *startSendWaitFlag,
+			*sendFileDirFlag, *sendRedundancyRatioFlag, *rateLimitMbpsFlag, *percentageFlag, *startSendWaitFlag,
 			*csvFlag)
 		return
 	}
@@ -351,7 +352,7 @@ func senderFECTypeName(id uint8) string {
 func runCLISender(destIP, filePath, fecType string, fid uint8,
 	maxPacketSize, baseFilePort, metaPort, numPorts int,
 	sendFileDir string, sendRedundancyRatio float64,
-	rateLimitMbps, startSendWait int, csvEnabled bool) {
+	rateLimitMbps, percentage, startSendWait int, csvEnabled bool) {
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("[CLI] ===== Sender CLI Mode =====")
@@ -467,6 +468,12 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 	s, sErr := sender.NewSender(filePath, config, fid, 1, limiter, runtime.NumCPU())
 	if sErr != nil {
 		log.Fatalf("[CLI] Failed to create sender: %v", sErr)
+	}
+
+	// 设置发送百分比（用于丢包恢复测试）
+	s.SetSendPercentage(int32(percentage))
+	if percentage != 100 {
+		log.Printf("[CLI] Percentage mode: sending %d%% of total data (simulating %.0f%% loss)", percentage, 100.0-float64(percentage))
 	}
 
 	// Progress callback - print at every percent change

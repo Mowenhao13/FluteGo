@@ -70,7 +70,7 @@ const (
 	HEALTH_CHECK_INTERVAL      = 10 // in seconds
 	IDLE_SENDER_CHECK_INTERVAL = 5  // in seconds
 	IDLE_SENDER_TIMEOUT        = 60 // in seconds
-	IDLE_DATA_TIMEOUT          = 5 // in seconds，接收端无数据超时
+	IDLE_DATA_TIMEOUT          = 10 // in seconds，接收端无数据超时
 
 	META_PORT = 3399
 	POOL_SEND = 0

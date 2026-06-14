@@ -70,10 +70,18 @@ type Sender struct {
 	onProgress           func(int64)
 	MaxConcurrentSends   int
 	fatalSendErr         int32 // 原子标记：发送遇到致命错误
+	maxWireBytes  int64   // 最大发送字节数（基于百分比计算，0=不限制）
+	sendPercentage    int32   // 发送百分比（1-100），用于丢包恢复测试
 	CSVEnabled           bool
 }
 
 // SetProgressCallback 设置进度回调函数
+
+// SetSendPercentage 设置发送百分比，用于模拟丢包恢复测试
+// percentage: 1-100，发送总数据量的百分比
+func (s *Sender) SetSendPercentage(pct int32) {
+	s.sendPercentage = pct
+}
 func (s *Sender) SetProgressCallback(cb func(int64)) {
 	s.onProgress = cb
 }
@@ -386,6 +394,12 @@ func (s *Sender) processSendTask(sck *sock.MsSocket, bufPool *sync.Pool, task se
 	// 更新统计信息
 	atomic.AddInt64(&s.totalPackets, 1)
 	sent := atomic.AddInt64(&s.totalSent, int64(len(buf)))
+		// percentage 限流：达到目标发送量后停止
+		if s.maxWireBytes > 0 && sent >= s.maxWireBytes {
+			log.Printf("fdtID(%d): reached send percentage limit (%d/%d bytes), stopping", s.fdtID, sent, s.maxWireBytes)
+			atomic.StoreInt32(&s.fatalSendErr, 1)
+			return
+		}
 	if s.onProgress != nil {
 		s.onProgress(sent)
 	}
@@ -486,6 +500,14 @@ func (s *Sender) Start(ctx context.Context) error {
 
 	// 启动保活协程，防止在准备阶段或发送间隙连接被回收
 	// 特别是对于第二个文件，连接可能已经处于空闲监控状态
+
+	// 根据 percentage 计算最大发送字节数（用于丢包恢复测试）
+	totalWireBytes := s.GetTotalBytesToSend()
+	if s.sendPercentage > 0 && s.sendPercentage < 100 {
+		s.maxWireBytes = totalWireBytes * int64(s.sendPercentage) / 100
+		log.Printf("fdtID(%d): percentage=%d%%, maxWireBytes=%d/%d", s.fdtID, s.sendPercentage, s.maxWireBytes, totalWireBytes)
+	}
+
 	keepAliveStop := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)

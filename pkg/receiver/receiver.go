@@ -695,10 +695,17 @@ func (r *Receiver) Start(ctx context.Context) error {
 				last := atomic.LoadInt64(&r.lastDataTime)
 				// 场景1：数据传输中但中途停止 → lastDataTime 不再更新 → 15s后超时
 				if last > 0 && time.Since(time.Unix(last, 0)) > idleTimeout {
-					log.Printf("fdtID(%d): data idle timeout (%ds), finishing receive", r.fdtID, constant.IDLE_DATA_TIMEOUT)
-					// 标记超时，防止 OnComplete 报告虚假成功
+					got := atomic.LoadInt64(&r.currWritten)
+					chunks := atomic.LoadUint32(&r.finishedChunks)
+					// 先检查文件是否已完全解码（RaptorQ 解码可能滞后于收包）
+					// 如果所有 chunk 都已解码写入，报告完成而非超时
+					if chunks >= r.expectedChunks || got >= int64(r.config.FileSize) {
+						log.Printf("fdtID(%d): idle, all chunks decoded (%d/%d, %d/%d bytes)\n", r.fdtID, chunks, r.expectedChunks, got, int64(r.config.FileSize))
+						r.closeOnce.Do(func() { close(r.finishChan) })
+						return
+					}
+					log.Printf("fdtID(%d): DATA IDLE TIMEOUT (%ds) — received %d/%d bytes (%.1f%%), %d/%d chunks", r.fdtID, constant.IDLE_DATA_TIMEOUT, got, int64(r.config.FileSize), float64(got)*100/float64(int64(r.config.FileSize)), chunks, r.expectedChunks)
 					r.MarkTimedOut()
-					// 写入 CSV 统计
 					stats := r.CollectStats("timeout")
 					go WriteTransferCSV(r.saveDir, stats)
 					r.closeOnce.Do(func() { close(r.finishChan) })

@@ -21,7 +21,6 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // ReceiverSystem 接收端系统
@@ -57,6 +56,7 @@ type ReceiverSystem struct {
 	DestIP       string
 	SaveDir      string
 	saveDirMu    sync.RWMutex // protects SaveDir for concurrent reads/writes
+	slotMu       sync.Mutex   // protects slot cleanup from concurrent starts
 
 	// OnMetaReceived is an optional callback invoked once per unique FdtID when
 	// a MetaPkt is accepted. Set this before calling StartMetaProgram.
@@ -515,7 +515,12 @@ func (s *ReceiverSystem) processMeta(mainCtx context.Context, metaPkt *meta.Meta
 	s.wg.Add(1)
 	go func(ctx context.Context, task *meta.MetaPkt) {
 		defer s.wg.Done()
-		defer func() { <-s.workerPool; log.Printf("[processMeta] fdtID=%d: released workerPool slot", task.File.FdtID) }()
+		defer func() {
+			s.slotMu.Lock()
+			<-s.workerPool
+			s.slotMu.Unlock()
+			log.Printf("[processMeta] fdtID=%d: released workerPool slot", task.File.FdtID)
+		}()
 		defer s.targets.Delete(task.File.FdtID) // 传输完成后释放 FDT ID 槽位
 
 		atomic.AddInt32(&s.activeReceivers, 1)
@@ -523,10 +528,6 @@ func (s *ReceiverSystem) processMeta(mainCtx context.Context, metaPkt *meta.Meta
 
 		log.Printf("[processMeta] goroutine started for fdtID=%d", task.File.FdtID)
 		s.runReceiver(ctx, task)
-
-		// 传输间 2s 冷却，避免连续发送导致干扰
-		time.Sleep(2 * time.Second)
-
 		log.Printf("[processMeta] goroutine finished for fdtID=%d", task.File.FdtID)
 	}(mainCtx, metaPkt)
 }
