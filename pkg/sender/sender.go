@@ -69,6 +69,7 @@ type Sender struct {
 	sentChunkBytes       int64
 	onProgress           func(int64)
 	MaxConcurrentSends   int
+	fatalSendErr         int32 // 原子标记：发送遇到致命错误
 	CSVEnabled           bool
 }
 
@@ -368,6 +369,7 @@ func (s *Sender) processSendTask(sck *sock.MsSocket, bufPool *sync.Pool, task se
 	if _, err := sck.Socket.WriteToUDP(buf, sck.Addr); err != nil {
 		log.Printf("write failed: chunk %d symbol %d: %v", chunkIdx, symbolID, err)
 		bufPool.Put(buf[:cap(buf)])
+		atomic.StoreInt32(&s.fatalSendErr, 1) // 标记致命错误
 		return
 	}
 	// 标记连接已使用
@@ -588,6 +590,11 @@ func (s *Sender) Start(ctx context.Context) error {
 		buf = buf[:needed]
 		copy(buf[8:], symbolData)
 
+		// 发生致命错误时停止编码，防止空转
+		if atomic.LoadInt32(&s.fatalSendErr) == 1 {
+			bufPool.Put(buf[:cap(buf)])
+			return fmt.Errorf("fatal send error")
+		}
 		// 发送到通道
 		select {
 		case taskChan <- sendTask{chunkIdx: chunkIdx, symbolID: symbolID, buf: buf}:
