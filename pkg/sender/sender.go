@@ -366,7 +366,7 @@ type sendTask struct {
 }
 
 // processSendTask 异步处理发送任务
-func (s *Sender) processSendTask(sck *sock.MsSocket, bufPool *sync.Pool, task sendTask) {
+func (s *Sender) processSendTask(sck *sock.MsSocket, bufPool *sync.Pool, task sendTask, rng *rand.Rand) {
 	buf := task.buf
 	chunkIdx := task.chunkIdx
 	symbolID := task.symbolID
@@ -377,7 +377,7 @@ func (s *Sender) processSendTask(sck *sock.MsSocket, bufPool *sync.Pool, task se
 
 	binary.BigEndian.PutUint64(buf[:8], seqNum)
 	// 随机丢包：按 dropRatio 概率跳过发送
-	if s.dropRatio > 0 && rand.Float64() < s.dropRatio {
+	if s.dropRatio > 0 && rng.Float64() < s.dropRatio {
 		bufPool.Put(buf[:cap(buf)])
 		return
 	}
@@ -538,13 +538,15 @@ func (s *Sender) Start(ctx context.Context) error {
 	var wgSender sync.WaitGroup
 	wgSender.Add(workerCount)
 	for i := 0; i < workerCount; i++ {
+		// 每个 worker 独立随机源，避免全局 rand 锁竞争导致分布不均
+		rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(i)))
 		// 启动发送工作协程
-		go func() {
+		go func(rng *rand.Rand) {
 			defer wgSender.Done()
 			for task := range taskChan {
-				s.processSendTask(conn, bufPool, task)
+				s.processSendTask(conn, bufPool, task, rng)
 			}
-		}()
+		}(rng)
 	}
 
 	// 移除 mmap，改用直接文件读取
