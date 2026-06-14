@@ -214,10 +214,12 @@ func (r *RqDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 		}
 
 		if success {
-			// log.Printf("chunk %d 解码成功! 接收符号数: %d/%d",
-			// 	chunkIdx, dec.received, dec.expected)
+				if dec.received > int(dec.expected) {
+					extra := dec.received - int(dec.expected)
+					log.Printf("RaptorQ recovery: chunk %d decoded with %d extra symbols (received %d/%d)",
+						chunkIdx, extra, dec.received, dec.expected)
+				}
 
-			// Offset calculation must use the fixed ChunkSize, not the current chunk's size (which might be smaller for the last chunk)
 			offset := int64(chunkIdx) * int64(r.Config.ChunkSize)
 			r.output.OnDecodedData(result, offset, chunkIdx)
 
@@ -229,7 +231,8 @@ func (r *RqDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 			// 注意：不删除已解码完成 decoder，保留 decoded=true 标记
 			atomic.AddUint32(&r.DecoderCnt, ^uint32(0))
 		} else {
-			log.Printf("chunk %d 解码尝试失败，继续接收符号...", chunkIdx)
+			log.Printf("RaptorQ recovery FAILED: chunk %d decode failed (received %d/%d symbols, need >=%d to retry)",
+				chunkIdx, dec.received, dec.expected, dec.expected)
 		}
 	}
 

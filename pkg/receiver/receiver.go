@@ -935,6 +935,19 @@ func (r *Receiver) Close() {
 	close(r.dataChan)
 	r.writerWg.Wait()
 
+	// Recovery summary — prints for ALL completion paths (success / timeout / error)
+	chunks := atomic.LoadUint32(&r.finishedChunks)
+	if r.expectedChunks > 0 {
+		if chunks >= r.expectedChunks {
+			extra := chunks - r.expectedChunks
+			log.Printf("fdtID(%d): recovery SUMMARY: chunks %d/%d written (+%d via RaptorQ), file reassembled successfully",
+				r.fdtID, chunks, r.expectedChunks, extra)
+		} else {
+			log.Printf("fdtID(%d): recovery FAILED: chunks %d/%d written (%d missing), FILE INCOMPLETE — no symbols received for %d chunks",
+				r.fdtID, chunks, r.expectedChunks, r.expectedChunks-chunks, r.expectedChunks-chunks)
+		}
+	}
+
 	// 关闭解码器
 	if r.decoder != nil {
 		r.decoder.Close()

@@ -22,8 +22,8 @@ func newWinIOHandler(msck *sock.MsSocket, maxPacketSize int) (IOHandler, error) 
 	var sck windows.Handle
 	sck = windows.Handle(msck.Socket.Socket())
 	// Use 2 workers per socket — GQCS is a blocking syscall so each worker
-	// consumes a full OS thread regardless of GOMAXPROCS.  With multiple
-	// concurrent sockets this keeps total thread count manageable.
+	// consumes a full OS thread regardless of GOMAXPROCS. 2 balances throughput
+	// vs thread count for concurrent multi-socket transfers.
 	server, err := iocp.NewIOCPServer(sck, maxPacketSize, 2, 16384)
 	if err != nil {
 		return nil, err

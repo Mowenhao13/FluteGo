@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -69,18 +70,21 @@ type Sender struct {
 	sentChunkBytes       int64
 	onProgress           func(int64)
 	MaxConcurrentSends   int
-	fatalSendErr         int32 // 原子标记：发送遇到致命错误
-	maxWireBytes  int64   // 最大发送字节数（基于百分比计算，0=不限制）
-	sendPercentage    int32   // 发送百分比（1-100），用于丢包恢复测试
+	fatalSendErr         int32   // 原子标记：发送遇到致命错误
+	dropRatio  float64 // 随机丢包比例 (0.0-1.0)，0=不丢，0.09=丢9%
 	CSVEnabled           bool
 }
 
 // SetProgressCallback 设置进度回调函数
 
-// SetSendPercentage 设置发送百分比，用于模拟丢包恢复测试
-// percentage: 1-100，发送总数据量的百分比
+// SetSendPercentage 设置发送百分比，用于模拟随机丢包恢复测试。
+// percentage: 1-100，实际发送数据包的比例。若传入 91，则有 9% 的概率丢弃每个包。
 func (s *Sender) SetSendPercentage(pct int32) {
-	s.sendPercentage = pct
+	if pct >= 100 || pct <= 0 {
+		s.dropRatio = 0
+	} else {
+		s.dropRatio = 1.0 - float64(pct)/100.0
+	}
 }
 func (s *Sender) SetProgressCallback(cb func(int64)) {
 	s.onProgress = cb
@@ -372,10 +376,15 @@ func (s *Sender) processSendTask(sck *sock.MsSocket, bufPool *sync.Pool, task se
 	seqNum = (uint64(chunkIdx) << 32) | uint64(symbolID)
 
 	binary.BigEndian.PutUint64(buf[:8], seqNum)
+	// 随机丢包：按 dropRatio 概率跳过发送
+	if s.dropRatio > 0 && rand.Float64() < s.dropRatio {
+		bufPool.Put(buf[:cap(buf)])
+		return
+	}
 
 	// 发送数据
 	if _, err := sck.Socket.WriteToUDP(buf, sck.Addr); err != nil {
-		log.Printf("write failed: chunk %d symbol %d: %v", chunkIdx, symbolID, err)
+			log.Printf("write failed: chunk %d symbol %d: %v", chunkIdx, symbolID, err)
 		bufPool.Put(buf[:cap(buf)])
 		atomic.StoreInt32(&s.fatalSendErr, 1) // 标记致命错误
 		return
@@ -394,12 +403,6 @@ func (s *Sender) processSendTask(sck *sock.MsSocket, bufPool *sync.Pool, task se
 	// 更新统计信息
 	atomic.AddInt64(&s.totalPackets, 1)
 	sent := atomic.AddInt64(&s.totalSent, int64(len(buf)))
-		// percentage 限流：达到目标发送量后停止
-		if s.maxWireBytes > 0 && sent >= s.maxWireBytes {
-			log.Printf("fdtID(%d): reached send percentage limit (%d/%d bytes), stopping", s.fdtID, sent, s.maxWireBytes)
-			atomic.StoreInt32(&s.fatalSendErr, 1)
-			return
-		}
 	if s.onProgress != nil {
 		s.onProgress(sent)
 	}
@@ -501,11 +504,9 @@ func (s *Sender) Start(ctx context.Context) error {
 	// 启动保活协程，防止在准备阶段或发送间隙连接被回收
 	// 特别是对于第二个文件，连接可能已经处于空闲监控状态
 
-	// 根据 percentage 计算最大发送字节数（用于丢包恢复测试）
-	totalWireBytes := s.GetTotalBytesToSend()
-	if s.sendPercentage > 0 && s.sendPercentage < 100 {
-		s.maxWireBytes = totalWireBytes * int64(s.sendPercentage) / 100
-		log.Printf("fdtID(%d): percentage=%d%%, maxWireBytes=%d/%d", s.fdtID, s.sendPercentage, s.maxWireBytes, totalWireBytes)
+	// 随机丢包模式：记录 drop 比例用于日志
+	if s.dropRatio > 0 {
+		log.Printf("fdtID(%d): random drop mode enabled, dropRatio=%.2f (send ≈ %.0f%%)", s.fdtID, s.dropRatio, (1.0-s.dropRatio)*100)
 	}
 
 	keepAliveStop := make(chan struct{})
