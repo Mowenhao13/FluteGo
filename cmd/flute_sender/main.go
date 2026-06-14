@@ -158,11 +158,15 @@ func main() {
 		p := globalPool
 		poolMu.Unlock()
 
-		// Save uploaded data to sendFileDir.
+		// Save uploaded data to sendFileDir（唯一文件名防并发截断）
 		if err := os.MkdirAll(cfg.Sender.SendFileDir, 0755); err != nil {
 			return 0, fmt.Errorf("cannot create upload dir: %w", err)
 		}
-		savePath := filepath.Join(cfg.Sender.SendFileDir, filepath.Base(fileName))
+		// 先用原子递增拿到 fid，用作唯一文件名后缀
+		fid := uint8(nextFdtID.Add(1))
+		baseName := filepath.Base(fileName)
+		savePath := filepath.Join(cfg.Sender.SendFileDir,
+			fmt.Sprintf("%s_f%d_%d", baseName, fid, time.Now().UnixNano()))
 		f, err := os.Create(savePath)
 		if err != nil {
 			return 0, fmt.Errorf("cannot create file: %w", err)
@@ -179,8 +183,7 @@ func main() {
 			return 0, fmt.Errorf("cannot open saved file: %w", err)
 		}
 
-		// Allocate fdtID and port range atomically.
-		fid := uint8(nextFdtID.Add(1))
+		// Port range atomically allocated (fid already allocated above).
 		portBase := int(nextPort.Add(int32(cfg.Network.NumPorts))) - cfg.Network.NumPorts
 
 		// Build OTI.
