@@ -399,10 +399,9 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 //   - 依赖操作系统页缓存提高写入性能
 //   - 对象池复用减少内存分配
 func (r *Receiver) startWriterLoop() {
-	workers := runtime.NumCPU()
-	if workers < 2 {
-		workers = 2
-	}
+	// Single writer — the buffered write channel (2560) absorbs peaks.
+	// Multiple concurrent WriteAt to the same file causes handle races on close.
+	workers := 1
 	// log.Printf("Starting %d writer workers", workers)
 	for i := 0; i < workers; i++ {
 		r.writerWg.Add(1)
@@ -789,7 +788,9 @@ func (r *Receiver) readLoop(ctx context.Context, msck *sock.MsSocket) error {
 
 	// 启动消费者协程处理数据
 	// 消费者负责解码，计算量大，但过多会导致上下文切换开销
-	consumerCount := runtime.NumCPU()
+	// 使用固定小值（2）而非 NumCPU() × socket 数量，避免高并发时
+	// 大量 goroutine 空转轮询产生调度压力。
+	consumerCount := 2
 	// if consumerCount < 4 {
 	// 	consumerCount = 4
 	// }

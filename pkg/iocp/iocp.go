@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/puzpuzpuz/xsync/v3"
@@ -190,13 +191,23 @@ func (s *IOCPServer) ReturnContext(ctx *IOContext) {
 			return
 		}
 
-		// 忽略连接重置错误 (WSAECONNRESET)，这在 UDP 中可能发生（ICMP Port Unreachable）
-		// 必须重试，否则会丢失 Context 导致接收缓冲区耗尽
-		// 增加重试次数限制，防止死循环
+	// WSAECONNRESET in UDP means ICMP Port Unreachable. Retry with exponential backoff.
+		// Must retry to avoid losing contexts and draining the receive pool.
+		// Limited retries with backoff to prevent infinite loops under sustained errors.
 		if errors.Is(err, windows.WSAECONNRESET) {
-			// 简单的指数退避或让出时间片
-			runtime.Gosched()
-			continue
+			const maxRetries = 10
+			for i := 0; i < maxRetries; i++ {
+				backoff := time.Duration(1<<i) * time.Microsecond
+				if backoff > time.Millisecond {
+					backoff = time.Millisecond
+				}
+				time.Sleep(backoff)
+				if serr := s.postRecv(ctx); serr == nil {
+					return
+				}
+			}
+			log.Printf("Repost failed after %d WSAECONNRESET retries, dropping context", maxRetries)
+			return
 		}
 
 		// 其他错误，记录日志并丢弃 Context (防止死循环)
