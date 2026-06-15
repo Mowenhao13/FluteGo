@@ -3,10 +3,12 @@ package main
 import (
 	"FluteGo/pkg/apiserver"
 	"FluteGo/pkg/config"
+	"FluteGo/pkg/receiver"
 	"FluteGo/pkg/system"
 	"FluteGo/pkg/utils"
 	"FluteGo/pkg/web"
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -50,6 +52,10 @@ func defaultDownloadsDir() string {
 
 func main() {
 	runtime.GOMAXPROCS(8)
+
+	csvFlag := flag.Bool("csv", false, "Save transfer results to CSV file")
+	flag.Parse()
+
 	cfg, err := config.Load("config_receiver.json")
 	if err != nil {
 		log.Printf("[config] load error: %v, using defaults", err)
@@ -73,6 +79,12 @@ func main() {
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Println("Starting Receiver System...")
+
+	// Enable CSV if --csv flag is set
+	if *csvFlag {
+		receiver.CsvEnabled = true
+		log.Println("[csv] CSV logging enabled")
+	}
 
 	// 1. Initialize System.
 	sys, err := system.InitReceiverSystem(0, destIP, saveFileDir, true)
