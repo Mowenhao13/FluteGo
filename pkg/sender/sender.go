@@ -714,7 +714,7 @@ func (s *Sender) Start(ctx context.Context) error {
 			csvDir := filepath.Dir(s.config.FName)
 			csvPath := filepath.Join(csvDir, "sender_performance.csv")
 			writeSendCSV(
-				csvPath,
+				csvPath, (1.0-s.dropRatio)*100,
 				s.fdtID, fecTypeName(s.config.Type), filepath.Base(s.config.FName),
 				s.fileSize, s.config.ChunkSize, s.config.SymbolSize, s.chunkCount,
 				s.config.RedundancyRatio,
@@ -756,7 +756,7 @@ func fecTypeName(t encoder.EncoderType) string {
 
 // writeSendCSV appends a single sender performance record to the CSV file,
 // creating the file with a header row if it does not exist yet.
-func writeSendCSV(csvPath string,
+func writeSendCSV(csvPath string, sendPct float64,
 	fdtID uint8, fecType string, fileName string, fileSize int64,
 	chunkSize uint32, symbolSize uint16, chunks uint32, configRatio float64,
 	sendEnd time.Time, dur time.Duration, throughputMbps float64, goodputMbps float64,
@@ -782,7 +782,7 @@ func writeSendCSV(csvPath string,
 	if needHeader {
 		w.Write([]string{
 			"Timestamp", "FdtID", "FEC", "FileName", "FileSize",
-			"ChunkSize", "SymbolSize", "Chunks", "ConfigRatio",
+			"ChunkSize", "SymbolSize", "Chunks", "ConfigRatio", "SendPercentage",
 			"DurationSec", "ThroughputMbps", "GoodputMbps",
 			"TotalPackets", "TotalBytes", "HeaderBytes", "SymbolPayload",
 			"SymRatio", "WireRatio", "SymOverheadBytes", "WireOverheadBytes",
@@ -800,6 +800,7 @@ func writeSendCSV(csvPath string,
 		strconv.Itoa(int(symbolSize)),
 		strconv.FormatUint(uint64(chunks), 10),
 		strconv.FormatFloat(configRatio, 'f', 2, 64),
+			strconv.FormatFloat(sendPct, 'f', 1, 64),
 		strconv.FormatFloat(dur.Seconds(), 'f', 6, 64),
 		strconv.FormatFloat(throughputMbps, 'f', 4, 64),
 		strconv.FormatFloat(goodputMbps, 'f', 4, 64),

@@ -9,9 +9,10 @@ import (
 	"runtime"
 	"sync/atomic"
 	"time"
+
+	"FluteGo/pkg/decoder"
 )
 
-// CSVHeader is the header row written once when the CSV file is first created.
 var CSVHeader = []string{
 	"timestamp",
 	"fdt_id",
@@ -23,6 +24,8 @@ var CSVHeader = []string{
 	"max_packet_size",
 	"chunks_completed",
 	"expected_chunks",
+	"chunks_recovered",
+	"chunks_missing",
 	"duration_sec",
 	"bytes_received",
 	"throughput_mbps",
@@ -39,37 +42,35 @@ var CSVHeader = []string{
 	"status",
 }
 
-// TransferStats holds all the statistics collected at the end of a transfer.
 type TransferStats struct {
-	Timestamp      time.Time
-	FdtID          uint8
-	FECType        string
-	FileName       string
-	FileSize       uint64
-	SymbolSize     uint16
-	ChunkSize      uint32
-	MaxPacketSize  uint16
-	ChunksFinished uint32
-	ExpectedChunks uint32
-	Duration       time.Duration
-	BytesReceived  int64
-	ThroughputMbps float64
-	PacketsRecv    int64
-	ExpectedPkts   int64
-	PacketRatio    float64
-	MemTotalAlloc  uint64
-	MemPeakHeap    uint64
-	MemSys         uint64
-	MemHeapIdle    uint64
-	GCCount        uint32
-	MallocCount    uint64
-	HeapObjects    uint64
-	Status         string // "completed", "timeout", "incomplete"
+	Timestamp       time.Time
+	FdtID           uint8
+	FECType         string
+	FileName        string
+	FileSize        uint64
+	SymbolSize      uint16
+	ChunkSize       uint32
+	MaxPacketSize   uint16
+	ChunksFinished  uint32
+	ExpectedChunks  uint32
+	ChunksRecovered uint32
+	ChunksMissing   uint32
+	Duration        time.Duration
+	BytesReceived   int64
+	ThroughputMbps  float64
+	PacketsRecv     int64
+	ExpectedPkts    int64
+	PacketRatio     float64
+	MemTotalAlloc   uint64
+	MemPeakHeap     uint64
+	MemSys          uint64
+	MemHeapIdle     uint64
+	GCCount         uint32
+	MallocCount     uint64
+	HeapObjects     uint64
+	Status          string
 }
 
-// CollectStats gathers all transfer statistics from the receiver into a
-// TransferStats struct. It should be called inside closeOnce or from the
-// idle timeout goroutine (after the transfer has finished or timed out).
 func (r *Receiver) CollectStats(status string) TransferStats {
 	var memStatsEnd runtime.MemStats
 	runtime.ReadMemStats(&memStatsEnd)
@@ -94,11 +95,11 @@ func (r *Receiver) CollectStats(status string) TransferStats {
 
 	var fecType string
 	switch r.config.Type {
-	case 0: // DecoderNoCode
+	case 0:
 		fecType = "NoCode"
-	case 1: // DecoderRaptorQ
+	case 1:
 		fecType = "RaptorQ"
-	case 2: // DecoderReedSolomon
+	case 2:
 		fecType = "ReedSolomon"
 	default:
 		fecType = "Unknown"
@@ -109,35 +110,41 @@ func (r *Receiver) CollectStats(status string) TransferStats {
 		pktRatio = float64(receivedPkts) / float64(r.expectedPackets) * 100
 	}
 
+	var recovered uint32
+	if rq, ok := r.decoder.(*decoder.RqDecoder); ok {
+		recovered = rq.GetRecoveredCount()
+	}
+
 	return TransferStats{
-		Timestamp:      time.Now(),
-		FdtID:          r.fdtID,
-		FECType:        fecType,
-		FileName:       filepath.Base(r.outputPath),
-		FileSize:       r.config.FileSize,
-		SymbolSize:     r.config.SymbolSize,
-		ChunkSize:      r.config.ChunkSize,
-		MaxPacketSize:  r.config.MaxPacketSize,
-		ChunksFinished: finished,
-		ExpectedChunks: r.expectedChunks,
-		Duration:       dur,
-		BytesReceived:  bytesWritten,
-		ThroughputMbps: mbps,
-		PacketsRecv:    receivedPkts,
-		ExpectedPkts:   r.expectedPackets,
-		PacketRatio:    pktRatio,
-		MemTotalAlloc:  memStatsEnd.TotalAlloc - r.memStatsStart.TotalAlloc,
-		MemPeakHeap:    memStatsEnd.HeapAlloc,
-		MemSys:         memStatsEnd.Sys,
-		MemHeapIdle:    memStatsEnd.HeapIdle,
-		GCCount:        memStatsEnd.NumGC - r.memStatsStart.NumGC,
-		MallocCount:    memStatsEnd.Mallocs - r.memStatsStart.Mallocs,
-		HeapObjects:    memStatsEnd.HeapObjects,
-		Status:         status,
+		Timestamp:       time.Now(),
+		FdtID:           r.fdtID,
+		FECType:         fecType,
+		FileName:        filepath.Base(r.outputPath),
+		FileSize:        r.config.FileSize,
+		SymbolSize:      r.config.SymbolSize,
+		ChunkSize:       r.config.ChunkSize,
+		MaxPacketSize:   r.config.MaxPacketSize,
+		ChunksFinished:  finished,
+		ExpectedChunks:  r.expectedChunks,
+		ChunksRecovered: recovered,
+		ChunksMissing:   r.expectedChunks - finished,
+		Duration:        dur,
+		BytesReceived:   bytesWritten,
+		ThroughputMbps:  mbps,
+		PacketsRecv:     receivedPkts,
+		ExpectedPkts:    r.expectedPackets,
+		PacketRatio:     pktRatio,
+		MemTotalAlloc:   memStatsEnd.TotalAlloc - r.memStatsStart.TotalAlloc,
+		MemPeakHeap:     memStatsEnd.HeapAlloc,
+		MemSys:          memStatsEnd.Sys,
+		MemHeapIdle:     memStatsEnd.HeapIdle,
+		GCCount:         memStatsEnd.NumGC - r.memStatsStart.NumGC,
+		MallocCount:     memStatsEnd.Mallocs - r.memStatsStart.Mallocs,
+		HeapObjects:     memStatsEnd.HeapObjects,
+		Status:          status,
 	}
 }
 
-// toCSVRow converts TransferStats to a slice of strings for CSV writing.
 func (s TransferStats) toCSVRow() []string {
 	return []string{
 		s.Timestamp.Format("2006-01-02 15:04:05.000000"),
@@ -150,6 +157,8 @@ func (s TransferStats) toCSVRow() []string {
 		fmt.Sprintf("%d", s.MaxPacketSize),
 		fmt.Sprintf("%d", s.ChunksFinished),
 		fmt.Sprintf("%d", s.ExpectedChunks),
+		fmt.Sprintf("%d", s.ChunksRecovered),
+		fmt.Sprintf("%d", s.ChunksMissing),
 		fmt.Sprintf("%.6f", s.Duration.Seconds()),
 		fmt.Sprintf("%d", s.BytesReceived),
 		fmt.Sprintf("%.4f", s.ThroughputMbps),
@@ -167,16 +176,12 @@ func (s TransferStats) toCSVRow() []string {
 	}
 }
 
-// WriteTransferCSV writes a transfer statistics record to a CSV file.
-// The CSV file is created in saveDir. If the file does not exist, a header
-// row is written first.
 func WriteTransferCSV(saveDir string, stats TransferStats) {
 	if saveDir == "" {
 		saveDir = "."
 	}
 	csvPath := filepath.Join(saveDir, "transfer_stats.csv")
 
-	// Check if file already exists (to decide whether to write header)
 	writeHeader := false
 	if _, err := os.Stat(csvPath); os.IsNotExist(err) {
 		writeHeader = true
