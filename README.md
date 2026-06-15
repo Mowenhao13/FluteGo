@@ -121,6 +121,40 @@ Both sender and receiver support a CLI mode (`--cli` flag) that bypasses config 
 - 实际测试中因为丢包的随机分布，有时即使理论符号数足够也可能解码失败（关键符号集中丢失）。
 - 大文件（1GB+）比小文件更容易恢复成功，因为丢包分散在更多 chunk 上，每个 chunk 丢包概率更低。
 
+## 编译命令
+
+### 一键编译所有平台
+
+```bash
+# 发送端
+GOOS=darwin GOARCH=amd64 go build -o release/flute_sender_darwin_amd64 ./cmd/flute_sender/
+GOOS=darwin GOARCH=arm64 go build -o release/flute_sender_darwin_arm64 ./cmd/flute_sender/
+GOOS=windows GOARCH=amd64 go build -o release/flute_sender_windows_amd64.exe ./cmd/flute_sender/
+
+# 接收端
+GOOS=darwin GOARCH=amd64 go build -o release/flute_receiver_darwin_amd64 ./cmd/flute_receiver/
+GOOS=darwin GOARCH=arm64 go build -o release/flute_receiver_darwin_arm64 ./cmd/flute_receiver/
+GOOS=windows GOARCH=amd64 go build -o release/flute_receiver_windows_amd64.exe ./cmd/flute_receiver/
+```
+
+### 编译说明
+
+| 平台 | GOOS | GOARCH | 输出文件名 |
+|------|------|--------|-----------|
+| macOS Intel | `darwin` | `amd64` | `flute_sender_darwin_amd64` / `flute_receiver_darwin_amd64` |
+| macOS Apple Silicon (M1/M2/M3/M4) | `darwin` | `arm64` | `flute_sender_darwin_arm64` / `flute_receiver_darwin_arm64` |
+| Windows 64-bit | `windows` | `amd64` | `flute_sender_windows_amd64.exe` / `flute_receiver_windows_amd64.exe` |
+
+### 编译当前平台
+
+```bash
+# 直接编译（默认当前平台）
+go build -o flute_sender ./cmd/flute_sender/
+go build -o flute_receiver ./cmd/flute_receiver/
+```
+
+编译产物统一输出到 `release/` 目录，方便分发。
+
 ## 性能测试
 
 两种测试场景：
