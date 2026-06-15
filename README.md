@@ -5,6 +5,12 @@
 
 - Protocol inspiration: [ypo/flute](https://github.com/ypo/flute) - FLUTE implementation in Rust
 
+## Usage example
+
+![alt text](image.png)
+
+![alt text](image_1.png)
+
 ## RFC
 This library implements the following RFCs 
 
@@ -36,60 +42,15 @@ sequenceDiagram
     FR->>FR: Data Receiving Completed<br/>Close Port
 ```
 
-<!-- ## Initialization
-### Network interface configuration (Linux)
-#### Receiver
-```zsh
-# Clear ARP table
-sudo ip neighbor flush dev <recv_interface>
-# Add IP address
-sudo ip addr add <receiver_ip> dev <recv_interface>
-# Enable network interface (if not already enabled)
-sudo ip link set <recv_interface> up
+## 开始使用前
+[静态 ARP 配置说明](STATIC_ARP.md)
 
-# Delete old entry (if exists) and add new entry
-sudo ip neighbor del <sender_ip> dev <recv_interface> 2>/dev/null
-sudo ip neighbor add <sender_ip> lladdr <sender_mac> dev <recv_interface> nud noarp
-```
-#### Sender
-```zsh
-# Clear ARP table
-sudo ip neighbor flush dev <send_interface>
-# Add IP address
-sudo ip addr add <sender_ip> dev <send_interface>
-# Enable network interface
-sudo ip link set <send_interface> up
-
-# Delete old entry (if exists) and add new entry
-sudo ip neighbor del <receiver_ip> dev <send_interface> 2>/dev/null
-sudo ip neighbor add <receiver_ip> lladdr <receiver_mac> dev <send_interface> nud noarp
-```
-#### Recomended UDP kernel parameter configuration 
-```zsh
-# Adjust UDP buffer size
-sudo sysctl -w net.core.rmem_max=134217728  # Set maximum receive buffer to 128 MB
-sudo sysctl -w net.core.rmem_default=134217728  # Set default receive buffer to 128 MB
-sudo sysctl -w net.core.wmem_max=134217728
-sudo sysctl -w net.core.netdev_max_backlog=65535
-``` -->
-## Use
+## 快速开始
 1. Start receiver first
 
 2. Then start sender
 
-## Test Data
-
-测试用随机二进制文件，位于 `test_data/` 目录：
-
-| 文件名 | 尺寸 | 精确字节数 | MD5 校验和 |
-|--------|------|-----------|------------|
-| `test_100mb.dat` | 100 MB | 104,857,600 | `ecd55cfa10bc97c7c6c2dfbe00102ef7` |
-| `test_500mb.dat` | 500 MB | 524,288,000 | `804ac9e1379058f086f6656b5c093cfd` |
-| `test_1gb.dat` | 1 GB | 1,073,741,824 | `ab2b3f2debd1713b40d596dce0dabd01` |
-
-udp and (ip.SrcAddr == 192.168.0.12 or ip.DstAddr == 192.168.0.12)
-
-## CLI Mode
+<!-- ## CLI Mode
 
 Both sender and receiver support a CLI mode (`--cli` flag) that bypasses config files and API server for direct command-line operation.
 
@@ -121,107 +82,219 @@ Both sender and receiver support a CLI mode (`--cli` flag) that bypasses config 
 | `--num-ports` | `1` | Number of concurrent ports |
 | `--start-send-wait` | `1` | Seconds to wait before data (MetaPkt → data gap) |
 | `--save-dir` | `~/Downloads` | Receiver: file save directory |
-| `--timeout` | `120` | Receiver: seconds before timeout (0 = no timeout) |
+| `--timeout` | `120` | Receiver: seconds before timeout (0 = no timeout) | -->
 
-## Performance Benchmarks
 
-Test environment: Windows 11 (sender/receiver) ↔ macOS (receiver/sender), 192.168.0.x LAN, RaptorQ FEC.
+<!-- ## 丢包恢复测试（`--percentage` 参数）
 
-### Baseline (No Packet Loss)
+`--percentage` 参数控制发送端**实际发送的数据量占总数据量的百分比**，用于在不引入网络丢包工具（如 clumsy）的情况下，测试 RaptorQ 的抗丢包恢复能力。
+
+### 原理
+
+发送端先计算理论上应发送的总数据量（含 FEC 冗余），然后只发送 `percentage%` 就停止。接收端收到的数据量少于预期，模拟了网络丢包场景。RaptorQ 解码器用收到的符号尝试恢复完整文件。
+
+### 推荐组合
+
+| 模拟丢包率 | `--percentage` | `--send-redundancy-ratio` | 预期结果 |
+|-----------|---------------|--------------------------|---------|
+| 0%（无丢包） | 100 | 1.05–1.25 | ✅ 稳定恢复 |
+| 5% | 85 | 1.20–1.50 | ✅ 大概率恢复 |
+| 10% | 80 | 1.50–2.00 | ✅ 大概率恢复（文件增大 50–100%） |
+| 15% | 75 | 2.00–2.50 | ⚠️ 取决于丢包分布，交叉模式下可能失败 |
+| 20% | 70 | 2.50–3.00 | ⚠️ 冗余开销大，文件增大 2–3× |
+| 30% | 60 | 3.00–4.00 | ❌ 高概率失败 |
+
+### 使用示例
+
+```bash
+# 发送 80% 的数据量，模拟 20% 丢包，冗余比 2.5×
+./flute_sender_cli --cli --dest-ip 192.168.0.10 --file test_100mb.dat \
+  --fec RaptorQ --send-redundancy-ratio 2.5 --percentage 80 --rate-limit-mbps 200
+``` -->
+
+### RaptorQ 恢复能力说明
+
+- **RaptorQ 需要 ≥K 个不同符号**才能解码一个 chunk，K = ceil(chunkSize / symbolSize)。
+- `send-redundancy-ratio` 控制每个 chunk 的额外符号数：`totalSymbols = ceil(K × ratio)`。
+- 当 `percentage = 100/(ratio) × 100%` 时，发送端恰好发送 K 个基符号（无冗余），此时只要丢 1 个包就可能导致某个 chunk 解码失败。
+- 推荐 `ratio = 1/(packetLossRate+0.01)` 作为安全值：例如丢包 5% 用 ratio=1.20，丢包 10% 用 ratio=1.50。
+- 实际测试中因为丢包的随机分布，有时即使理论符号数足够也可能解码失败（关键符号集中丢失）。
+- 大文件（1GB+）比小文件更容易恢复成功，因为丢包分散在更多 chunk 上，每个 chunk 丢包概率更低。
+
+## 性能测试
+
+两种测试场景：
+- **Mac→Win**：macOS 发送端（10核/16GB）→ Windows 接收端（32核/32GB）
+- **Win→Mac**：Windows 发送端（32核/32GB）→ macOS 接收端（10核/16GB）
+
+所有测试均在正常网络环境下进行，无人工丢包。FEC 配置：RaptorQ（1.25×）/ NoCode，chunk=32KB，symbol=1400B。
+
+### 单文件传输
+
+测试值已去除异常值后取平均，n 为有效样本数。
+
+**Mac→Win（Mac 发送 → Win 接收）**
+
+| FEC | 文件大小 | 发送端耗时 | 发送端有效速率 | 接收端有效速率 | 样本 n | 开销 |
+|-----|---------|-----------|--------------|--------------|-------|------|
+| RaptorQ | 1 GB | 32.3 s | 266 Mbps | 266 Mbps | 7 | 28.9% |
+| RaptorQ | 500 MB | 16.3 s | 259 Mbps | 259 Mbps | 3 | 28.9% |
+| RaptorQ | 100 MB | 3.2 s | 260 Mbps | 258 Mbps | 5 | 28.9% |
+| NoCode | 1 GB | 25.4 s | 338 Mbps | 338 Mbps | 10 | 0.6% |
+| NoCode | 500 MB | 12.9 s | 334 Mbps | 334 Mbps | 4 | 0.6% |
+| NoCode | 100 MB | 2.6 s | 329 Mbps | 326 Mbps | 10 | 0.6% |
+
+**Win→Mac（Win 发送 → Mac 接收）**
+
+| FEC | 文件大小 | 发送端耗时 | 发送端有效速率 | 接收端有效速率 | 样本 n | 开销 |
+|-----|---------|-----------|--------------|--------------|-------|------|
+| RaptorQ | 1 GB | 14.2 s | 603 Mbps | 590 Mbps | 7 | 28.9% |
+| RaptorQ | 500 MB | 7.0 s | 614 Mbps | 567 Mbps | 4 | 28.9% |
+| RaptorQ | 100 MB | 1.2 s | 706 Mbps | 573 Mbps | 7 | 28.9% |
+| NoCode | 1 GB | 13.0 s | 661 Mbps | 653 Mbps | 5 | 0.6% |
+| NoCode | 500 MB | 6.6 s | 648 Mbps | 640 Mbps | 4 | 0.6% |
+| NoCode | 100 MB | 1.0 s | 843 Mbps | 646 Mbps | 5 | 0.6% |
+
+**关键发现：**
+- Win→Mac 发送端有效速率是 Mac→Win 的 **2.0–2.7×**，差距来自 Win 发送端 CPU（32核 vs 10核）及 NIC 驱动发包效率。
+- Mac 接收端（10核）RaptorQ 590 Mbps / NoCode 653 Mbps，接近发送端，非瓶颈。
+- Win 接收端 RaptorQ 266 Mbps / NoCode 338 Mbps，受限于 Mac 发送端能力。
+- RaptorQ 发送 1 GB 文件 983,040 个包（基符号 786,432 × 1.25 冗余），开销 28.9%。
+- NoCode 发送 1 GB 文件 786,432 个包，仅 0.6% 头部开销。
+
+### 并发传输
+
+**Win→Mac：NoCode 并发（预设 500 Mbps 限速 + 无限速）**
+
+| FEC | 场景 | 文件数 | 平均耗时 | 平均有效速率 | 备注 |
+|-----|------|--------|---------|--------------|------|
+| NoCode | 5 × 1 GB（限速 500 Mbps） | 5 | 55.1 s | 163 Mbps | 带宽均分 |
+| NoCode | 4 × 100 MB（限速 500 Mbps） | 4 | 5.3 s | 160 Mbps | 带宽均分 |
+| NoCode | 4 × 500 MB（限速 500 Mbps） | 4 | 22.7 s | 195 Mbps | 带宽均分 |
+| NoCode | 5 × 100 MB（无限速） | 5 | 8.3 s | 104 Mbps | — |
+| NoCode | 4 × 500 MB（无限速） | 4 | 35.4 s | 124 Mbps | — |
+
+- 限速场景中接收端首轮测试因 UDP 缓冲区溢出出现 timeout（Mac 默认 768 KB 不足），重测后全部完成。
+- NoCode 限速 500 Mbps 时带宽均分，各文件速率接近：5×1GB 约 163 Mbps/文件。
+
+**Win→Mac：RaptorQ 并发（无限速）**
+
+| 场景 | 文件数 | 平均耗时 | 平均有效速率 |
+|------|--------|---------|--------------|
+| 5 × 100 MB | 5 | 3.8 s | 274 Mbps |
+| 4 × 500 MB | 4 | 18.8 s | 243 Mbps |
+| 5 × 1 GB | 5 | 42.0 s | 218 Mbps |
+
+- RaptorQ 并发时首个文件获得最多带宽，后续文件均分剩余。原因：接收端 `workerPool` 槽位按到达顺序分配。
+- 5 × 1 GB 总带宽约 1,090 Mbps（超 1 Gbps 链路极限），`consumerCount` 提升至 `NumCPU` 后尾部延迟显著改善（从旧测 86–93s 降至 42s 平均）。
+
+### 内存概况
+
+| 场景 | 发送端峰值堆 | 接收端峰值堆 | 接收端系统内存 | GC 次数 |
+|------|------------|------------|--------------|--------|
+| Mac→Win RaptorQ 1 GB 单文件 | — | 34–45 MB | 65–69 MB | ~1140 |
+| Mac→Win NoCode 1 GB 单文件 | — | 26–32 MB | 69 MB | ~1700 |
+| Win→Mac RaptorQ 1 GB 单文件 | 14–19 MB | 14–19 MB | 42 MB | ~4460 |
+| Win→Mac NoCode 1 GB 单文件 | 9–14 MB | 9–14 MB | 26–98 MB | ~7700 |
+| Win→Mac 5×1GB RaptorQ 并发 | 25–41 MB | 25–41 MB | 99 MB | ~4300–5400 |
+| Win→Mac 5×1GB NoCode+500M | 12–31 MB | 12–31 MB | 58 MB | ~7300–10600 |
+
+- Win 发送端内存稳定（14–19 MB），无 FEC 解码状态。
+- Mac 接收端峰值堆 14–19 MB，远低于旧测 Mac→Win（34–45 MB，consumerCount=2 时解码堆积）。
+- NoCode GC 高于 RaptorQ（`sync.Pool` 写缓冲无状态缓存），限速场景因耗时拉长 GC 最高（10676）。
+- 所有场景内存稳定，无泄漏（连续 30+ 次传输验证）。
+
+### 接收端收包统计
+
+| 场景 | FEC | 预期包数 | 实际收包 | 比率 |
+|------|-----|---------|---------|------|
+| Mac→Win | RaptorQ 1 GB | 786,432 | 983,040 | 125.00% |
+| Mac→Win | RaptorQ 500 MB | 393,216 | 491,520 | 125.00% |
+| Mac→Win | NoCode | 精确相等 | 精确相等 | 100.00% |
+| Win→Mac | RaptorQ 1 GB | 786,432 | 982,981–983,040 | 125.00% |
+| Win→Mac | RaptorQ 500 MB | 393,216 | 491,507–491,520 | 125.00% |
+| Win→Mac | RaptorQ 100 MB | 76,800 | 95,992–96,000 | 125.00% |
+| Win→Mac | NoCode | 精确相等 | 精确相等 | 100.00% |
+
+- RaptorQ 收包率精确匹配 `基符号数 × 冗余比`，偶有 ±1 包偏差来自符号边界舍入。
+- NoCode 零丢包，100% 精确匹配。
+- 首次并发测试中出现 timeout（收包率 0.61–99.46%），根因为 Mac 接收端默认 UDP 缓冲区（786 KB）不足。增大 `net.inet.udp.recvspace` 后不再触发。
+
+## RaptorQ Recovery Formula
+
+### Parameters
+
+| Symbol | Meaning | How to compute |
+|--------|---------|---------------|
+| `S` | symbol size (bytes) | `maxPacketSize - 8` |
+| `C` | chunk size (bytes) | OTI `MaximumChunkSize` (default 32768) |
+| `F` | file size (bytes) | `os.Stat()` |
+| `R` | redundancy ratio | `--send-redundancy-ratio` |
+| `D` | drop probability | `1.0 - percentage/100` |
+
+### Derived values
 
 ```
- Direction   File     Ratio  Rate Limit   Goodput       Duration   MD5
- ────────── ──────── ────── ─────────── ──────────  ─────────── ─────
- Win → Mac   100 MB   1.01     200 Mbps   209 Mbps      4.01 s    ✅
- Win → Mac   100 MB   1.01     500 Mbps   644 Mbps      1.30 s    ✅*
- Win → Mac   100 MB   1.01    1000 Mbps   772 Mbps      1.09 s    ✅*
- Win → Mac   500 MB   1.01     500 Mbps   493 Mbps      8.51 s    ✅*
- Win → Mac     1 GB   1.01     500 Mbps   478 Mbps     17.96 s    ✅*
- Mac → Win   100 MB   1.01     100 Mbps    99 Mbps      8.51 s    ✅
- Mac → Win   100 MB   1.01     200 Mbps   209 Mbps      4.00 s    ✅
- Mac → Win   100 MB   1.01     500 Mbps   333 Mbps      2.52 s    ✅
- Mac → Win   100 MB   1.01    1000 Mbps   320 Mbps      2.62 s    ✅
- Mac → Win   100 MB   1.01    2000 Mbps   338 Mbps      2.48 s    ✅
- Mac → Win   100 MB   NoCode   500 Mbps   346 Mbps      2.42 s    ✅
- Mac → Win   500 MB   1.01     500 Mbps   319 Mbps     13.14 s    ✅
- Mac → Win   500 MB   1.01    1000 Mbps   338 Mbps     12.39 s    ✅
- Mac → Win     1 GB   1.01     500 Mbps   326 Mbps     26.38 s    ✅
- Mac → Win     1 GB   1.01    1000 Mbps   326 Mbps     26.37 s    ✅
-```
-*\* Sender reported goodput; receiver MD5 confirmed for fdtID=1.*
-
-### With Clumsy Packet Loss (Inbound, Mac → Win, 200 Mbps)
-
-```
- Loss%  File     Ratio   Goodput      Result
- ───── ──────── ────── ──────────  ──────────────────
-   5%   100 MB   1.05      N/A       ❌ STALLED (78k/86k pkts)
-   5%   100 MB   1.10      N/A       ❌ STALLED (81k/86k pkts)
-   5%   100 MB   1.20      N/A       ❌ STALLED (87k/86k pkts)
-   5%   100 MB   1.50    140 Mbps    ✅ MD5 OK
-   5%   500 MB   1.50    131 Mbps    ✅ MD5 OK
-   5%     1 GB   1.50    130 Mbps    ✅ MD5 OK
-
-  20%   100 MB   2.00    103 Mbps    ✅ MD5 OK (at 200 Mbps)
-  20%   100 MB   2.00    153 Mbps    ✅ MD5 OK (at 500 Mbps)
-
-  30%   100 MB   2.50     81 Mbps    ✅ MD5 OK (only passing case)
-  30%   500 MB   all      N/A        ❌ All failed
-  30%     1 GB   all      N/A        ❌ All failed
+baseSymbols   B = ceil(C / S)
+totalSymbols  T = ceil(B * R)
+chunkCount    N = ceil(F / C)
+sendRate      p = 1 - D
 ```
 
-### Key Findings
+### Recovery condition
 
-1. **Rate limit beyond ~500 Mbps provides diminishing returns** — actual throughput caps at ~770 Mbps (WiFi bottleneck on Mac)
-2. **WiFi → Ethernet (Win→Mac) is ~2× faster** than Ethernet → WiFi (Mac→Win) due to WiFi asymmetry
-3. **For Clumsy-assisted testing**, the actual loss rate exceeds Clumsy's configured drop due to WinDivert buffer overflow under high throughput
-4. **Recommended parameters for reliable transfer under packet loss:**
-   - `--fec RaptorQ` (NoCode cannot recover any loss)
-   - `--send-redundancy-ratio 1.5` (covers up to ~5% loss)
-   - `--rate-limit-mbps 200` (balances speed vs WinDivert stability)
-   - For higher loss (20%+), increase ratio to 2.0-2.5
-5. **MetaPkt is a single point of failure** — it is sent once; if dropped by filtering, the entire transfer fails. The receiver ignores duplicate fdtIDs.
+A transfer **succeeds** when every chunk receives enough symbols to decode.
+With random independent packet loss at rate D, the probability a single chunk fails is:
 
-./flute_sender_cli --cli --dest-ip 192.168.0.10 --file test_data/test_100mb.dat --fec RaptorQ --rate-limit-mbps 200 --fdt-id 300
+```
+P(fail per chunk) = P( Binomial(T, p) < B )
+```
+
+For `N` chunks to all succeed with high confidence:
+
+```
+P(fail per chunk) * N  <  0.5    (expected failures < 1)
+```
+
+### Verified boundaries (Windows localhost, RaptorQ, rate-limit=0)
+
+**100 MB file (N = 3,200 chunks):**
+
+| R | T | p min | Loss max | Overhead | Validated |
+|---|----|---------|----------|----------|-----------|
+| 1.30 | 32 | 0.95 | 5% | +30% | OK |
+| 1.50 | 36 | 0.90 | 10% | +50% | OK |
+| 1.60 | 39 | 0.85 | 15% | +60% | OK |
+| 2.00 | 48 | 0.75 | 25% | +100% | OK |
+| 2.50 | 60 | 0.60 | 40% | +150% | OK |
+| 3.00 | 72 | 0.60 | 40% | +200% | OK |
+
+**1 GB file (N = 32,768 chunks):**
+
+| R | T | p min | Loss max | Overhead | Validated |
+|---|----|---------|----------|----------|-----------|
+| 1.30 | 32 | 0.95 | 5% | +30% | OK |
+| 1.50 | 36 | 0.90 | 10% | +50% | OK |
+| 1.75 | 42 | 0.85 | 15% | +75% | OK |
+| 2.00 | 48 | 0.80 | 20% | +100% | OK |
+| 2.50 | 60 | 0.70 | 30% | +150% | OK |
+| 3.00 | 72 | 0.60 | 40% | +200% | OK |
+
+### Key insight
+
+Larger files have **more chunks** → higher chance of an extreme outlier.
+For a 1 GB file (32,768 chunks) you need **~1 extra symbol per chunk** of safety margin compared to a 100 MB file.
+
+### Quick reference
+
+```bash
+# 5% loss  -> ratio >= 1.3
+# 10% loss -> ratio >= 1.5
+# 15% loss -> ratio >= 1.75
+# 20% loss -> ratio >= 2.0
+# 30% loss -> ratio >= 2.5
+# 40% loss -> ratio >= 3.0
+```
 
 
-
-## Test-case-1:
-Receiver: mac
-Sender: win
-Fec: RaptorQ
-FileSize: 104857600 bytes (100.00 MB)
-SymbolSize: 1400 bytes
-ChunkSize: 32768 bytes
-RedundancyRatio: 115.00%
-MaxPacketSize: 1408 bytes
-bytes received=104857600, duration=1.519069125s, throughput=552.2203 Mbps
-Total Allocated Memory: 2043596688 bytes
-Peak Heap Memory: 31799352 bytes, 30 MB
-System Memory (Sys): 50 MB
-Heap Idle Memory: 9 MB
-Garbage Collection Count: 320
-Memory Allocation Count: 707185
-Heap Objects Count: 52252
-Clumsy drop chance: 0%
-
-## Test-case-2:
-Receiver: mac
-Sender: win
-Fec: RaptorQ
-FileSize: 104857600 bytes (100.00 MB)
-SymbolSize: 1400 bytes
-ChunkSize: 32768 bytes
-RedundancyRatio: 115.00%
-MaxPacketSize: 1408 bytes
-
-Clumsy drop chance: 1%
-
-panic: send on closed channel
-
-goroutine 22 [running]:
-FluteGo/pkg/io.(*UnixIOHandler).Start.func1()
-        /Users/halllo/projects/local/FluteGo/pkg/io/io_unix.go:47 +0x60
-created by FluteGo/pkg/io.(*UnixIOHandler).Start in goroutine 85
-        /Users/halllo/projects/local/FluteGo/pkg/io/io_unix.go:34 +0x5c
-exit status 2
+go run ./cmd/flute_sender/main.go --cli --dest-ip 192.168.0.10 --file cmd/send_files/test_100mb_1.dat --fec RaptorQ --send-redundancy-ratio 1.5 --percentage 90 --rate-limit-mbps 0
