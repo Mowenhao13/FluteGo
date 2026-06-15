@@ -35,3 +35,41 @@ nc -ul 3400
 ### Windows
 
 #### 设置静态 ARP
+
+```bash
+# 查看接口 0x3 对应的网卡名称
+netsh interface ip show interfaces
+
+# 应该会显示类似：
+# Idx  MTU    Met  名称
+# ---  -----  ---- --------------------
+#   3  1500     5 以太网    <-- 这是你的光纤连接网卡
+```
+
+以管理员模式运行
+```bash
+netsh interface ip add neighbors "以太网" <Receiver IP> <Receiver MAC>
+```
+
+查询结果
+```bash
+arp -a <Receiver IP>
+
+# 输出示例
+Interface: 192.168.0.10 --- 0x3
+  Internet Address      Physical Address      Type
+  192.168.0.12          6c-1f-f7-be-c7-b3     static
+```
+
+#### 发送数据包验证
+
+1. 发送端发送udp数据包
+```zsh
+go run scripts/send_udp_loop.go -ip <Receiver IP> -port 3400
+```
+
+2. 接收端监听
+```zsh
+ncat -u -l <Sender IP> 3400
+```
+
