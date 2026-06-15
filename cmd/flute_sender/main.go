@@ -159,17 +159,13 @@ func main() {
 		p := globalPool
 		poolMu.Unlock()
 
-		// Save uploaded data to sendFileDir
-		if err := os.MkdirAll(cfg.Sender.SendFileDir, 0755); err != nil {
-			return 0, fmt.Errorf("cannot create upload dir: %w", err)
-		}
-		// 直接用原文件名
+		// Save uploaded data to system temp dir
 		fid := uint8(nextFdtID.Add(1))
-		savePath := filepath.Join(cfg.Sender.SendFileDir, filepath.Base(fileName))
-		f, err := os.Create(savePath)
+		f, err := os.CreateTemp("", "flute_"+filepath.Base(fileName))
 		if err != nil {
-			return 0, fmt.Errorf("cannot create file: %w", err)
+			return 0, fmt.Errorf("cannot create temp file: %w", err)
 		}
+		savePath := f.Name()
 		if _, err := io.Copy(f, data); err != nil {
 			f.Close()
 			return 0, fmt.Errorf("write error: %w", err)
@@ -213,6 +209,7 @@ func main() {
 		go func() {
 			defer p.CloseFileConn(fid)
 			defer f.Close()
+			defer os.Remove(savePath) // 发送完后删除临时文件
 			if err := SendFile(p, metaPkt, limiter, nil, nil, 1, srv, cfg.Sender.SendRedundancyRatio, *csvFlag); err != nil {
 				log.Printf("[sendFn] SendFile error fdtID %d: %v", fid, err)
 			}

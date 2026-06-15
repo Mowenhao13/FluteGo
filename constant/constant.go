@@ -15,9 +15,9 @@ const (
 // Sender param
 const (
 	SendFileDir_unix         = "cmd/send_files/"
-	SaveFileDir_unix         = "cmd/received_files/"
+	SaveFileDir_unix         = "Downloads/"
 	SendFileDir_win          = "cmd\\send_files\\"
-	SaveFileDir_win          = "cmd\\received_files\\"
+	SaveFileDir_win          = "Downloads\\"
 	SendRedundancyRatio      = 1.15
 	DefaultSendRateLimitMbps = 1200 // default send rate limit; 0 disables throttling
 	WindowsSize              = 10

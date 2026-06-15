@@ -87,7 +87,7 @@ func Default() *Config {
 			StartSendWait:       1,
 		},
 		Receiver: ReceiverConfig{
-			SaveFileDir:      "cmd/received_files/", // 已包含尾部斜杠
+			SaveFileDir:      "", // 为空时由 utils.SelectSaveFileDir() 决定（$HOME/Downloads/）
 			DefaultChunkSize: 65536,
 		},
 		Server: ServerConfig{

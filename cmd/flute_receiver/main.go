@@ -70,7 +70,8 @@ func main() {
 
 	saveFileDir := cfg.Receiver.SaveFileDir
 	if saveFileDir == "" {
-		saveFileDir = defaultDownloadsDir()
+		saveFileDir = utils.SelectSaveFileDir()
+		log.Printf("[receiver] Using default save dir: %s", saveFileDir)
 	}
 
 	if err := os.MkdirAll(saveFileDir, 0755); err != nil {

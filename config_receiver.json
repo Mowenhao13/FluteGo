@@ -1,6 +1,6 @@
 {
   "destIP": "192.168.0.12",
   "network": { "maxPacketSize": 1408, "baseFilePort": 3400, "metaPort": 3399, "numPorts": 1 },
-  "receiver": { "saveFileDir": "cmd/received_files/", "defaultChunkSize": 65536 },
+  "receiver": { "saveFileDir": "", "defaultChunkSize": 65536 },
   "server": { "port": 8080, "enabled": true }
 }

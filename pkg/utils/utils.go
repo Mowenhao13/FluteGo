@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -287,10 +288,15 @@ func SelectSendFileDir() string {
 }
 
 func SelectSaveFileDir() string {
-	if runtime.GOOS == "windows" {
-		return constant.SaveFileDir_win
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "."
 	}
-	return constant.SaveFileDir_unix
+	subdir := constant.SaveFileDir_unix
+	if runtime.GOOS == "windows" {
+		subdir = constant.SaveFileDir_win
+	}
+	return filepath.Join(home, subdir)
 }
 
 // unix only
@@ -438,12 +444,12 @@ func getLocalIPFromInterfaces() string {
 		lower := strings.ToLower(name)
 		for _, e := range ethNames {
 			if strings.Contains(lower, e) {
-				// 排除 macOS 的 en0/en1 等（通常是 Wi-Fi）
-				if strings.HasPrefix(lower, "en") && len(lower) <= 3 {
-					continue
-				}
 				return true
 			}
+		}
+		// macOS enX（en0/en5/en10）可能是物理网卡，不排除
+		if strings.HasPrefix(lower, "en") && len(lower) <= 5 {
+			return true
 		}
 		return false
 	}
