@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -10,13 +11,15 @@ import (
 )
 
 const (
-	targetIP   = "192.168.0.12"
-	targetPort = 3400
-	packetLen  = 64
+	packetLen = 64
 )
 
 func main() {
-	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", targetIP, targetPort))
+	targetIP := flag.String("ip", "192.168.0.10", "Target IP address")
+	targetPort := flag.Int("port", 3500, "Target UDP port")
+	flag.Parse()
+
+	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", *targetIP, *targetPort))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "resolve addr: %v\n", err)
 		os.Exit(1)
@@ -42,7 +45,7 @@ func main() {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
-	fmt.Printf("Sending %d-byte UDP packets to %s:%d ... (Ctrl+C to stop)\n", packetLen, targetIP, targetPort)
+	fmt.Printf("Sending %d-byte UDP packets to %s:%d ... (Ctrl+C to stop)\n", packetLen, *targetIP, *targetPort)
 
 loop:
 	for {

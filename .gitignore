@@ -45,3 +45,8 @@ go.sum.bak
 cmd/cmd/
 bin/
 .claude
+*.csv
+release/
+.ccb/
+*.zip
+*.txt

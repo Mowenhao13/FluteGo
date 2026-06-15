@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+// CsvEnabled 控制是否写入 CSV 统计文件（默认 false，由 --csv 标志启用）
+var CsvEnabled = false
+
 // CSVHeader is the header row written once when the CSV file is first created.
 var CSVHeader = []string{
 	"timestamp",
@@ -171,6 +174,9 @@ func (s TransferStats) toCSVRow() []string {
 // The CSV file is created in saveDir. If the file does not exist, a header
 // row is written first.
 func WriteTransferCSV(saveDir string, stats TransferStats) {
+	if !CsvEnabled {
+		return
+	}
 	if saveDir == "" {
 		saveDir = "."
 	}
