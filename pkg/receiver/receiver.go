@@ -957,3 +957,11 @@ func (r *Receiver) Close() {
 	r.outputFile.Sync()
 	r.outputFile.Close()
 }
+
+// getRecoveredCount extracts RaptorQ recovery count from the decoder.
+func (r *Receiver) getRecoveredCount() uint32 {
+	if rq, ok := r.decoder.(*decoder.RqDecoder); ok {
+		return rq.GetRecoveredCount()
+	}
+	return 0
+}
