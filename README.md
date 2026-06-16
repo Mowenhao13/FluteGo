@@ -239,10 +239,10 @@ go build -o flute_receiver ./cmd/flute_receiver/
 
 | 场景 | 峰值堆内存 | 系统内存 | GC 次数 |
 |------|-----------|---------|---------|
-| Mac→Win NoCode 1 GB 单文件（接收端 Win） | 8–17 MB | 28 MB | ~5200–5700 |
-| Mac→Win RaptorQ 1 GB 单文件（接收端 Win） | 13–19 MB | 32–36 MB | ~4150–4250 |
-| Win→Mac RaptorQ 1 GB 单文件（不限速） | 14–19 MB | 42 MB | ~4460 |
-| Win→Mac NoCode 1 GB 单文件（不限速） | 9–14 MB | 26–98 MB | ~7700 |
+| Mac→Win NoCode 1 GB 单文件 | 8–17 MB | 28 MB | ~5200–5700 |
+| Mac→Win RaptorQ 1 GB 单文件 | 13–19 MB | 32–36 MB | ~4150–4250 |
+| Win→Mac RaptorQ 1 GB 单文件 | 14–19 MB | 42 MB | ~4460 |
+| Win→Mac NoCode 1 GB 单文件 | 9–14 MB | 26–98 MB | ~7700 |
 <!-- | Win→Mac 5×1GB RaptorQ 并发（不限速） | 25–41 MB | 99 MB | ~4300–5400 |
 | Win→Mac 5×1GB NoCode 并发（500M限速） | 12–31 MB | 58 MB | ~7300–10600 | -->
 
