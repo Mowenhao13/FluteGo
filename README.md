@@ -158,101 +158,110 @@ go build -o flute_receiver ./cmd/flute_receiver/
 ## 性能测试
 
 两种测试场景：
-- **Mac→Win**：macOS 发送端（10核/16GB）→ Windows 接收端（32核/32GB）
-- **Win→Mac**：Windows 发送端（32核/32GB）→ macOS 接收端（10核/16GB）
+- **Mac→Win**：Apple M4/16GB/macOS 26.2（发送端）→ AMD Ryzen/32GB/Win 11（接收端），**不限速**
+- **Win→Mac**：AMD Ryzen/32GB/Win 11（发送端）→ Apple M4/16GB/macOS 26.2（接收端），**500 Mbps 限速**（另有无限速对照）
 
-所有测试均在正常网络环境下进行，无人工丢包。FEC 配置：RaptorQ（1.25×）/ NoCode，chunk=32KB，symbol=1400B。
+所有测试均在正常网络环境下进行，无人工丢包。FEC 配置：RaptorQ（1.25×）/ NoCode，chunk=32KB，symbol=1400B。取前 3 次成功传输平均值。
 
 ### 单文件传输
 
-测试值已去除异常值后取平均，n 为有效样本数。
+**Mac→Win（Mac 发送 → Win 接收，不限速）**
 
-**Mac→Win（Mac 发送 → Win 接收）**
+| FEC | 文件大小 | 耗时 | 有效速率 |
+|-----|---------|------|---------|
+| NoCode | 1 GB | 27.5 s | 313 Mbps |
+| NoCode | 500 MB | 13.1 s | 328 Mbps |
+| NoCode | 100 MB | 2.5 s | 331 Mbps |
+| RaptorQ | 1 GB | 38.2 s | 227 Mbps |
+| RaptorQ | 500 MB | 16.1 s | 267 Mbps |
+| RaptorQ | 100 MB | 3.2 s | 262 Mbps |
 
-| FEC | 文件大小 | 发送端耗时 | 发送端有效速率 | 接收端有效速率 | 样本 n | 开销 |
-|-----|---------|-----------|--------------|--------------|-------|------|
-| RaptorQ | 1 GB | 32.3 s | 266 Mbps | 266 Mbps | 7 | 28.9% |
-| RaptorQ | 500 MB | 16.3 s | 259 Mbps | 259 Mbps | 3 | 28.9% |
-| RaptorQ | 100 MB | 3.2 s | 260 Mbps | 258 Mbps | 5 | 28.9% |
-| NoCode | 1 GB | 25.4 s | 338 Mbps | 338 Mbps | 10 | 0.6% |
-| NoCode | 500 MB | 12.9 s | 334 Mbps | 334 Mbps | 4 | 0.6% |
-| NoCode | 100 MB | 2.6 s | 329 Mbps | 326 Mbps | 10 | 0.6% |
+**Win→Mac（Win 发送 → Mac 接收，不限速）**
 
-**Win→Mac（Win 发送 → Mac 接收）**
+| FEC | 文件大小 | 耗时 | 有效速率 |
+|-----|---------|------|---------|
+| NoCode | 1 GB | 11.9 s | 725 Mbps |
+| NoCode | 500 MB | 5.9 s | 731 Mbps |
+| NoCode | 100 MB | 1.1 s | 754 Mbps |
+| RaptorQ | 1 GB | 13.2 s | 653 Mbps |
+| RaptorQ | 500 MB | 6.6 s | 648 Mbps |
+| RaptorQ | 100 MB | 1.2 s | 672 Mbps |
 
-| FEC | 文件大小 | 发送端耗时 | 发送端有效速率 | 接收端有效速率 | 样本 n | 开销 |
-|-----|---------|-----------|--------------|--------------|-------|------|
-| RaptorQ | 1 GB | 14.2 s | 603 Mbps | 590 Mbps | 7 | 28.9% |
-| RaptorQ | 500 MB | 7.0 s | 614 Mbps | 567 Mbps | 4 | 28.9% |
-| RaptorQ | 100 MB | 1.2 s | 706 Mbps | 573 Mbps | 7 | 28.9% |
-| NoCode | 1 GB | 13.0 s | 661 Mbps | 653 Mbps | 5 | 0.6% |
-| NoCode | 500 MB | 6.6 s | 648 Mbps | 640 Mbps | 4 | 0.6% |
-| NoCode | 100 MB | 1.0 s | 843 Mbps | 646 Mbps | 5 | 0.6% |
+**Win→Mac（Win 发送 → Mac 接收，500 Mbps 限速）**
 
-**关键发现：**
-- Win→Mac 发送端有效速率是 Mac→Win 的 **2.0–2.7×**，差距来自 Win 发送端 CPU（32核 vs 10核）及 NIC 驱动发包效率。
-- Mac 接收端（10核）RaptorQ 590 Mbps / NoCode 653 Mbps，接近发送端，非瓶颈。
-- Win 接收端 RaptorQ 266 Mbps / NoCode 338 Mbps，受限于 Mac 发送端能力。
-- RaptorQ 发送 1 GB 文件 983,040 个包（基符号 786,432 × 1.25 冗余），开销 28.9%。
-- NoCode 发送 1 GB 文件 786,432 个包，仅 0.6% 头部开销。
+| FEC | 文件大小 | 耗时 | 有效速率 |
+|-----|---------|------|---------|
+| NoCode | 1 GB | 16.8 s | 512 Mbps |
+| NoCode | 500 MB | 8.1 s | 528 Mbps |
+| NoCode | 100 MB | 1.2 s | 706 Mbps |
+| RaptorQ | 1 GB | 21.6 s | 397 Mbps |
+| RaptorQ | 500 MB | 10.6 s | 406 Mbps |
+| RaptorQ | 100 MB | 1.7 s | 504 Mbps |
 
-### 并发传输
+- Win→Mac 不限速时发送端有效速率是 Mac→Win 的 **2.0–2.8×**，差距来自 Win 发送端 CPU（32核 vs 10核）及 NIC 驱动发包效率。
+- Win→Mac 500 Mbps 限速下 NoCode 接近跑满限速（512–528 Mbps），RaptorQ 因 FEC 冗余开销（28.9%）有效速率约 400 Mbps。
+- Mac→Win 不限速时 Mac 发送端 10 核性能有限，NoCode 约 313–331 Mbps、RaptorQ 约 227–267 Mbps。
+- RaptorQ 开销 28.9%（1.25× 冗余 + 8 字节头部），NoCode 仅 0.6% 头部开销。
 
-**Win→Mac：NoCode 并发（预设 500 Mbps 限速 + 无限速）**
+### 并发传输（Win→Mac）
 
-| FEC | 场景 | 文件数 | 平均耗时 | 平均有效速率 | 备注 |
-|-----|------|--------|---------|--------------|------|
-| NoCode | 5 × 1 GB（限速 500 Mbps） | 5 | 55.1 s | 163 Mbps | 带宽均分 |
-| NoCode | 4 × 100 MB（限速 500 Mbps） | 4 | 5.3 s | 160 Mbps | 带宽均分 |
-| NoCode | 4 × 500 MB（限速 500 Mbps） | 4 | 22.7 s | 195 Mbps | 带宽均分 |
-| NoCode | 5 × 100 MB（无限速） | 5 | 8.3 s | 104 Mbps | — |
-| NoCode | 4 × 500 MB（无限速） | 4 | 35.4 s | 124 Mbps | — |
-
-- 限速场景中接收端首轮测试因 UDP 缓冲区溢出出现 timeout（Mac 默认 768 KB 不足），重测后全部完成。
-- NoCode 限速 500 Mbps 时带宽均分，各文件速率接近：5×1GB 约 163 Mbps/文件。
-
-**Win→Mac：RaptorQ 并发（无限速）**
+**NoCode（500 Mbps 限速）**
 
 | 场景 | 文件数 | 平均耗时 | 平均有效速率 |
 |------|--------|---------|--------------|
-| 5 × 100 MB | 5 | 3.8 s | 274 Mbps |
-| 4 × 500 MB | 4 | 18.8 s | 243 Mbps |
-| 5 × 1 GB | 5 | 42.0 s | 218 Mbps |
+| 5 × 1 GB | 5 | 60.1 s | 147 Mbps |
+| 4 × 500 MB | 4 | 32.8 s | 131 Mbps |
+| 5 × 100 MB | 5 | 7.4 s | 129 Mbps |
 
-- RaptorQ 并发时首个文件获得最多带宽，后续文件均分剩余。原因：接收端 `workerPool` 槽位按到达顺序分配。
-- 5 × 1 GB 总带宽约 1,090 Mbps（超 1 Gbps 链路极限），`consumerCount` 提升至 `NumCPU` 后尾部延迟显著改善（从旧测 86–93s 降至 42s 平均）。
+**RaptorQ（不限速）**
+
+| 场景 | 文件数 | 平均耗时 | 平均有效速率 |
+|------|--------|---------|--------------|
+| 5 × 100 MB | 5 | 3.6 s | 270 Mbps |
+| 4 × 500 MB | 4 | 23.6 s | 183 Mbps |
+| 5 × 1 GB | 5 | 41.1 s | 212 Mbps |
+
+**RaptorQ（500 Mbps 限速）**
+
+| 场景 | 文件数 | 平均耗时 | 平均有效速率 |
+|------|--------|---------|--------------|
+| 5 × 100 MB | 5 | 10.0 s | 92 Mbps |
+| 4 × 500 MB | 4 | 45.0 s | 95 Mbps |
+| 5 × 1 GB | 5 | 82.3 s | 106 Mbps |
+
+**关键发现：**
+- RaptorQ 不限速并发时首个文件获得最多带宽，后续均分，5 × 1 GB 总带宽约 1,060 Mbps（超 1 Gbps 链路极限）。
+- 500 Mbps 限速下 5 文件均分带宽：NoCode ~130–147 Mbps/文件，RaptorQ ~92–106 Mbps/文件（FEC 冗余降低有效速率）。
+- 100 MB 小文件并发时 RaptorQ 不限速可达 270 Mbps/文件（5 文件 → 总 1.35 Gbps，超链路极限，实际因 pipeline 效应首个文件更快）。
+- RaptorQ 解码计算密集，限速场景下 CPU 成为瓶颈，速率低于 NoCode。
 
 ### 内存概况
 
-| 场景 | 发送端峰值堆 | 接收端峰值堆 | 接收端系统内存 | GC 次数 |
-|------|------------|------------|--------------|--------|
-| Mac→Win RaptorQ 1 GB 单文件 | — | 34–45 MB | 65–69 MB | ~1140 |
-| Mac→Win NoCode 1 GB 单文件 | — | 26–32 MB | 69 MB | ~1700 |
-| Win→Mac RaptorQ 1 GB 单文件 | 14–19 MB | 14–19 MB | 42 MB | ~4460 |
-| Win→Mac NoCode 1 GB 单文件 | 9–14 MB | 9–14 MB | 26–98 MB | ~7700 |
-| Win→Mac 5×1GB RaptorQ 并发 | 25–41 MB | 25–41 MB | 99 MB | ~4300–5400 |
-| Win→Mac 5×1GB NoCode+500M | 12–31 MB | 12–31 MB | 58 MB | ~7300–10600 |
+| 场景 | 峰值堆内存 | 系统内存 | GC 次数 |
+|------|-----------|---------|---------|
+| Mac→Win NoCode 1 GB 单文件 | — | — | ~1700 |
+| Mac→Win RaptorQ 1 GB 单文件 | — | — | ~1140 |
+| Win→Mac RaptorQ 1 GB 单文件（不限速） | 14–19 MB | 42 MB | ~4460 |
+| Win→Mac NoCode 1 GB 单文件（不限速） | 9–14 MB | 26–98 MB | ~7700 |
+| Win→Mac 5×1GB RaptorQ 并发（不限速） | 25–41 MB | 99 MB | ~4300–5400 |
+| Win→Mac 5×1GB NoCode 并发（500M限速） | 12–31 MB | 58 MB | ~7300–10600 |
 
 - Win 发送端内存稳定（14–19 MB），无 FEC 解码状态。
-- Mac 接收端峰值堆 14–19 MB，远低于旧测 Mac→Win（34–45 MB，consumerCount=2 时解码堆积）。
-- NoCode GC 高于 RaptorQ（`sync.Pool` 写缓冲无状态缓存），限速场景因耗时拉长 GC 最高（10676）。
-- 所有场景内存稳定，无泄漏（连续 30+ 次传输验证）。
+- NoCode GC 高于 RaptorQ（`sync.Pool` 写缓冲无状态缓存），限速场景因耗时拉长 GC 最高。
+- 所有场景内存稳定，无泄漏。
 
 ### 接收端收包统计
 
 | 场景 | FEC | 预期包数 | 实际收包 | 比率 |
 |------|-----|---------|---------|------|
-| Mac→Win | RaptorQ 1 GB | 786,432 | 983,040 | 125.00% |
-| Mac→Win | RaptorQ 500 MB | 393,216 | 491,520 | 125.00% |
+| Mac→Win | RaptorQ | 786,432（1 GB） | 983,040 | 125.00% |
 | Mac→Win | NoCode | 精确相等 | 精确相等 | 100.00% |
-| Win→Mac | RaptorQ 1 GB | 786,432 | 982,981–983,040 | 125.00% |
-| Win→Mac | RaptorQ 500 MB | 393,216 | 491,507–491,520 | 125.00% |
-| Win→Mac | RaptorQ 100 MB | 76,800 | 95,992–96,000 | 125.00% |
+| Win→Mac | RaptorQ（不限速） | 786,432（1 GB） | 982,981–983,040 | 125.00% |
+| Win→Mac | RaptorQ（500M限速） | 786,432（1 GB） | 983,040 | 125.00% |
 | Win→Mac | NoCode | 精确相等 | 精确相等 | 100.00% |
 
-- RaptorQ 收包率精确匹配 `基符号数 × 冗余比`，偶有 ±1 包偏差来自符号边界舍入。
+- RaptorQ 收包率精确匹配 `基符号数 × 冗余比`，不限速和限速均稳定 125.00%。
 - NoCode 零丢包，100% 精确匹配。
-- 首次并发测试中出现 timeout（收包率 0.61–99.46%），根因为 Mac 接收端默认 UDP 缓冲区（786 KB）不足。增大 `net.inet.udp.recvspace` 后不再触发。
 
 ## RaptorQ Recovery Formula
 
@@ -330,5 +339,3 @@ For a 1 GB file (32,768 chunks) you need **~1 extra symbol per chunk** of safety
 # 40% loss -> ratio >= 3.0
 ```
 
-
-go run ./cmd/flute_sender/main.go --cli --dest-ip 192.168.0.10 --file cmd/send_files/test_100mb_1.dat --fec RaptorQ --send-redundancy-ratio 1.5 --percentage 90 --rate-limit-mbps 0
