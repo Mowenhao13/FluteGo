@@ -5,7 +5,9 @@ import (
 	"FluteGo/pkg/sock"
 	"fmt"
 	"sync"
+	"log"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -114,10 +116,17 @@ func (p *ConnPool) createNewConn(ip string, port int) (*sock.MsSocket, error) {
 				// 尝试 4MB
 				if err := msck.Socket.SetReadBuffer(4 * 1024 * 1024); err != nil {
 					// 尝试 2MB
-					msck.Socket.SetReadBuffer(2 * 1024 * 1024)
+				// 最后尝试，不检查错误
+				msck.Socket.SetReadBuffer(1024 * 1024) // 1MB 兜底
 				}
 			}
 		}
+	}
+	// 输出实际缓冲区大小
+	if fd := int(msck.Socket.Socket()); fd > 0 {
+		rcvBuf, _ := syscall.GetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF)
+		sndBuf, _ := syscall.GetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF)
+		log.Printf("[buffer] %s:%d rcvbuf=%d (%.1fMB) sndbuf=%d (%.1fMB)", ip, port, rcvBuf, float64(rcvBuf)/1024/1024, sndBuf, float64(sndBuf)/1024/1024)
 	}
 
 	flags := uint32(0)
