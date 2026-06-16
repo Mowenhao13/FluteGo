@@ -56,7 +56,6 @@ type ReceiverSystem struct {
 	DestIP       string
 	SaveDir      string
 	saveDirMu    sync.RWMutex // protects SaveDir for concurrent reads/writes
-	slotMu       sync.Mutex   // protects slot cleanup from concurrent starts
 
 	// OnMetaReceived is an optional callback invoked once per unique FdtID when
 	// a MetaPkt is accepted. Set this before calling StartMetaProgram.
@@ -516,9 +515,7 @@ func (s *ReceiverSystem) processMeta(mainCtx context.Context, metaPkt *meta.Meta
 	go func(ctx context.Context, task *meta.MetaPkt) {
 		defer s.wg.Done()
 		defer func() {
-			s.slotMu.Lock()
 			<-s.workerPool
-			s.slotMu.Unlock()
 			log.Printf("[processMeta] fdtID=%d: released workerPool slot", task.File.FdtID)
 		}()
 		defer s.targets.Delete(task.File.FdtID) // 传输完成后释放 FDT ID 槽位

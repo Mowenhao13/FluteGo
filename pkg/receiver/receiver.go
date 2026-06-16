@@ -793,16 +793,12 @@ func (r *Receiver) readLoop(ctx context.Context, msck *sock.MsSocket) error {
 	}
 	ioHandler.Start()
 
-	// 启动消费者协程处理数据
-	// 消费者负责解码，计算量大，但过多会导致上下文切换开销
-	// 使用固定小值（2）而非 NumCPU() × socket 数量，避免高并发时
-	// 大量 goroutine 空转轮询产生调度压力。
-	consumerCount := 2
-	// if consumerCount < 4 {
-	// 	consumerCount = 4
-	// }
-
-	log.Printf("Starting %d consumers for connection", consumerCount)
+	// 消费者负责解码，使用 NumCPU 保证吞吐
+	consumerCount := runtime.NumCPU() * 2
+	if consumerCount < 2 {
+		consumerCount = 2
+	}
+	log.Printf("Starting %d consumers for connection (NumCPU=%d)", consumerCount, runtime.NumCPU())
 
 	var wg sync.WaitGroup
 	for i := 0; i < consumerCount; i++ {
