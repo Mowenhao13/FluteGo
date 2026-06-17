@@ -88,7 +88,7 @@ func main() {
 	}
 
 	// 1. Initialize System.
-	sys, err := system.InitReceiverSystem(0, destIP, saveFileDir, true)
+	sys, err := system.InitReceiverSystem(2, destIP, saveFileDir, true)
 	if err != nil {
 		log.Fatalf("Failed to initialize system: %v", err)
 	}
