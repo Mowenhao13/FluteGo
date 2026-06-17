@@ -1,6 +1,6 @@
 {
   "destIP": "192.168.0.10",
-  "network": { "maxPacketSize": 1408, "baseFilePort": 3400, "metaPort": 3399, "numPorts": 5 },
+  "network": { "maxPacketSize": 1408, "baseFilePort": 3400, "metaPort": 3399, "numPorts": 1 },
   "sender": { "sendFileDir": "", "sendRedundancyRatio": 1.25, "rateLimitMbps": 0, "startSendWait": 1 },
   "server": { "port": 8081, "enabled": true }
 }
