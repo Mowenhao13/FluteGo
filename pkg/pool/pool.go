@@ -7,7 +7,6 @@ import (
 	"sync"
 	"log"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -123,9 +122,8 @@ func (p *ConnPool) createNewConn(ip string, port int) (*sock.MsSocket, error) {
 		}
 	}
 	// 输出实际缓冲区大小
-	if fd := int(msck.Socket.Socket()); fd > 0 {
-		rcvBuf, _ := syscall.GetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF)
-		sndBuf, _ := syscall.GetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF)
+	if fd := msck.Socket.Socket(); fd > 0 {
+		rcvBuf, sndBuf := getSocketBufferSize(fd)
 		log.Printf("[buffer] %s:%d rcvbuf=%d (%.1fMB) sndbuf=%d (%.1fMB)", ip, port, rcvBuf, float64(rcvBuf)/1024/1024, sndBuf, float64(sndBuf)/1024/1024)
 	}
 
