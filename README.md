@@ -159,7 +159,7 @@ go build -o flute_receiver ./cmd/flute_receiver/
 
 两种测试场景：
 - **Mac→Win**：Apple M4/16GB/macOS 26.2（发送端）→ AMD Ryzen/32GB/Win 11（接收端），**不限速**
-- **Win→Mac**：AMD Ryzen/32GB/Win 11（发送端）→ Apple M4/16GB/macOS 26.2（接收端），**500 Mbps 限速**（另有无限速对照）
+- **Win→Mac**：AMD Ryzen 9 7940HX@5.2GHz/32GB/Win 11（发送端）→ Apple M4/16GB/macOS 26.2（接收端），**500 Mbps 限速**（另有无限速对照）
 
 所有测试均在正常网络环境下进行，无人工丢包。FEC 配置：RaptorQ（1.25×）/ NoCode，chunk=32KB，symbol=1400B。取前 3 次成功传输平均值。
 
@@ -203,7 +203,7 @@ go build -o flute_receiver ./cmd/flute_receiver/
 - Mac→Win 不限速时 Mac 发送端 10 核性能有限，NoCode 约 313–331 Mbps、RaptorQ 约 227–267 Mbps。
 - RaptorQ 开销 28.9%（1.25× 冗余 + 8 字节头部），NoCode 仅 0.6% 头部开销。
 
-### 并发传输（Win→Mac）
+<!-- ### 并发传输（Win→Mac）
 
 **NoCode（500 Mbps 限速）**
 
@@ -248,7 +248,7 @@ go build -o flute_receiver ./cmd/flute_receiver/
 
 - Win 发送端内存稳定（14–19 MB），无 FEC 解码状态。
 - NoCode GC 高于 RaptorQ（`sync.Pool` 写缓冲无状态缓存），限速场景因耗时拉长 GC 最高。
-- 所有场景内存稳定，无泄漏。
+- 所有场景内存稳定，无泄漏。 -->
 
 ### 接收端收包统计
 
