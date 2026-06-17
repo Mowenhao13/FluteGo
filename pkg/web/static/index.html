@@ -1284,13 +1284,12 @@
 
     try {
       const resp = await fetch(API_BASE + '/api/send', { method: 'POST', body: fd });
-      if (resp.ok) {
-        // Remove from local queue; WS will show progress
-        queuedFiles = queuedFiles.filter(e => e.key !== key);
-      } else {
+      if (!resp.ok) {
         entry.error   = true;
         entry.sending = false;
       }
+      // Keep entry in queuedFiles even on success — it shows "sending" state
+      // and will be removed only when the WS transfer record arrives.
     } catch (_) {
       entry.error   = true;
       entry.sending = false;
@@ -1331,12 +1330,12 @@
 
       try {
         const resp = await fetch(API_BASE + '/api/send', { method: 'POST', body: fd });
-        if (resp.ok) {
-          queuedFiles = queuedFiles.filter(e => e.key !== entry.key);
-        } else {
+        if (!resp.ok) {
           entry.error = true;
           entry.sending = false;
         }
+        // Keep entry in queuedFiles even on success — WS will remove it
+        // when the transfer record becomes active.
       } catch (_) {
         entry.error = true;
         entry.sending = false;
