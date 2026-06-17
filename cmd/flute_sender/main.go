@@ -46,6 +46,9 @@ var (
 var nextFdtID atomic.Uint32
 var nextPort  atomic.Int32
 
+// sendSem 串行发送信号量，确保一次只发送一个文件
+var sendSem = make(chan struct{}, 1)
+
 func ensurePool(destIP string) error {
 	poolMu.Lock()
 	defer poolMu.Unlock()
@@ -208,6 +211,8 @@ func main() {
 
 		// Async send (does not block the HTTP handler).
 		go func() {
+			sendSem <- struct{}{}
+			defer func() { <-sendSem }()
 			defer p.CloseFileConn(fid)
 			defer f.Close()
 				defer os.Remove(savePath)

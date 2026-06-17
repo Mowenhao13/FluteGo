@@ -130,7 +130,7 @@ var (
 func InitReceiverSystem(maxWorkers int32, destIP string, saveDir string, enableMd5 bool) (*ReceiverSystem, error) {
 	// 参数验证和默认值设置
 	if maxWorkers <= 0 {
-		maxWorkers = 10 // 扩大槽位以支持快速连续传输
+		maxWorkers = 1 // 单文件传输，避免并行解码拖慢速度
 	}
 
 	// 创建可取消的上下文
