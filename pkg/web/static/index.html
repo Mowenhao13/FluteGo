@@ -881,10 +881,15 @@
         transfers = {};
         const list = msg.data;
         if (Array.isArray(list)) {
-          list.forEach(r => { transfers[r.fdtId] = r; });
+          list.forEach(r => {
+            transfers[r.fdtId] = r;
+            // Remove queued entries that have a real transfer record now
+            removeMatchingQueued(r);
+          });
         }
       } else if (msg.type === 'update' && msg.data) {
         transfers[msg.data.fdtId] = msg.data;
+        removeMatchingQueued(msg.data);
       }
       renderAll();
     };
@@ -1003,16 +1008,18 @@
       const pct     = progressPct(r.progress);
       const isFailed = r.status === 'failed';
       const actionCell = r._isQueued
-        ? `<td>
-            <div style="display:flex;gap:4px;">
-              <button class="action-btn send-btn" data-qkey="${escHtml(r._qkey)}">
-                <i data-lucide="send" style="width:11px;height:11px"></i> 发送
-              </button>
-              <button class="action-btn delete-btn" data-qkey="${escHtml(r._qkey)}">
-                <i data-lucide="trash-2" style="width:11px;height:11px"></i> 删除
-              </button>
-            </div>
-           </td>`
+        ? (r._sending
+          ? '<td></td>'  // sending in progress — buttons hidden, WS record will replace
+          : `<td>
+              <div style="display:flex;gap:4px;">
+                <button class="action-btn send-btn" data-qkey="${escHtml(r._qkey)}">
+                  <i data-lucide="send" style="width:11px;height:11px"></i> 发送
+                </button>
+                <button class="action-btn delete-btn" data-qkey="${escHtml(r._qkey)}">
+                  <i data-lucide="trash-2" style="width:11px;height:11px"></i> 删除
+                </button>
+              </div>
+             </td>`)
         : '<td></td>';
       return `
         <tr${isFailed ? ' class="row-failed"' : ''}>
@@ -1231,16 +1238,28 @@
   // ══════════════════════════════════════════════════════════════════
   //  File picker (pure UI — no backend call)
   // ══════════════════════════════════════════════════════════════════
+
+  // Remove queued entry when a real transfer record for the same file appears
+  function removeMatchingQueued(record) {
+    if (!record || record.role !== 'sender') return;
+    queuedFiles = queuedFiles.filter(e => {
+      const key = e.file.name + '_' + e.file.size;
+      return record.fileName !== e.file.name || record.fileSize !== e.file.size;
+    });
+  }
+
   function normalizeQueued(entry) {
     const file = entry.file;
+    const isSending = entry.sending;
     return {
       _isQueued: true,
       _qkey:     entry.key,
+      _sending:  isSending,
       fdtId:    'q_' + entry.key,
       fileName:  file.name,
       fileSize:  file.size,
       role:      'sender',
-      status:    entry.sending ? 'transferring' : (entry.error ? 'failed' : 'queued'),
+      status:    isSending ? 'transferring' : (entry.error ? 'failed' : 'queued'),
       progress:  0,
       speedMbps: 0,
       fecType:   '—',
