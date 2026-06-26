@@ -225,13 +225,16 @@ func (p *ConnPool) InitMetaConn() (*sock.MsSocket, error) {
 }
 
 func (p *ConnPool) CreateFileConn(fdtID uint8, numConn uint8, basePort int) ([]*sock.MsSocket, []error) {
+	log.Printf("[pool] CreateFileConn: fdtID=%d, numConn=%d, basePort=%d, multicast=%s", fdtID, numConn, basePort, p.MulticastIP)
 	var conns []*sock.MsSocket
 	var errs []error
 
 	for i := 0; i < int(numConn); i++ {
 		port := basePort + i
+		log.Printf("[pool] creating connection for port %d", port)
 		msck, err := p.createNewConn(p.DestIP, port)
 		if err != nil {
+			log.Printf("[pool] failed to create connection for port %d: %v", port, err)
 			errs = append(errs, err)
 			continue
 		}
