@@ -30,6 +30,12 @@ const (
 	DestIP          = "192.168.0.12"
 )
 
+// Multicast param
+const (
+	MulticastAddr = "239.1.1.1"
+	MulticastTTL  = 2
+)
+
 const (
 	RsWithSSE2                   = true
 	RsWithSSSE3                  = true

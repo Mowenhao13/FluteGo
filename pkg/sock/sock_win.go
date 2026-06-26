@@ -225,3 +225,23 @@ func ipv4ToWindowsRawSockaddr(ipv4 net.IP, port int) (*windows.RawSockaddrAny, i
 func (s *WinSocket) Shutdown(mode int) error {
 	return windows.Shutdown(s.handle, mode)
 }
+
+func (s *WinSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) error {
+	// Windows 多播组加入：使用 IP_ADD_MEMBERSHIP
+	mreq := windows.IPMreq{}
+	copy(mreq.Multiaddr[:], mcastIP.To4())
+	// 默认使用任意接口 (0.0.0.0)
+	copy(mreq.Interface[:], net.IPv4zero.To4())
+	return windows.SetsockoptIPMreq(s.handle, windows.IPPROTO_IP, windows.IP_ADD_MEMBERSHIP, &mreq)
+}
+
+func (s *WinSocket) LeaveMulticastGroup(mcastIP net.IP, iface *net.Interface) error {
+	mreq := windows.IPMreq{}
+	copy(mreq.Multiaddr[:], mcastIP.To4())
+	copy(mreq.Interface[:], net.IPv4zero.To4())
+	return windows.SetsockoptIPMreq(s.handle, windows.IPPROTO_IP, windows.IP_DROP_MEMBERSHIP, &mreq)
+}
+
+func (s *WinSocket) SetMulticastTTL(ttl int) error {
+	return windows.SetsockoptInt(s.handle, windows.IPPROTO_IP, windows.IP_MULTICAST_TTL, ttl)
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"FluteGo/constant"
 	"FluteGo/pkg/apiserver"
 	"FluteGo/pkg/config"
 	"FluteGo/pkg/receiver"
@@ -63,10 +64,9 @@ func main() {
 	}
 
 	// Receiver 模式：获取本机实际 IP 地址而不是使用配置中的 127.0.0.1
-	destIP := utils.GetLocalIPv4()
-	// destIP := "192.168.0.10"
-	// destIP := "127.0.0.1"
-	log.Printf("[receiver] Using local IP: %s", destIP)
+	// 使用多播地址接收，不需要配置静态 ARP
+	multicastIP := constant.MulticastAddr
+	log.Printf("[receiver] Using multicast address: %s", multicastIP)
 
 	saveFileDir := cfg.Receiver.SaveFileDir
 	if saveFileDir == "" {
@@ -88,7 +88,7 @@ func main() {
 	}
 
 	// 1. Initialize System.
-	sys, err := system.InitReceiverSystem(2, destIP, saveFileDir, true)
+	sys, err := system.InitReceiverSystemWithMulticast(2, "0.0.0.0", saveFileDir, true, multicastIP)
 	if err != nil {
 		log.Fatalf("Failed to initialize system: %v", err)
 	}
@@ -99,7 +99,7 @@ func main() {
 
 	// API server — set up before starting subsystems so OnMetaReceived is wired.
 	srv := apiserver.New(cfg.Server.Port, "receiver").
-		WithDestIP(destIP).
+		WithDestIP(multicastIP).
 		WithFilePort(cfg.Network.BaseFilePort)
 	sys.OnMetaReceived = func(fdtID uint8, name string, size int64, fec, md5 string) {
 		srv.State().RegisterFile("receiver", fdtID, name, size, fec, md5)

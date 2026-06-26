@@ -112,3 +112,61 @@ func (s *UnixSocket) SetWriteDeadline(t time.Time) error {
 func (s *UnixSocket) Shutdown(mode int) error {
 	return syscall.Shutdown(s.fd, mode)
 }
+
+func (s *UnixSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) error {
+	mreq := syscall.IPMreq{
+		Multiaddr: [4]byte{mcastIP[0], mcastIP[1], mcastIP[2], mcastIP[3]},
+	}
+	if iface != nil {
+		copy(mreq.Interface[:], net.IPv4(127, 0, 0, 1).To4())
+		// 获取接口的本地IP地址
+		addrs, err := iface.Addrs()
+		if err == nil && len(addrs) > 0 {
+			for _, addr := range addrs {
+				if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+					copy(mreq.Interface[:], ipnet.IP.To4())
+					break
+				}
+			}
+		}
+	} else {
+		// 使用默认接口 (0.0.0.0)
+		copy(mreq.Interface[:], net.IPv4zero.To4())
+	}
+
+	if err := syscall.SetsockoptIPMreq(s.fd, syscall.IPPROTO_IP, syscall.IP_ADD_MEMBERSHIP, &mreq); err != nil {
+		return err
+	}
+
+	// 允许接收多播回环（本地发送端也能收到）
+	if err := syscall.SetsockoptInt(s.fd, syscall.IPPROTO_IP, syscall.IP_MULTICAST_LOOP, 1); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *UnixSocket) LeaveMulticastGroup(mcastIP net.IP, iface *net.Interface) error {
+	mreq := syscall.IPMreq{
+		Multiaddr: [4]byte{mcastIP[0], mcastIP[1], mcastIP[2], mcastIP[3]},
+	}
+	if iface != nil {
+		addrs, err := iface.Addrs()
+		if err == nil && len(addrs) > 0 {
+			for _, addr := range addrs {
+				if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+					copy(mreq.Interface[:], ipnet.IP.To4())
+					break
+				}
+			}
+		}
+	} else {
+		copy(mreq.Interface[:], net.IPv4zero.To4())
+	}
+
+	return syscall.SetsockoptIPMreq(s.fd, syscall.IPPROTO_IP, syscall.IP_DROP_MEMBERSHIP, &mreq)
+}
+
+func (s *UnixSocket) SetMulticastTTL(ttl int) error {
+	return syscall.SetsockoptInt(s.fd, syscall.IPPROTO_IP, syscall.IP_MULTICAST_TTL, ttl)
+}

@@ -4,8 +4,9 @@ import (
 	"FluteGo/constant"
 	"FluteGo/pkg/sock"
 	"fmt"
-	"sync"
 	"log"
+	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -26,6 +27,7 @@ type ConnPool struct {
 	StopChan     chan struct{}
 	DestIP       string
 	FileChunks   sync.Map
+	MulticastIP  string // 多播地址，为空时表示单播模式
 }
 
 type PoolStats struct {
@@ -44,6 +46,10 @@ var (
 )
 
 func InitConnPool(destIP string, mode uint8) {
+	InitConnPoolWithMulticast(destIP, mode, "")
+}
+
+func InitConnPoolWithMulticast(destIP string, mode uint8, multicastIP string) {
 	poolOnce.Do(func() {
 		connPool = &ConnPool{
 			Mode:        mode,
@@ -51,6 +57,7 @@ func InitConnPool(destIP string, mode uint8) {
 			ConnTimeout: -1,
 			DestIP:      destIP,
 			StopChan:    make(chan struct{}),
+			MulticastIP: multicastIP,
 		}
 		stats.LastPort = constant.META_PORT
 		go connPool.healthCheck()
@@ -117,6 +124,18 @@ func (p *ConnPool) createNewConn(ip string, port int) (*sock.MsSocket, error) {
 					// 尝试 2MB
 				// 最后尝试，不检查错误
 				msck.Socket.SetReadBuffer(1024 * 1024) // 1MB 兜底
+				}
+			}
+		}
+
+		// 如果配置了多播地址，加入多播组
+		if p.MulticastIP != "" {
+			mcastIP := net.ParseIP(p.MulticastIP)
+			if mcastIP != nil && mcastIP.To4() != nil {
+				if err := msck.Socket.JoinMulticastGroup(mcastIP.To4(), nil); err != nil {
+					log.Printf("[multicast] join group %s on port %d failed: %v", p.MulticastIP, port, err)
+				} else {
+					log.Printf("[multicast] joined group %s on port %d", p.MulticastIP, port)
 				}
 			}
 		}

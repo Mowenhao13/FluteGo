@@ -10,6 +10,7 @@ import (
 	"FluteGo/constant"
 	"context"
 	"fmt"
+	"log"
 	"math"
 
 	raptorq "github.com/xssnick/raptorq"
@@ -121,6 +122,7 @@ func (e *RqEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 
 		currentBatchSize := endChunk - startChunk
 		blocks := make([]*activeBlock, currentBatchSize)
+		maxBaseSymbols := uint32(0)
 		maxTotalSymbols := uint32(0)
 
 		// 1. 初始化当前窗口内的编码器
@@ -146,6 +148,9 @@ func (e *RqEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 				totalSymbols = baseSymbols
 			}
 
+			if baseSymbols > maxBaseSymbols {
+				maxBaseSymbols = baseSymbols
+			}
 			if totalSymbols > maxTotalSymbols {
 				maxTotalSymbols = totalSymbols
 			}
@@ -159,8 +164,39 @@ func (e *RqEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 			}
 		}
 
-		// 2. 在当前窗口内进行交错发送
-		for symID := uint32(0); symID < maxTotalSymbols; symID++ {
+		// 2. 分两阶段发送：先发送所有源符号，再发送冗余符号
+		//    利用 RaptorQ 系统模式特性：
+		//    - 源符号 (id < K): 直接返回原始数据，接收方可直接使用无需解码
+		//    - 冗余符号 (id >= K): 编码生成的修复符号，用于丢包恢复
+
+		// 阶段 1: 发送所有 chunk 的源符号（优先级最高）
+		for symID := uint32(0); symID < maxBaseSymbols; symID++ {
+			if ctx != nil {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
+			}
+
+			for _, blk := range blocks {
+				if symID >= blk.baseSymbols {
+					continue
+				}
+
+				symbol := blk.encoder.GenSymbol(symID)
+				if symbol == nil {
+					continue
+				}
+
+				if err := callback(blk.id, symID, blk.chunkSize, symbol); err != nil {
+					return fmt.Errorf("callback failed for chunk %d source symbol %d: %w", blk.id, symID, err)
+				}
+			}
+		}
+
+		// 阶段 2: 发送所有 chunk 的冗余符号（修复符号）
+		for symID := maxBaseSymbols; symID < maxTotalSymbols; symID++ {
 			if ctx != nil {
 				select {
 				case <-ctx.Done():
@@ -180,10 +216,8 @@ func (e *RqEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 				}
 
 				if err := callback(blk.id, symID, blk.chunkSize, symbol); err != nil {
-					// 仅对基础符号报错，冗余符号失败则忽略
-					if symID < blk.baseSymbols {
-						return fmt.Errorf("callback failed for chunk %d symbol %d: %w", blk.id, symID, err)
-					}
+					// 冗余符号发送失败不阻塞整体流程
+					log.Printf("warning: failed to send repair symbol %d for chunk %d: %v", symID, blk.id, err)
 				}
 			}
 		}

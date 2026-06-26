@@ -104,7 +104,13 @@ func main() {
 	flag.Parse()
 
 	if *cliMode {
-	runCLISender(*destIPFlag, *filePathFlag, *fecTypeFlag, uint8(*fdtIDFlag),
+		// CLI 模式：默认使用多播地址发送
+		targetDestIP := *destIPFlag
+		if targetDestIP == "" {
+			targetDestIP = constant.MulticastAddr
+			log.Printf("[CLI] No --dest-ip specified, using multicast: %s", targetDestIP)
+		}
+		runCLISender(targetDestIP, *filePathFlag, *fecTypeFlag, uint8(*fdtIDFlag),
 			*maxPacketSizeFlag, *baseFilePortFlag, *metaPortFlag, *numPortsFlag,
 			*sendFileDirFlag, *sendRedundancyRatioFlag, *rateLimitMbpsFlag, *percentageFlag, *startSendWaitFlag,
 			*csvFlag)

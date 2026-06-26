@@ -128,6 +128,27 @@ var (
 //  2. 初始化全局连接池
 //  3. 设置文件报告器
 func InitReceiverSystem(maxWorkers int32, destIP string, saveDir string, enableMd5 bool) (*ReceiverSystem, error) {
+	return InitReceiverSystemWithMulticast(maxWorkers, destIP, saveDir, enableMd5, "")
+}
+
+// InitReceiverSystemWithMulticast 初始化接收端系统（支持多播）
+// 功能说明：
+//
+//	创建并配置接收端系统的所有组件，支持加入多播组
+//
+// 参数：
+//
+//	maxWorkers  - 最大工作协程数，控制并发接收任务数
+//	destIP      - 目标IP地址，用于绑定网络连接
+//	saveDir     - 文件保存目录路径
+//	enableMd5   - 是否启用MD5校验
+//	multicastIP - 多播地址，为空时表示单播模式
+//
+// 返回值：
+//
+//	*ReceiverSystem - 初始化完成的接收端系统实例
+//	error - 初始化过程中发生的错误
+func InitReceiverSystemWithMulticast(maxWorkers int32, destIP string, saveDir string, enableMd5 bool, multicastIP string) (*ReceiverSystem, error) {
 	// 参数验证和默认值设置
 	if maxWorkers <= 0 {
 		maxWorkers = 2 // 单文件传输，避免并行解码拖慢速度
@@ -154,7 +175,7 @@ func InitReceiverSystem(maxWorkers int32, destIP string, saveDir string, enableM
 	}
 
 	// 初始化全局连接池
-	pool.InitConnPool(destIP, constant.POOL_RECV)
+	pool.InitConnPoolWithMulticast(destIP, constant.POOL_RECV, multicastIP)
 	s.recvPool = pool.GetConnPool()
 	if s.recvPool == nil {
 		return nil, fmt.Errorf("pool not initialized")
