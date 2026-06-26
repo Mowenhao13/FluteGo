@@ -3,6 +3,7 @@
 package sock
 
 import (
+	"fmt"
 	"net"
 	"syscall"
 	"time"
@@ -21,6 +22,12 @@ func newUnixSocket(addr *net.UDPAddr, mode uint8) (Socket, error) {
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
 	if err != nil {
 		return nil, err
+	}
+
+	// 接收模式需要 SO_REUSEADDR/SO_REUSEPORT，以便多个 socket 绑定到同端口（多播场景）
+	if mode == ModeRecv {
+		syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1) //nolint:errcheck
+		syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEPORT, 1) //nolint:errcheck
 	}
 
 	// 根据模式选择绑定地址
@@ -117,9 +124,9 @@ func (s *UnixSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) er
 	mreq := syscall.IPMreq{
 		Multiaddr: [4]byte{mcastIP[0], mcastIP[1], mcastIP[2], mcastIP[3]},
 	}
+
 	if iface != nil {
-		copy(mreq.Interface[:], net.IPv4(127, 0, 0, 1).To4())
-		// 获取接口的本地IP地址
+		// 使用接口的第一个 IPv4 地址
 		addrs, err := iface.Addrs()
 		if err == nil && len(addrs) > 0 {
 			for _, addr := range addrs {
@@ -130,11 +137,40 @@ func (s *UnixSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) er
 			}
 		}
 	} else {
-		// 使用默认接口 (0.0.0.0)
-		copy(mreq.Interface[:], net.IPv4zero.To4())
+		// 没有指定接口时，自动找一个非回环、已启动的网卡
+		ifaces, err := net.Interfaces()
+		if err == nil {
+			for _, ifc := range ifaces {
+				if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+					continue
+				}
+				addrs, err := ifc.Addrs()
+				if err != nil {
+					continue
+				}
+				for _, addr := range addrs {
+					if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+						copy(mreq.Interface[:], ipnet.IP.To4())
+						break
+					}
+				}
+				if mreq.Interface != [4]byte{0, 0, 0, 0} {
+					break
+				}
+			}
+		}
+	}
+
+	if mreq.Interface == [4]byte{0, 0, 0, 0} {
+		return fmt.Errorf("no suitable interface found for multicast")
 	}
 
 	if err := syscall.SetsockoptIPMreq(s.fd, syscall.IPPROTO_IP, syscall.IP_ADD_MEMBERSHIP, &mreq); err != nil {
+		return err
+	}
+
+	// 设置多播出口接口
+	if err := syscall.SetsockoptInet4Addr(s.fd, syscall.IPPROTO_IP, syscall.IP_MULTICAST_IF, mreq.Interface); err != nil {
 		return err
 	}
 
