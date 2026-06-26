@@ -5,6 +5,7 @@ package sock
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"time"
 	"unsafe"
@@ -227,12 +228,74 @@ func (s *WinSocket) Shutdown(mode int) error {
 }
 
 func (s *WinSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) error {
-	// Windows 多播组加入：使用 IP_ADD_MEMBERSHIP
-	mreq := windows.IPMreq{}
-	copy(mreq.Multiaddr[:], mcastIP.To4())
-	// 默认使用任意接口 (0.0.0.0)
-	copy(mreq.Interface[:], net.IPv4zero.To4())
-	return windows.SetsockoptIPMreq(s.handle, windows.IPPROTO_IP, windows.IP_ADD_MEMBERSHIP, &mreq)
+	// 收集要加入的接口 IPv4 地址列表
+	var targets []net.IP
+
+	if iface != nil {
+		// 指定了接口：只加入该接口
+		addrs, err := iface.Addrs()
+		if err == nil {
+			for _, addr := range addrs {
+				if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+					targets = append(targets, ipnet.IP.To4())
+					break
+				}
+			}
+		}
+		if len(targets) == 0 {
+			targets = append(targets, net.IPv4zero)
+		}
+	} else {
+		// 未指定接口：在所有非回环、已启用的 IPv4 接口上都加入多播
+		targets = listMulticastInterfaces()
+	}
+
+	// 在每个目标接口上加入多播组
+	var firstErr error
+	for _, ip := range targets {
+		mreq := windows.IPMreq{}
+		copy(mreq.Multiaddr[:], mcastIP.To4())
+		copy(mreq.Interface[:], ip.To4())
+		if err := windows.SetsockoptIPMreq(s.handle, windows.IPPROTO_IP, windows.IP_ADD_MEMBERSHIP, &mreq); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			log.Printf("[multicast] join %s on interface %s failed: %v", mcastIP.String(), ip.String(), err)
+		}
+	}
+	return firstErr
+}
+
+// listMulticastInterfaces 返回所有适合加入多播的接口 IPv4 地址。
+// 筛选条件：非回环、已启用、有 IPv4 地址。
+// 兜底返回 0.0.0.0。
+func listMulticastInterfaces() []net.IP {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return []net.IP{net.IPv4zero}
+	}
+
+	var result []net.IP
+	for _, f := range ifaces {
+		if f.Flags&net.FlagLoopback != 0 || f.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := f.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+				result = append(result, ipnet.IP.To4())
+				break
+			}
+		}
+	}
+
+	if len(result) == 0 {
+		result = append(result, net.IPv4zero)
+	}
+	return result
 }
 
 func (s *WinSocket) LeaveMulticastGroup(mcastIP net.IP, iface *net.Interface) error {
