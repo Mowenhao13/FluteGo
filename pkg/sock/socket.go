@@ -26,6 +26,9 @@ type Socket interface {
 	SetWriteDeadline(t time.Time) error
 	Shutdown(mode int) error
 	Socket() uintptr
+	JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) error
+	LeaveMulticastGroup(mcastIP net.IP, iface *net.Interface) error
+	SetMulticastTTL(ttl int) error
 }
 
 type MsSocket struct {
