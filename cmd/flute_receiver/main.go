@@ -51,11 +51,98 @@ func defaultDownloadsDir() string {
 	return "."
 }
 
+func runCLIReceiver(destIP, saveDir string, csvEnabled bool) {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	log.Printf("[CLI] ===== Receiver CLI Mode =====")
+	log.Printf("[CLI] Dest IP: %s, Save Dir: %s, CSV: %v", destIP, saveDir, csvEnabled)
+
+	// 创建保存目录
+	if err := os.MkdirAll(saveDir, 0755); err != nil {
+		log.Fatalf("[CLI] Failed to create save dir: %v", err)
+	}
+
+	// 初始化接收系统
+	log.Println("[CLI] Initializing receiver system...")
+	sys, err := system.InitReceiverSystemWithMulticast(2, "0.0.0.0", saveDir, csvEnabled, destIP)
+	if err != nil {
+		log.Fatalf("[CLI] Failed to initialize system: %v", err)
+	}
+
+	// 处理信号
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// 启动错误处理
+	sys.StartErrorProgram()
+	log.Println("[CLI] Error handling subsystem started.")
+
+	// 启动元数据接收
+	sys.StartMetaProgram()
+	log.Println("[CLI] Meta receiver subsystem started.")
+
+	// 启动文件接收工作器
+	sys.StartFileProgram()
+	log.Println("[CLI] File receiver subsystem started.")
+
+	// 监控进度
+	go func() {
+		log.Println("[CLI] Monitoring file progress...")
+		completedFiles := 0
+		totalFiles := -1
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case report := <-sys.FileReporter.ReportChan:
+				switch report.Status {
+				case 0: // Transferring
+					if totalFiles == -1 && report.TotalFiles > 0 {
+						totalFiles = int(report.TotalFiles)
+						log.Printf("[CLI] Session total files: %d", totalFiles)
+					}
+					pct := float64(report.ReceivedBytes) / float64(report.TotalBytes) * 100
+					log.Printf("[CLI] [FdtID:%d] Progress: %.1f%% (%d/%d bytes)",
+						report.FdtID, pct, report.ReceivedBytes, report.TotalBytes)
+
+				case 1: // Completed
+					completedFiles++
+					log.Printf("[CLI] ✅ File %d transfer COMPLETED. Total: %d bytes. Progress: %d/%d",
+						report.FdtID, report.TotalBytes, completedFiles, totalFiles)
+
+					if totalFiles > 0 && completedFiles >= totalFiles {
+						log.Println("[CLI] All files received. Initiating shutdown...")
+						stop()
+						return
+					}
+
+				case 2: // Error
+					log.Printf("[CLI] ❌ File %d transfer ERROR.", report.FdtID)
+				}
+			}
+		}
+	}()
+
+	// 等待信号
+	<-ctx.Done()
+	log.Println("[CLI] Shutdown signal received. Cleaning up...")
+	time.Sleep(1 * time.Second)
+	log.Println("[CLI] System shutdown complete.")
+}
+
 func main() {
 	runtime.GOMAXPROCS(8)
 
+	cliMode := flag.Bool("cli", false, "Run in CLI mode (no JSON config, no API server)")
+	destIPFlag := flag.String("dest-ip", "127.0.0.1", "Destination IP address")
+	saveDirFlag := flag.String("save-dir", "/tmp/receiver_test/", "Directory to save received files")
 	csvFlag := flag.Bool("csv", false, "Save transfer results to CSV file")
 	flag.Parse()
+
+	if *cliMode {
+		runCLIReceiver(*destIPFlag, *saveDirFlag, *csvFlag)
+		return
+	}
 
 	cfg, err := config.Load("config_receiver.json")
 	if err != nil {

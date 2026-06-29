@@ -85,3 +85,8 @@ const (
 	META_BUF     = 1500
 	META_TIMEOUT = 120 // in seconds
 )
+
+// FDT (File Delivery Table) 相关常量
+const (
+	FDT_EXPIRES = 4294967295 // FDT 过期时间 (Unix 时间戳)，默认永不过期
+)

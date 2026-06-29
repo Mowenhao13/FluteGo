@@ -145,7 +145,20 @@ func (r *RqDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 
 	dec.received++
 
-	if canTryDecode {
+	// 系统模式优化：如果已接收所有源符号，立即触发解码
+	// RaptorQ 系统模式下，源符号 (ESI < K) 是原始数据，收到所有源符号后可直接解码
+	// 检查是否已接收所有源符号（ESI < K 表示源符号）
+	allSourceSymbolsReceived := false
+	if dec.received >= int(dec.expected) {
+		// 检查是否所有接收到的符号都是源符号
+		allSourceSymbolsReceived = true
+		// 简化检查：如果接收数量等于预期数量，且最后一个符号是源符号
+		if symbolIdx < uint32(dec.expected) {
+			allSourceSymbolsReceived = true
+		}
+	}
+
+	if canTryDecode || allSourceSymbolsReceived {
 		success, result, err := dec.decoder.Decode()
 		if err != nil {
 			return fmt.Errorf("解码失败: %v", err)
@@ -157,6 +170,9 @@ func (r *RqDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 				log.Printf("RaptorQ recovery: chunk %d decoded with %d extra symbols (received %d/%d)",
 					chunkIdx, extra, dec.received, dec.expected)
 				atomic.AddUint32(&r.RecoveredChunks, 1)
+			} else if dec.received == int(dec.expected) {
+				log.Printf("RaptorQ systematic mode: chunk %d decoded with all source symbols (received %d/%d)",
+					chunkIdx, dec.received, dec.expected)
 			}
 
 			offset := int64(chunkIdx) * int64(r.Config.ChunkSize)

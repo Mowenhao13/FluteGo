@@ -681,9 +681,18 @@ func (r *Receiver) Start(ctx context.Context) error {
 		}
 	}()
 
-	// 启动超时监控：如果超过 IDLE_DATA_TIMEOUT 秒无数据到达，自动结束接收
+	// 启动超时监控：合并 FDT 过期和文件传输超时逻辑
+	// FDT 过期时间从 constant.FDT_EXPIRES 获取（Unix 时间戳）
+	// 文件传输超时使用 constant.IDLE_DATA_TIMEOUT
 	idleTimeout := time.Duration(constant.IDLE_DATA_TIMEOUT) * time.Second
 	idleCheckInterval := 3 * time.Second
+
+	// 计算 FDT 过期时间点
+	var fdtExpiresTime time.Time
+	if constant.FDT_EXPIRES > 0 {
+		fdtExpiresTime = time.Unix(int64(constant.FDT_EXPIRES), 0)
+	}
+
 	go func() {
 		ticker := time.NewTicker(idleCheckInterval)
 		defer ticker.Stop()
@@ -692,8 +701,25 @@ func (r *Receiver) Start(ctx context.Context) error {
 			case <-sessionCtx.Done():
 				return
 			case <-ticker.C:
+				// 检查 FDT 是否过期
+				if !fdtExpiresTime.IsZero() && time.Now().After(fdtExpiresTime) {
+					got := atomic.LoadInt64(&r.currWritten)
+					chunks := atomic.LoadUint32(&r.finishedChunks)
+					if chunks >= r.expectedChunks || got >= int64(r.config.FileSize) {
+						log.Printf("fdtID(%d): FDT expired, all chunks decoded (%d/%d, %d/%d bytes)\n", r.fdtID, chunks, r.expectedChunks, got, int64(r.config.FileSize))
+						r.closeOnce.Do(func() { close(r.finishChan) })
+						return
+					}
+					log.Printf("fdtID(%d): FDT EXPIRED — received %d/%d bytes (%.1f%%), %d/%d chunks", r.fdtID, got, int64(r.config.FileSize), float64(got)*100/float64(int64(r.config.FileSize)), chunks, r.expectedChunks)
+					r.MarkTimedOut()
+					stats := r.CollectStats("fdt_expired")
+					go WriteTransferCSV(r.saveDir, stats)
+					r.closeOnce.Do(func() { close(r.finishChan) })
+					return
+				}
+
 				last := atomic.LoadInt64(&r.lastDataTime)
-				// 场景1：数据传输中但中途停止 → lastDataTime 不再更新 → 15s后超时
+				// 场景1：数据传输中但中途停止 → lastDataTime 不再更新 → IDLE_DATA_TIMEOUT后超时
 				if last > 0 && time.Since(time.Unix(last, 0)) > idleTimeout {
 					got := atomic.LoadInt64(&r.currWritten)
 					chunks := atomic.LoadUint32(&r.finishedChunks)
@@ -711,7 +737,7 @@ func (r *Receiver) Start(ctx context.Context) error {
 					r.closeOnce.Do(func() { close(r.finishChan) })
 					return
 				}
-				// 场景2：自创建以来从未收到任何数据 → lastDataTime == 0 → 30s后强制超时
+				// 场景2：自创建以来从未收到任何数据 → lastDataTime == 0 → IDLE_DATA_TIMEOUT*2后强制超时
 				if last == 0 && time.Since(r.startTime) > idleTimeout*2 {
 					log.Printf("fdtID(%d): no data received since start (%ds timeout), finishing receive", r.fdtID, constant.IDLE_DATA_TIMEOUT*2)
 					r.MarkTimedOut()
