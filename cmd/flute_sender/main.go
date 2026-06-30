@@ -472,7 +472,10 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 	limiter, _ := sender.CreateRateLimiter(float64(rateLimitMbps), maxPacketSize)
 
 	// Create sender via NewSender (bypasses InitSender's constant-based config)
-	s, sErr := sender.NewSender(filePath, config, fid, 1, limiter, runtime.NumCPU())
+	// TOI 默认使用 FdtID,TSI 使用 0
+	toi := uint32(fid)
+	tsi := uint32(0)
+	s, sErr := sender.NewSender(filePath, config, fid, toi, tsi, 1, limiter, runtime.NumCPU())
 	if sErr != nil {
 		log.Fatalf("[CLI] Failed to create sender: %v", sErr)
 	}

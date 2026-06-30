@@ -16,7 +16,6 @@ import (
 	"FluteGo/pkg/sock"
 	"FluteGo/pkg/utils"
 	"context"
-	"encoding/binary"
 	stdErrors "errors"
 	"math"
 	"fmt"
@@ -100,6 +99,7 @@ func GetReportChan(ctx context.Context) (chan<- Report, bool) {
 //	工作池模式：多个工作协程并行处理网络数据
 type Receiver struct {
 	fdtID            uint8
+	toi              uint32 // Transport Object Identifier (RFC 6726)
 	config           decoder.DecoderConfig
 	decoder          decoder.BaseDecoder
 	outputFile       *os.File
@@ -231,7 +231,10 @@ func InitReceiver(mt *meta.MetaPkt, saveDir string, enableMd5 bool) (*Receiver, 
 	expectedMd5 := mt.File.Md5
 	expectedPackets := calcExpectedPackets(config, chunkCount)
 
-	return newReceiver(outFilePath, config, mt.File.FdtID, chunkCount, expectedPackets, expectedMd5, enableMd5)
+	// TOI 默认使用 FdtID（实际使用时应从 FDT 获取）
+	toi := uint32(mt.File.FdtID)
+
+	return newReceiver(outFilePath, config, mt.File.FdtID, toi, chunkCount, expectedPackets, expectedMd5, enableMd5)
 }
 
 // calcExpectedPackets 计算文件传输预期的总数据包数
@@ -324,7 +327,7 @@ func calcExpectedPackets(config decoder.DecoderConfig, chunkCount uint32) int64 
 // 资源管理：
 //
 //	使用对象池复用写入请求对象，减少GC压力
-func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, expectedChunks uint32, expectedPackets int64, expectedMd5 string, enableMd5 bool) (*Receiver, error) {
+func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, toi uint32, expectedChunks uint32, expectedPackets int64, expectedMd5 string, enableMd5 bool) (*Receiver, error) {
 	// 确保目录存在
 	dir := filepath.Dir(outFilePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -343,6 +346,7 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 	// 初始化接收端实例
 	receiver := &Receiver{
 		fdtID:          fdtID,
+		toi:            toi,
 		config:         config,
 		outputFile:     file,
 		startTime:      time.Now(),
@@ -896,16 +900,34 @@ func (r *Receiver) processPacket(ctx context.Context, msck *sock.MsSocket, data 
 		atomic.AddInt64(&r.totalPackets, 1)
 		pool.GetConnPool().AddReceived(uint64(n))
 
-	if n < 8 {
+	if n < meta.LCTHeaderLength {
+		log.Printf("Packet too short for LCT header: %d bytes", n)
 		return
 	}
 
-	// 解析序列号
-	seqNum := binary.BigEndian.Uint64(data[:8])
+	// 解析 LCT 头部 (RFC 6726)
+	var lctHeader meta.LCTHeader
+	if err := lctHeader.Decode(data[:meta.LCTHeaderLength]); err != nil {
+		log.Printf("Decode LCT header failed: %v", err)
+		return
+	}
 
-	// 计算分块索引和符号索引
-	chunkIdx := uint32(seqNum >> 32)
-	symbolIdx := uint32(seqNum & 0xFFFFFFFF)
+	// 根据 TOI 路由
+	if lctHeader.IsFDT() {
+		// TOI=0: FDT XML，由 FDTReceiver 处理
+		// 这里暂时忽略，因为 FDT 接收在更上层处理
+		return
+	}
+
+	// TOI>0: 文件数据
+	// 验证 TOI 是否匹配当前接收的文件
+	if lctHeader.TOI != r.toi {
+		log.Printf("TOI mismatch: expected %d, got %d", r.toi, lctHeader.TOI)
+		return
+	}
+
+	chunkIdx := lctHeader.ChunkIndex
+	symbolIdx := lctHeader.SymbolID
 
 	// 标记接收开始（第一次有效数据）
 	if atomic.CompareAndSwapInt32(&r.receiveStarted, 0, 1) {
@@ -914,7 +936,7 @@ func (r *Receiver) processPacket(ctx context.Context, msck *sock.MsSocket, data 
 	}
 
 	// 提交给解码器
-	if err := r.decoder.AddSymbol(chunkIdx, symbolIdx, data[8:n]); err != nil {
+	if err := r.decoder.AddSymbol(chunkIdx, symbolIdx, data[meta.LCTHeaderLength:n]); err != nil {
 		// 仅记录错误，不退出接收循环
 		log.Printf("AddSymbol failed for chunk %d, symbol %d: %v", chunkIdx, symbolIdx, err)
 		return

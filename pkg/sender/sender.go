@@ -13,7 +13,6 @@ import (
 	"FluteGo/pkg/meta"
 	pool "FluteGo/pkg/pool"
 	"context"
-	"encoding/binary"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -49,6 +48,8 @@ import (
 //	使用工作池和连接池优化资源利用
 type Sender struct {
 	fdtID     uint8
+	toi       uint32 // Transport Object Identifier (RFC 6726)
+	tsi       uint32 // Transport Session Identifier (RFC 6726)
 	config    encoder.EncoderConfig
 	encoder   encoder.BaseEncoder
 	inputFile *os.File
@@ -174,7 +175,10 @@ func InitSender(mt *meta.MetaPkt, limiter *rate.Limiter, maxConcurrentSends int,
 	}
 
 	config := initEncoderConfig(mt, redundancyRatio)
-	return NewSender(inputFilePath, config, mt.File.FdtID, mt.TotalFiles, limiter, maxConcurrentSends)
+	// TOI 默认使用 FdtID,TSI 使用 0
+	toi := uint32(mt.File.FdtID)
+	tsi := uint32(0)
+	return NewSender(inputFilePath, config, mt.File.FdtID, toi, tsi, mt.TotalFiles, limiter, maxConcurrentSends)
 }
 
 // NewSender 创建新的发送端实例
@@ -187,8 +191,11 @@ func InitSender(mt *meta.MetaPkt, limiter *rate.Limiter, maxConcurrentSends int,
 //	inputFilePath - 输入文件的完整路径
 //	config - 编码器配置参数
 //	fdtID - 文件数据传输标识符
+//	toi - Transport Object Identifier (RFC 6726)
+//	tsi - Transport Session Identifier (RFC 6726)
 //	totalFiles - 总文件数（用于计算速率限制）
 //	limiter - 全局速率限制器（可选）
+//	maxConcurrentSends - 最大并发发送数
 //
 // 返回值：
 //
@@ -204,7 +211,7 @@ func InitSender(mt *meta.MetaPkt, limiter *rate.Limiter, maxConcurrentSends int,
 // 错误处理：
 //
 //	文件不存在、文件为空、分块大小无效等情况
-func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, totalFiles uint16, limiter *rate.Limiter, maxConcurrentSends int) (*Sender, error) {
+func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, toi uint32, tsi uint32, totalFiles uint16, limiter *rate.Limiter, maxConcurrentSends int) (*Sender, error) {
 	// 打开输入文件
 	file, err := os.Open(inputFilePath)
 	if err != nil {
@@ -269,6 +276,8 @@ func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, 
 	// 创建发送端实例
 	sender := &Sender{
 		fdtID:                fdtID,
+		toi:                  toi,
+		tsi:                  tsi,
 		config:               config,
 		encoder:              enc,
 		inputFile:            file,
@@ -371,11 +380,23 @@ func (s *Sender) processSendTask(sck *sock.MsSocket, bufPool *sync.Pool, task se
 	chunkIdx := task.chunkIdx
 	symbolID := task.symbolID
 
-	// 构建序列号
-	var seqNum uint64
-	seqNum = (uint64(chunkIdx) << 32) | uint64(symbolID)
+	// 构建 LCT 头部 (RFC 6726)
+	lctHeader := meta.NewLCTHeader(s.toi, uint8(s.config.Type), s.tsi)
+	lctHeader.ChunkIndex = chunkIdx
+	lctHeader.SymbolID = symbolID
 
-	binary.BigEndian.PutUint64(buf[:8], seqNum)
+	// 编码 LCT 头部
+	lctBytes, err := lctHeader.Encode()
+	if err != nil {
+		log.Printf("encode LCT header failed: chunk %d symbol %d: %v", chunkIdx, symbolID, err)
+		bufPool.Put(buf[:cap(buf)])
+		atomic.StoreInt32(&s.fatalSendErr, 1)
+		return
+	}
+
+	// 将 LCT 头部复制到缓冲区开头
+	copy(buf[:meta.LCTHeaderLength], lctBytes)
+
 	// 随机丢包：按 dropRatio 概率跳过发送
 	if s.dropRatio > 0 && rng.Float64() < s.dropRatio {
 		bufPool.Put(buf[:cap(buf)])
@@ -412,7 +433,7 @@ func (s *Sender) processSendTask(sck *sock.MsSocket, bufPool *sync.Pool, task se
 func (s *Sender) GetTotalBytesToSend() int64 {
 	if s.config.Type == encoder.EncoderReedSolomon {
 		totalSymbols := int64(s.chunkCount) * int64(s.config.DataShards+s.config.ParityShards)
-		return totalSymbols * int64(s.config.SymbolSize+8)
+		return totalSymbols * int64(s.config.SymbolSize+meta.LCTHeaderLength)
 	}
 
 	// For NoCode and RaptorQ
@@ -436,10 +457,10 @@ func (s *Sender) GetTotalBytesToSend() int64 {
 		if s.config.Type == encoder.EncoderRaptorQ {
 			symbols = int64(float64(symbols) * s.config.RedundancyRatio)
 			// RaptorQ typically sends full symbols
-			return symbols * int64(symSize+8)
+			return symbols * int64(symSize+meta.LCTHeaderLength)
 		}
 		// NoCode: payload is exactly size, plus headers
-		return size + (symbols * 8)
+		return size + (symbols * meta.LCTHeaderLength)
 	}
 
 	if fullChunks > 0 {
@@ -527,8 +548,8 @@ func (s *Sender) Start(ctx context.Context) error {
 	// 初始化缓冲区池
 	bufPool := &sync.Pool{
 		New: func() interface{} {
-			// 8 bytes header + symbol size
-			return make([]byte, 0, 8+int(s.config.SymbolSize))
+			// LCT header (24 bytes) + symbol size
+			return make([]byte, 0, meta.LCTHeaderLength+int(s.config.SymbolSize))
 		},
 	}
 
@@ -600,7 +621,7 @@ func (s *Sender) Start(ctx context.Context) error {
 	callback := encoder.NewChunkSendCallback(ctx, func(chunkIdx uint32, symbolID uint32, chunkSz uint32, symbolData []byte) error {
 		// 应用速率限制
 		if s.rateLimiter != nil {
-			packetBytes := len(symbolData) + 8 // 8 bytes header (SeqNum)
+			packetBytes := len(symbolData) + meta.LCTHeaderLength // LCT header (24 bytes)
 			if err := s.rateLimiter.WaitN(ctx, packetBytes); err != nil {
 				return fmt.Errorf("rate limit wait failed: %w", err)
 			}
@@ -608,12 +629,12 @@ func (s *Sender) Start(ctx context.Context) error {
 
 		// 从池中获取缓冲区并复制数据
 		buf := bufPool.Get().([]byte)
-		needed := 8 + len(symbolData)
+		needed := meta.LCTHeaderLength + len(symbolData)
 		if cap(buf) < needed {
 			buf = make([]byte, needed)
 		}
 		buf = buf[:needed]
-		copy(buf[8:], symbolData)
+		copy(buf[meta.LCTHeaderLength:], symbolData)
 
 		// 发生致命错误时停止编码，防止空转
 		if atomic.LoadInt32(&s.fatalSendErr) == 1 {
