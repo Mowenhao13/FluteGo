@@ -296,8 +296,8 @@ func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverh
 	}
 	fileConn := fileConns[0]
 
-	destAddr := &net.UDPAddr{IP: net.ParseIP(p.DestIP), Port: constant.BASE_FILE_PORT}
-	log.Printf("[SendFile] Sending FDT XML (%d bytes) to %s:%d (unified port) ...", len(fdtXML), p.DestIP, constant.BASE_FILE_PORT)
+	destAddr := &net.UDPAddr{IP: net.ParseIP(p.DestIP), Port: mt.BasePort}
+	log.Printf("[SendFile] Sending FDT XML (%d bytes) to %s:%d (unified port) ...", len(fdtXML), p.DestIP, mt.BasePort)
 	if _, wErr := fileConn.Socket.WriteToUDP(fdtXML, destAddr); wErr != nil {
 		return fmt.Errorf("Failed to send FDT XML: %v", wErr)
 	}
