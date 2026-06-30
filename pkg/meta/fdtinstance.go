@@ -132,3 +132,13 @@ func (f *FDTInstance) GetFile(toi uint32) *FDTFile {
 func (f *FDTInstance) FileCount() int {
 	return len(f.Files)
 }
+
+// NewFDTInstance 创建新的 FDT 实例
+func NewFDTInstance(fdtID uint32, version uint32, expires uint32) *FDTInstance {
+	return &FDTInstance{
+		XMLNS:   FDTNamespace,
+		FdtID:   fdtID,
+		Version: version,
+		Expires: expires,
+	}
+}

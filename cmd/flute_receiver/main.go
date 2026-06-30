@@ -76,9 +76,9 @@ func runCLIReceiver(destIP, saveDir string, csvEnabled bool) {
 	sys.StartErrorProgram()
 	log.Println("[CLI] Error handling subsystem started.")
 
-	// 启动元数据接收
+	// 启动元数据接收（现在接收 FDT XML）
 	sys.StartMetaProgram()
-	log.Println("[CLI] Meta receiver subsystem started.")
+	log.Println("[CLI] FDT receiver subsystem started.")
 
 	// 启动文件接收工作器
 	sys.StartFileProgram()

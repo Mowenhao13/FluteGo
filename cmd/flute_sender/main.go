@@ -93,7 +93,7 @@ func main() {
 	fdtIDFlag := flag.Int("fdt-id", 1, "File transfer ID (1-255, change per test to reuse receiver)")
 	maxPacketSizeFlag := flag.Int("max-packet-size", 1408, "Maximum UDP packet size")
 	baseFilePortFlag := flag.Int("base-file-port", 3400, "Base file transfer port")
-	metaPortFlag := flag.Int("meta-port", 3399, "Meta port")
+	_ = flag.Int("meta-port", 3399, "Meta port (deprecated, ignored)")
 	numPortsFlag := flag.Int("num-ports", 1, "Number of transfer ports")
 	sendFileDirFlag := flag.String("send-file-dir", "cmd/send_files/", "Directory for sent files")
 	sendRedundancyRatioFlag := flag.Float64("send-redundancy-ratio", 1.05, "Redundancy ratio")
@@ -421,7 +421,7 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 	defer p.CloseFileConn(fid)
 
 	// 构建 FDT XML 并通过统一端口发送
-	fdt := meta.NewFDTInstance(uint32(fid), 1, time.Now().Add(24*time.Hour))
+	fdt := meta.NewFDTInstance(uint32(fid), 1, uint32(time.Now().Add(24*time.Hour).Unix()))
 	fdtFile := meta.FDTFile{
 		ContentLocation: filepath.Base(filePath),
 		TOI:             uint32(fid),
@@ -440,10 +440,11 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 	}
 
 	// Send FDT XML via unified port (TOI=0)
-	fileConn := p.GetFileConn(fid)
-	if fileConn == nil {
+	_, fileConns, getConnErr := p.GetFileConn(fid)
+	if getConnErr != nil || len(fileConns) == 0 {
 		log.Fatal("[CLI] No file connection available")
 	}
+	fileConn := fileConns[0]
 	destAddr := &net.UDPAddr{IP: net.ParseIP(destIP), Port: baseFilePort}
 	log.Printf("[CLI] Sending FDT XML (%d bytes) to %s:%d (unified port) ...", len(fdtXML), destIP, baseFilePort)
 	if _, wErr := fileConn.Socket.WriteToUDP(fdtXML, destAddr); wErr != nil {
