@@ -111,7 +111,7 @@ func main() {
 			log.Printf("[CLI] No --dest-ip specified, using multicast: %s", targetDestIP)
 		}
 		runCLISender(targetDestIP, *filePathFlag, *fecTypeFlag, uint8(*fdtIDFlag),
-			*maxPacketSizeFlag, *baseFilePortFlag, *metaPortFlag, *numPortsFlag,
+			*maxPacketSizeFlag, *baseFilePortFlag, *numPortsFlag,
 			*sendFileDirFlag, *sendRedundancyRatioFlag, *rateLimitMbpsFlag, *percentageFlag, *startSendWaitFlag,
 			*csvFlag)
 		return
@@ -357,7 +357,7 @@ func senderFECTypeName(id uint8) string {
 
 // runCLISender runs the sender in CLI mode (no JSON config, no API server).
 func runCLISender(destIP, filePath, fecType string, fid uint8,
-	maxPacketSize, baseFilePort, metaPort, numPorts int,
+	maxPacketSize, baseFilePort, numPorts int,
 	sendFileDir string, sendRedundancyRatio float64,
 	rateLimitMbps, percentage, startSendWait int, csvEnabled bool) {
 
@@ -397,22 +397,17 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 	log.Printf("[CLI] OTI: FEC=%d, Symbol=%d (payload), Chunk=%d",
 		o.FECEncodingID, o.SymbolSize, o.MaximumChunkSize)
 
-	// Init connection pool (sender mode)
+	// Init connection pool (sender mode) - 统一端口，不再使用 meta port
 	pool.InitConnPool(destIP, constant.POOL_SEND)
 	p := pool.GetConnPool()
 	if p == nil {
 		log.Fatal("[CLI] Failed to initialize connection pool")
 	}
-	_, metaInitErr := p.InitMetaConn()
-	if metaInitErr != nil {
-		log.Fatalf("[CLI] Failed to init meta connection: %v", metaInitErr)
-	}
 	defer func() {
-		p.CloseMetaConn()
 		p.CloseAllConns()
 	}()
 
-	// Create file connections
+	// Create file connections - 统一端口，所有数据通过 file port 发送
 	// fid from CLI --fdt-id flag
 	conns, connErrs := p.CreateFileConn(fid, uint8(numPorts), baseFilePort)
 	for _, cerr := range connErrs {
@@ -425,43 +420,50 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 	}
 	defer p.CloseFileConn(fid)
 
-	// Build MetaPkt
-	f, openErr := os.Open(filePath)
-	if openErr != nil {
-		log.Fatalf("[CLI] Cannot open file: %v", openErr)
+	// 构建 FDT XML 并通过统一端口发送
+	fdt := meta.NewFDTInstance(uint32(fid), 1, time.Now().Add(24*time.Hour))
+	fdtFile := meta.FDTFile{
+		ContentLocation: filepath.Base(filePath),
+		TOI:             uint32(fid),
+		TransferLength:  uint64(fileInfo.Size()),
+		ContentLength:   uint64(fileInfo.Size()),
+		ContentType:     "application/octet-stream",
+		ContentEncoding: "identity",
+		ContentMD5:      "", // 可选：计算 MD5
+		FileETag:        fmt.Sprintf("%d-%d", fid, time.Now().UnixNano()),
 	}
-	mt, metaErr := meta.InitMetaPkt(f, o, baseFilePort, uint16(numPorts), fid)
-	f.Close()
-	if metaErr != nil {
-		log.Fatalf("[CLI] Failed to build MetaPkt: %v", metaErr)
+	fdt.AddFile(fdtFile)
+
+	fdtXML, fdtErr := fdt.SerializeFDT()
+	if fdtErr != nil {
+		log.Fatalf("[CLI] Failed to serialize FDT: %v", fdtErr)
 	}
 
-	// Send MetaPkt to receiver
-	metaConn, mcErr := p.GetMetaConn()
-	if mcErr != nil {
-		log.Fatalf("[CLI] Failed to get meta connection: %v", mcErr)
+	// Send FDT XML via unified port (TOI=0)
+	fileConn := p.GetFileConn(fid)
+	if fileConn == nil {
+		log.Fatal("[CLI] No file connection available")
 	}
-	metaData := mt.Serialize()
-	destAddr := &net.UDPAddr{IP: net.ParseIP(destIP), Port: metaPort}
-	log.Printf("[CLI] Sending MetaPkt (%d bytes) to %s:%d ...", len(metaData), destIP, metaPort)
-	if _, wErr := metaConn.Socket.WriteToUDP(metaData, destAddr); wErr != nil {
-		log.Fatalf("[CLI] Failed to send MetaPkt: %v", wErr)
+	destAddr := &net.UDPAddr{IP: net.ParseIP(destIP), Port: baseFilePort}
+	log.Printf("[CLI] Sending FDT XML (%d bytes) to %s:%d (unified port) ...", len(fdtXML), destIP, baseFilePort)
+	if _, wErr := fileConn.Socket.WriteToUDP(fdtXML, destAddr); wErr != nil {
+		log.Fatalf("[CLI] Failed to send FDT XML: %v", wErr)
 	}
-	log.Printf("[CLI] MetaPkt sent. Waiting %d seconds before data...", startSendWait)
+	log.Printf("[CLI] FDT XML sent. Waiting %d seconds before data...", startSendWait)
 	time.Sleep(time.Duration(startSendWait) * time.Second)
 
 	// Build encoder config WITH overridden redundancy ratio
-	chunkSize := mt.Oti.MaximumChunkSize
+	chunkSize := uint32(o.MaximumChunkSize)
 	if chunkSize == 0 {
 		chunkSize = uint32(constant.DefaultChunkSize)
 	}
 	config := encoder.EncoderConfig{
-		Type:            encoder.EncoderType(mt.Oti.FECEncodingID),
-		FileSize:        mt.File.TransferLen,
+		Type:            encoder.EncoderType(o.FECEncodingID),
+		FileSize:        uint64(fileInfo.Size()),
 		ChunkSize:       chunkSize,
-		SymbolSize:      mt.Oti.SymbolSize,
-		DataShards:      uint16(mt.Oti.DataShards),
-		ParityShards:    uint16(mt.Oti.ParityShards),
+		SymbolSize:      o.SymbolSize,
+		DataShards:      uint16(o.DataShards),
+		ParityShards:    uint16(o.ParityShards),
 		RedundancyRatio: sendRedundancyRatio, // From CLI flag, not constant!
 		MaxPacketSize:   uint16(maxPacketSize),
 	}
@@ -488,7 +490,7 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 
 	// Progress callback - print at every percent change
 	totalToSend := s.GetTotalBytesToSend()
-	fileSize := int64(mt.File.TransferLen)
+	fileSize := int64(fileInfo.Size())
 	var lastPct int64 = -1
 	s.SetProgressCallback(func(sent int64) {
 		// 将 wire 字节转换为 payload 字节，使进度与接收端可比
