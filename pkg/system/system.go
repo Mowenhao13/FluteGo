@@ -10,7 +10,9 @@ package system
 import (
 	"FluteGo/constant"
 	"FluteGo/pkg/errs"
+	"FluteGo/pkg/filedesc"
 	meta "FluteGo/pkg/meta"
+	"FluteGo/pkg/oti"
 	"FluteGo/pkg/pool"
 	receiver "FluteGo/pkg/receiver"
 	"FluteGo/pkg/sock"
@@ -51,6 +53,9 @@ type ReceiverSystem struct {
 	metaConn        *sock.MsSocket
 	targets         sync.Map
 	curReceived     sync.Map
+
+	// 单端口架构下活跃的 Receiver 映射（fdtID -> *receiver.Receiver）
+	activeReceiverMap sync.Map
 
 	FileReporter FileReporter
 	DestIP       string
@@ -342,16 +347,37 @@ func (s *ReceiverSystem) reportError(ctx context.Context, level uint8, err error
 	}
 }
 
-// StartMetaProgram 启动元数据接收程序
+// registerReceiver 注册一个活跃的文件接收器，用于单端口数据包分发。
+func (s *ReceiverSystem) registerReceiver(fdtID uint8, recv *receiver.Receiver) {
+	s.activeReceiverMap.Store(fdtID, recv)
+}
+
+// unregisterReceiver 注销文件接收器。
+func (s *ReceiverSystem) unregisterReceiver(fdtID uint8) {
+	s.activeReceiverMap.Delete(fdtID)
+}
+
+// dispatchFilePacket 根据 TOI 将文件数据包分发给对应的 Receiver。
+func (s *ReceiverSystem) dispatchFilePacket(ctx context.Context, toi uint32, data []byte) {
+	fdtID := uint8(toi)
+	if recvVal, ok := s.activeReceiverMap.Load(fdtID); ok {
+		recv := recvVal.(*receiver.Receiver)
+		recv.HandlePacket(ctx, data)
+	} else {
+		log.Printf("[MetaReceiver] No active receiver for TOI=%d, dropping packet", toi)
+	}
+}
+
+// StartMetaProgram 启动元数据接收程序（RFC 6726 统一端口架构）
 // 功能说明：
 //
-//	启动独立的协程监听UDP端口接收文件传输的元数据
+//	在统一端口接收 FDT XML（TOI=0）和文件数据（TOI>0）
 //
 // 核心流程：
-//  1. 初始化元数据连接
+//  1. 初始化文件连接（统一端口）
 //  2. 循环读取UDP数据报
-//  3. 解析元数据包
-//  4. 将有效的元数据包发送到元数据通道
+//  3. 解析 LCT 头部
+//  4. 根据 TOI 路由：TOI=0 是 FDT XML，TOI>0 是文件数据
 //
 // 网络处理：
 //
@@ -366,25 +392,22 @@ func (s *ReceiverSystem) StartMetaProgram() {
 		defer s.wg.Done()
 		defer close(s.metaChan)
 
-		metaConn, merr := s.recvPool.InitMetaConn()
-		if metaConn == nil {
-			err := fmt.Errorf("Failed to initialize meta connections\n")
-			s.reportError(s.ctx, uint8(errs.LevelFatal), err, 0)
-			return
-		}
-		if merr != nil {
-			s.reportError(s.ctx, uint8(errs.LevelFatal), merr, 0)
+		// 使用 file port 接收所有数据（统一端口架构）
+		// 创建临时连接用于接收 FDT XML（TOI=0）
+		// 注意：这里使用 baseFilePort，需要在初始化时设置
+		baseFilePort := constant.BASE_FILE_PORT // 默认 3400
+		tempConn, err := s.recvPool.CreateFileConn(0, 1, baseFilePort)
+		if err != nil || len(tempConn) == 0 {
+			errMsg := fmt.Errorf("failed to create temp connection on port %d: %v", baseFilePort, err)
+			s.reportError(s.ctx, uint8(errs.LevelFatal), errMsg, 0)
 			return
 		}
 
-		s.metaConn = metaConn
-		log.Printf("[MetaReceiver] Meta receiver listening on %s",
-			s.metaConn.Addr.IP.String())
+		conn := tempConn[0]
+		s.metaConn = conn
+		log.Printf("[MetaReceiver] Unified port receiver listening on port %d", baseFilePort)
 
 		buf := make([]byte, constant.META_BUF)
-
-		// 设置接收超时 (Windows上暂时禁用，避免问题)
-		// s.metaConn.Socket.SetReadDeadline(time.Now().Add(time.Duration(constant.META_TIMEOUT) * time.Second))
 
 		// 主接收循环
 		for {
@@ -394,8 +417,8 @@ func (s *ReceiverSystem) StartMetaProgram() {
 			default:
 			}
 
-			// 从UDP读取数据（使用通用的Socket接口方法）
-			bytesRecvd, err := metaConn.Socket.ReadFromUDP(buf)
+			// 从UDP读取数据
+			bytesRecvd, err := conn.Socket.ReadFromUDP(buf)
 			if err != nil {
 				select {
 				case <-s.ctx.Done():
@@ -409,7 +432,7 @@ func (s *ReceiverSystem) StartMetaProgram() {
 					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 						continue
 					}
-					log.Printf("Meta read error: %v", err)
+					log.Printf("Unified port read error: %v", err)
 					continue
 				}
 			}
@@ -418,34 +441,84 @@ func (s *ReceiverSystem) StartMetaProgram() {
 				continue
 			}
 
-			log.Printf("[MetaReceiver] Received %d bytes from sender", bytesRecvd)
+			log.Printf("[MetaReceiver] Received %d bytes from unified port", bytesRecvd)
 			// 复制数据以避免缓冲区竞争条件
 			data := make([]byte, bytesRecvd)
 			copy(data, buf[:bytesRecvd])
 
-			// 解析元数据包
-			mt, merr := meta.DeserializeMetaPkt(data)
-			if merr != nil {
-				log.Printf("[MetaReceiver] Failed to deserialize meta packet: %v", merr)
+			// 解析 LCT 头部
+			if len(data) < meta.LCTHeaderLength {
+				log.Printf("[MetaReceiver] Packet too short for LCT header: %d bytes", len(data))
 				continue
 			}
 
-			log.Printf("[MetaReceiver] Successfully parsed meta packet for file: %s (FdtID: %d)",
-				mt.File.Name, mt.File.FdtID)
-
-			if mt.File == nil {
-				log.Printf("Meta packet missing file descriptor, skipping")
+			var lctHeader meta.LCTHeader
+			if err := lctHeader.Decode(data[:meta.LCTHeaderLength]); err != nil {
+				log.Printf("[MetaReceiver] Failed to decode LCT header: %v", err)
 				continue
 			}
 
-			log.Printf("Received meta packet for FdtID: %d", mt.File.FdtID)
-			// mt.ShowPktInfo()
+			// 根据 TOI 路由
+			if lctHeader.TOI == meta.TOIFDT {
+				// TOI=0: FDT XML
+				fdtXML := data[meta.LCTHeaderLength:]
+				log.Printf("[MetaReceiver] Received FDT XML (%d bytes)", len(fdtXML))
 
-			// 将元数据包发送到处理通道
-			select {
-			case s.metaChan <- mt:
-			case <-s.ctx.Done():
-				return
+				// 解析 FDT XML
+				fdt, err := meta.DeserializeFDT(fdtXML)
+				if err != nil {
+					log.Printf("[MetaReceiver] Failed to deserialize FDT XML: %v", err)
+					continue
+				}
+
+				log.Printf("[MetaReceiver] Successfully parsed FDT XML: FdtID=%d, Files=%d",
+					fdt.FdtID, len(fdt.Files))
+
+				// 将 FDT 转换为 MetaPkt 以兼容现有代码
+				for _, file := range fdt.Files {
+					mt := &meta.MetaPkt{
+						File: &filedesc.FileDesc{
+							FdtID:           uint8(fdt.FdtID),
+							Name:            file.ContentLocation,
+							TransferLen:     file.TransferLength,
+							ContentLength:   file.ContentLength,
+							ContentType:     file.ContentType,
+							ContentEncoding: file.ContentEncoding,
+							Md5:             file.ContentMD5,
+							FileETag:        file.FileETag,
+						},
+						Oti: oti.Oti{
+							FECEncodingID:        fdt.FECOTIFECEncodingID,
+							SymbolSize:           fdt.FECOTIEncodingSymbolLength,
+							MaximumChunkSize:     fdt.FECOTIMaxSourceBlockLength,
+						},
+						TotalFiles: uint16(len(fdt.Files)),
+					}
+
+					// 从文件级 FEC-OTI 获取（如果存在）
+					if file.FECOTIFECEncodingID != 0 {
+						mt.Oti.FECEncodingID = file.FECOTIFECEncodingID
+					}
+					if file.FECOTIEncodingSymbolLength != 0 {
+						mt.Oti.SymbolSize = file.FECOTIEncodingSymbolLength
+					}
+					if file.FECOTIMaxSourceBlockLength != 0 {
+						mt.Oti.MaximumChunkSize = file.FECOTIMaxSourceBlockLength
+					}
+
+					log.Printf("[MetaReceiver] Processing file: %s (FdtID: %d, TOI: %d)",
+						mt.File.Name, mt.File.FdtID, file.TOI)
+
+					// 将元数据包发送到处理通道
+					select {
+					case s.metaChan <- mt:
+					case <-s.ctx.Done():
+						return
+					}
+				}
+			} else {
+				// TOI>0: 文件数据，根据 TOI 分发给对应 Receiver
+				s.dispatchFilePacket(s.ctx, lctHeader.TOI, data)
 			}
 		}
 	}()
@@ -636,25 +709,8 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 		}
 	}()
 
-	log.Printf("[runReceiver] fdtID=%d, basePort=%d, numPorts=%d, file=%s",
-		fdtID, task.BasePort, task.NumPorts, task.File.Name)
-
-	// 为文件创建连接
-	conns, connErrs := s.recvPool.CreateFileConn(fdtID, uint8(task.NumPorts), task.BasePort)
-	for _, cerr := range connErrs {
-		if cerr != nil {
-			log.Printf("[runReceiver] fdtID=%d: connection error: %v", fdtID, cerr)
-		}
-	}
-	if len(conns) == 0 {
-		log.Printf("[runReceiver] fdtID=%d: ALL connections failed (basePort=%d)", fdtID, task.BasePort)
-		err := fmt.Errorf("failed to create connections for fdtID %d (basePort=%d)", fdtID, task.BasePort)
-		s.reportError(ctx, uint8(errs.LevelError), err, fdtID)
-		close(recvReportChan)
-		return
-	}
-	log.Printf("[runReceiver] fdtID=%d: %d connections created, starting receiver", fdtID, len(conns))
-	defer s.recvPool.CloseFileConn(fdtID)
+	log.Printf("[runReceiver] fdtID=%d, file=%s (unified port mode)",
+		fdtID, task.File.Name)
 
 	// 初始化接收器
 	s.saveDirMu.RLock()
@@ -668,6 +724,10 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 		return
 	}
 	recv.ShowBasicInfo()
+
+	// 注册到单端口分发器
+	s.registerReceiver(fdtID, recv)
+	defer s.unregisterReceiver(fdtID)
 
 	// 设置完成回调，关闭报告通道
 	recv.OnComplete = func() {
@@ -696,8 +756,8 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 		close(recvReportChan)
 	}
 
-	// 启动接收器
-	if err := recv.Start(ctx); err != nil {
+	// 启动接收器（单端口被动模式，由 StartMetaProgram 统一分发数据包）
+	if err := recv.RunPassive(ctx); err != nil {
 		s.reportError(ctx, uint8(errs.LevelError), err, fdtID)
 		// 确保错误时通道被关闭
 		select {

@@ -56,15 +56,12 @@ func ensurePool(destIP string) error {
 		return nil
 	}
 	if globalPool != nil {
-		globalPool.CloseMetaConn()
+		globalPool.CloseAllConns()
 	}
 	pool.InitConnPool(destIP, 0)
 	p := pool.GetConnPool()
 	if p == nil {
 		return fmt.Errorf("pool init failed")
-	}
-	if _, err := p.InitMetaConn(); err != nil {
-		return err
 	}
 	globalPool = p
 	poolDestIP = destIP
@@ -188,14 +185,14 @@ func main() {
 			return 0, fmt.Errorf("cannot open saved file: %w", err)
 		}
 
-		// Port range atomically allocated (fid already allocated above).
-		portBase := int(nextPort.Add(int32(cfg.Network.NumPorts))) - cfg.Network.NumPorts
+		// RFC 6726 单端口架构：所有文件共用统一端口 3400
+		portBase := constant.BASE_FILE_PORT
+		numPorts := uint8(constant.NUM_PORTS)
 
 		// Build OTI.
 		o := fecTypeToOti(fecType)
 
 		// Create connections.
-		numPorts := uint8(cfg.Network.NumPorts)
 		conns, connErrs := p.CreateFileConn(fid, numPorts, portBase)
 		for _, cErr := range connErrs {
 			if cErr != nil {
@@ -252,7 +249,7 @@ func main() {
 	log.Println("Exit program")
 }
 
-func sendData(p *pool.ConnPool, wsck *sock.MsSocket, data []byte) error {
+func sendData(p *pool.ConnPool, wsck *sock.MsSocket, data []byte, port int) error {
 	if p == nil {
 		return fmt.Errorf("pool not initialized")
 	}
@@ -266,30 +263,46 @@ func sendData(p *pool.ConnPool, wsck *sock.MsSocket, data []byte) error {
 	}
 	destAddr := &net.UDPAddr{
 		IP:   ip,
-		Port: constant.META_PORT,
+		Port: port,
 	}
 	_, err := wsck.Socket.WriteToUDP(data, destAddr)
 	return err
 }
 
 func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverhead func(int64), onProgress func(int64), maxConcurrentSends int, srv *apiserver.Server, redundancyRatio float64, csvEnabled bool) error {
-	metaConn, err := p.GetMetaConn()
-	if err != nil {
-		return err
+	// 构建 FDT XML 并通过统一端口发送
+	fdt := meta.NewFDTInstance(uint32(mt.File.FdtID), 1, uint32(time.Now().Add(24*time.Hour).Unix()))
+	fdtFile := meta.FDTFile{
+		ContentLocation: mt.File.Name,
+		TOI:             uint32(mt.File.FdtID),
+		TransferLength:  mt.File.TransferLen,
+		ContentLength:   mt.File.ContentLength,
+		ContentType:     mt.File.ContentType,
+		ContentEncoding: mt.File.ContentEncoding,
+		ContentMD5:      mt.File.Md5,
+		FileETag:        mt.File.FileETag,
+	}
+	fdt.AddFile(fdtFile)
+
+	fdtXML, fdtErr := fdt.SerializeFDT()
+	if fdtErr != nil {
+		return fmt.Errorf("Failed to serialize FDT: %v", fdtErr)
 	}
 
-	metaData := mt.Serialize()
+	// 获取文件连接（统一端口）
+	_, fileConns, getConnErr := p.GetFileConn(mt.File.FdtID)
+	if getConnErr != nil || len(fileConns) == 0 {
+		return fmt.Errorf("No file connection available for fdtID %d", mt.File.FdtID)
+	}
+	fileConn := fileConns[0]
 
-	log.Printf("[SendFile] Meta connection: %s:%d (Mode: %d, FdtID: %d)",
-		p.DestIP, constant.META_PORT, p.Mode, metaConn.FdtID)
-	log.Printf("[SendFile] Sending metadata: %d bytes to %s:%d", len(metaData), p.DestIP, constant.META_PORT)
-
-	if err := sendData(p, metaConn, metaData); err != nil {
-		log.Printf("[SendFile] Failed to send metadata: %v", err)
-		return err
+	destAddr := &net.UDPAddr{IP: net.ParseIP(p.DestIP), Port: constant.BASE_FILE_PORT}
+	log.Printf("[SendFile] Sending FDT XML (%d bytes) to %s:%d (unified port) ...", len(fdtXML), p.DestIP, constant.BASE_FILE_PORT)
+	if _, wErr := fileConn.Socket.WriteToUDP(fdtXML, destAddr); wErr != nil {
+		return fmt.Errorf("Failed to send FDT XML: %v", wErr)
 	}
 
-	log.Printf("[SendFile] Metadata sent successfully")
+	log.Printf("[SendFile] FDT XML sent successfully")
 	log.Printf("Sender will be started after %d seconds\n", constant.START_SEND_WAIT)
 	time.Sleep(constant.START_SEND_WAIT * time.Second)
 

@@ -646,13 +646,6 @@ func (r *Receiver) ShowBasicInfo() {
 //   - 使用等待组同步所有协程
 //   - 错误传播和上下文取消链
 func (r *Receiver) Start(ctx context.Context) error {
-	runtime.ReadMemStats(&r.memStatsStart)
-
-	// 保存报告通道以便在写入协程中使用
-	if ch, ok := GetReportChan(ctx); ok {
-		r.reportChan = ch
-	}
-
 	// 获取全局连接池
 	p := pool.GetConnPool()
 	if p == nil {
@@ -664,15 +657,39 @@ func (r *Receiver) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to get connections for fdtID %d: %v", r.fdtID, err)
 	}
-
 	if len(conns) == 0 {
 		return fmt.Errorf("no connections available for fdtID %d", r.fdtID)
+	}
+
+	return r.runLifecycle(ctx, conns)
+}
+
+// RunPassive 以被动模式运行接收器（RFC 6726 统一端口架构）
+//
+// 在单端口模式下，数据包由上层 dispatcher 根据 TOI 分发给对应 Receiver，
+// 接收器本身不持有 socket，仅负责超时监控、解码写入和完成回调。
+func (r *Receiver) RunPassive(ctx context.Context) error {
+	return r.runLifecycle(ctx, nil)
+}
+
+// runLifecycle 运行接收器生命周期：超时监控、等待完成、MD5 校验、资源清理。
+// 当 conns 不为空时，为每个连接启动 readLoop；为空时则进入被动模式，等待外部包。
+func (r *Receiver) runLifecycle(ctx context.Context, conns []*sock.MsSocket) error {
+	runtime.ReadMemStats(&r.memStatsStart)
+
+	// 保存报告通道以便在写入协程中使用
+	if ch, ok := GetReportChan(ctx); ok {
+		r.reportChan = ch
 	}
 
 	// 创建会话级上下文
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 
-	errCh := make(chan error, len(conns))
+	errChCap := len(conns)
+	if errChCap == 0 {
+		errChCap = 1
+	}
+	errCh := make(chan error, errChCap)
 	var wg sync.WaitGroup
 
 	// 确保资源清理
@@ -774,17 +791,9 @@ func (r *Receiver) Start(ctx context.Context) error {
 		}()
 	}
 
-	// 等待所有协程完成
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
 	// 等待完成信号
 	select {
 	case <-sessionCtx.Done():
-	case <-done:
 	case <-r.finishChan: // 文件接收完成信号
 	}
 
@@ -894,7 +903,9 @@ func (r *Receiver) processPacket(ctx context.Context, msck *sock.MsSocket, data 
 
 		// 更新统计
 		now := time.Now().Unix()
-		atomic.StoreInt64(&msck.LastUsed, now)
+		if msck != nil {
+			atomic.StoreInt64(&msck.LastUsed, now)
+		}
 		atomic.StoreInt64(&r.lastDataTime, now)
 		atomic.AddInt64(&r.totalReceived, int64(n))
 		atomic.AddInt64(&r.totalPackets, 1)
@@ -942,6 +953,13 @@ func (r *Receiver) processPacket(ctx context.Context, msck *sock.MsSocket, data 
 		return
 	}
 
+}
+
+// HandlePacket 处理外部派发过来的单个数据包（RFC 6726 统一端口架构）
+//
+// 在单端口模式下，接收端只维护一个 socket，由上层根据 TOI 将数据包分发给对应 Receiver。
+func (r *Receiver) HandlePacket(ctx context.Context, data []byte) {
+	r.processPacket(ctx, nil, data)
 }
 
 // GetBytesWritten 返回当前已解码写入的字节数（线程安全）

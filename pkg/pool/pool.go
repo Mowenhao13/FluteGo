@@ -59,7 +59,7 @@ func InitConnPoolWithMulticast(destIP string, mode uint8, multicastIP string) {
 			StopChan:    make(chan struct{}),
 			MulticastIP: multicastIP,
 		}
-		stats.LastPort = constant.META_PORT
+		stats.LastPort = 0 // 统一端口架构，不再使用 meta port
 		go connPool.healthCheck()
 		go connPool.idleSenderMonitor()
 	})
@@ -216,12 +216,10 @@ func (p *ConnPool) ChunkTargetReached(fdtID uint8) bool {
 	return atomic.LoadUint32(&cp.written) >= expected
 }
 
+// InitMetaConn 已废弃，统一端口架构不再使用独立的 meta port
+// 保留此函数以兼容旧代码，但实际不再创建 meta 连接
 func (p *ConnPool) InitMetaConn() (*sock.MsSocket, error) {
-	conns, err := p.CreateFileConn(0, 1, constant.META_PORT)
-	if err != nil || len(conns) == 0 {
-		return nil, fmt.Errorf("failed to create meta connection: %v", err)
-	}
-	return conns[0], nil
+	return nil, fmt.Errorf("InitMetaConn is deprecated, use unified port architecture")
 }
 
 func (p *ConnPool) CreateFileConn(fdtID uint8, numConn uint8, basePort int) ([]*sock.MsSocket, []error) {

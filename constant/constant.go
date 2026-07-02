@@ -78,7 +78,7 @@ const (
 	IDLE_SENDER_TIMEOUT        = 60 // in seconds
 	IDLE_DATA_TIMEOUT          = 10 // in seconds，接收端无数据超时
 
-	META_PORT = 3399
+	META_PORT = 3400
 	POOL_SEND = 0
 	POOL_RECV = 1
 
