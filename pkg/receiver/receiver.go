@@ -133,6 +133,10 @@ type Receiver struct {
 	receiveStart   time.Time
 	receiveEnd     time.Time
 	memStatsStart  runtime.MemStats
+
+	// 单端口架构：异步数据包队列，避免阻塞 MetaReceiver 主循环
+	packetChan chan []byte
+	packetWg   sync.WaitGroup
 }
 
 // WriteRequest 写入请求结构
@@ -359,6 +363,7 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 		finishChan:     make(chan struct{}),
 		OnComplete:     nil,
 		dataChan:       make(chan *WriteRequest, 2560), // 初始化缓冲通道（增大以容纳重组后大量回调）
+		packetChan:     make(chan []byte, 4096),        // 单端口架构：异步数据包队列
 		writeRequestPool: sync.Pool{
 			New: func() interface{} {
 				return &WriteRequest{}
@@ -384,7 +389,34 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 		receiver.startWriterLoop()
 	}
 
+	// 启动单端口架构的异步数据包消费者
+	receiver.startPacketLoop()
+
 	return receiver, nil
+}
+
+// startPacketLoop 启动异步数据包消费循环（单端口架构）
+// 从 packetChan 读取数据包并调用 processPacket 处理，避免阻塞 MetaReceiver 主循环
+func (r *Receiver) startPacketLoop() {
+	r.packetWg.Add(1)
+	go func() {
+		defer r.packetWg.Done()
+		for data := range r.packetChan {
+			r.processPacket(context.Background(), nil, data)
+		}
+	}()
+}
+
+// EnqueuePacket 将数据包放入异步队列（单端口架构）
+// 由 MetaReceiver 的 dispatchFilePacket 调用，非阻塞
+func (r *Receiver) EnqueuePacket(ctx context.Context, data []byte) error {
+	select {
+	case r.packetChan <- data:
+		return nil
+	default:
+		atomic.AddInt64(&r.totalDropped, 1)
+		return fmt.Errorf("packet queue full for fdtID=%d", r.fdtID)
+	}
 }
 
 // startWriterLoop 启动文件写入循环
@@ -998,6 +1030,10 @@ func (r *Receiver) IsTimedOut() bool {
 //
 //	通过等待组确保写入循环完成后再关闭文件
 func (r *Receiver) Close() {
+	// 关闭数据包队列，停止异步消费循环
+	close(r.packetChan)
+	r.packetWg.Wait()
+
 	// 关闭数据通道，停止写入循环
 	close(r.dataChan)
 	r.writerWg.Wait()
