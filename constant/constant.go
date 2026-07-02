@@ -82,7 +82,7 @@ const (
 	POOL_SEND = 0
 	POOL_RECV = 1
 
-	META_BUF     = 1500
+	META_BUF     = 65535 // 接收缓冲区，需容纳 LCT 头部(24) + 最大符号数据
 	META_TIMEOUT = 120 // in seconds
 )
 

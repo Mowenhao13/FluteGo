@@ -23,6 +23,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // ReceiverSystem 接收端系统
@@ -58,8 +59,11 @@ type ReceiverSystem struct {
 	activeReceiverMap sync.Map
 
 	// 诊断计数器：dropped=队列满丢弃，orphan=Receiver未注册时丢弃
-	droppedPackets uint64
-	orphanPackets  uint64
+	droppedPackets   uint64
+	orphanPackets    uint64
+	fdtPackets       uint64 // TOI=0 的 FDT 包数
+	fileDataPackets  uint64 // TOI>0 的文件数据包数
+	lctDecodeErrors  uint64 // LCT 头部解码失败数
 
 	FileReporter FileReporter
 	DestIP       string
@@ -380,7 +384,10 @@ func (s *ReceiverSystem) dispatchFilePacket(ctx context.Context, toi uint32, dat
 		}
 	} else {
 		// Receiver 尚未注册（可能 FDT 还在处理中）
-		atomic.AddUint64(&s.orphanPackets, 1)
+		cnt := atomic.AddUint64(&s.orphanPackets, 1)
+		if cnt <= 5 || cnt%1000 == 0 {
+			log.Printf("[MetaReceiver] ORPHAN packet: TOI=%d (fdtID=%d) has no registered receiver (orphan #%d)", toi, fdtID, cnt)
+		}
 	}
 }
 
@@ -477,6 +484,30 @@ func (s *ReceiverSystem) StartMetaProgram() {
 
 		// 处理协程：从 channel 读取并路由数据包
 		var totalPackets uint64
+		// 定期统计日志：每 3 秒输出一次数据包接收/分发情况
+		statsTicker := time.NewTicker(3 * time.Second)
+		defer statsTicker.Stop()
+		go func() {
+			for {
+				select {
+				case <-s.ctx.Done():
+					return
+				case <-statsTicker.C:
+					tp := atomic.LoadUint64(&totalPackets)
+					if tp == 0 {
+						continue
+					}
+					fdt := atomic.LoadUint64(&s.fdtPackets)
+					fdp := atomic.LoadUint64(&s.fileDataPackets)
+					orph := atomic.LoadUint64(&s.orphanPackets)
+					drop := atomic.LoadUint64(&s.droppedPackets)
+					lctErr := atomic.LoadUint64(&s.lctDecodeErrors)
+					log.Printf("[MetaReceiver] STATS: total=%d, fdt=%d, fileData=%d, orphan=%d, dropped=%d, lctErr=%d",
+						tp, fdt, fdp, orph, drop, lctErr)
+				}
+			}
+		}()
+
 		for pkt := range packetChan {
 			totalPackets++
 			data := pkt.data
@@ -487,10 +518,15 @@ func (s *ReceiverSystem) StartMetaProgram() {
 
 			var lctHeader meta.LCTHeader
 			if err := lctHeader.Decode(data[:meta.LCTHeaderLength]); err != nil {
+				cnt := atomic.AddUint64(&s.lctDecodeErrors, 1)
+				if cnt <= 3 {
+					log.Printf("[MetaReceiver] LCT decode failed (#%d): %v, first bytes=% x", cnt, err, data[:min(len(data), 24)])
+				}
 				continue
 			}
 
 			if lctHeader.TOI == meta.TOIFDT {
+				atomic.AddUint64(&s.fdtPackets, 1)
 				// TOI=0: FDT XML
 				fdtXML := data[meta.LCTHeaderLength:]
 
@@ -532,8 +568,8 @@ func (s *ReceiverSystem) StartMetaProgram() {
 						mt.Oti.MaximumChunkSize = file.FECOTIMaxSourceBlockLength
 					}
 
-					log.Printf("[MetaReceiver] Processing file: %s (FdtID: %d, TOI: %d)",
-						mt.File.Name, mt.File.FdtID, file.TOI)
+					log.Printf("[MetaReceiver] Processing file: %s (FdtID: %d, TOI: %d, SymbolSize: %d, ChunkSize: %d)",
+						mt.File.Name, mt.File.FdtID, file.TOI, mt.Oti.SymbolSize, mt.Oti.MaximumChunkSize)
 
 					select {
 					case s.metaChan <- mt:
@@ -542,13 +578,21 @@ func (s *ReceiverSystem) StartMetaProgram() {
 					}
 				}
 			} else {
+				fdp := atomic.AddUint64(&s.fileDataPackets, 1)
+				// 前 3 个文件数据包打印日志，帮助诊断
+				if fdp <= 3 {
+					log.Printf("[MetaReceiver] File data packet #%d: TOI=%d, len=%d, chunkIdx=%d, symbolID=%d",
+						fdp, lctHeader.TOI, len(data), lctHeader.ChunkIndex, lctHeader.SymbolID)
+				}
 				// TOI>0: 文件数据，根据 TOI 分发给对应 Receiver
 				s.dispatchFilePacket(s.ctx, lctHeader.TOI, data)
 			}
 		}
 
-		log.Printf("[MetaReceiver] Reader stopped, total packets processed: %d, dropped=%d, orphan=%d",
-			totalPackets, atomic.LoadUint64(&s.droppedPackets), atomic.LoadUint64(&s.orphanPackets))
+		log.Printf("[MetaReceiver] Reader stopped, total=%d, fdt=%d, fileData=%d, dropped=%d, orphan=%d, lctErr=%d",
+			totalPackets, atomic.LoadUint64(&s.fdtPackets), atomic.LoadUint64(&s.fileDataPackets),
+			atomic.LoadUint64(&s.droppedPackets), atomic.LoadUint64(&s.orphanPackets),
+			atomic.LoadUint64(&s.lctDecodeErrors))
 	}()
 }
 

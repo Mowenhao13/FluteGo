@@ -78,6 +78,14 @@ func createWinSocket(ip string, port int) (windows.Handle, error) {
 		return 0, fmt.Errorf("Bind socket failed: %v", err)
 	}
 
+	// 设置默认接收超时（100ms），使 WSARecvFrom 不会永久阻塞，
+	// 让读取循环能定期检查 ctx.Done() 实现优雅退出。
+	// Windows 的 SO_RCVTIMEO 接受毫秒级 DWORD（而非 timeval）。
+	if err := windows.SetsockoptInt(sock, windows.SOL_SOCKET, SO_RCVTIMEO, 100); err != nil {
+		// 超时设置失败不致命，仅记录日志
+		log.Printf("[sock_win] set SO_RCVTIMEO=100ms failed: %v", err)
+	}
+
 	return sock, nil
 }
 
@@ -158,15 +166,42 @@ func (s *WinSocket) SetWriteBuffer(size int) error {
 }
 
 func (s *WinSocket) SetReadDeadline(t time.Time) error {
-	// Windows 上暂时禁用超时设置，避免 SetWaitableTimer 错误
-	// return windows.SetsockoptTimeval(s.handle, windows.SOL_SOCKET, SO_RCVTIMEO, &windows.Timeval{Sec: int32(t.Unix()), Usec: int32(t.UnixNano() % int64(time.Second))})
-	return nil
+	// Windows 的 SO_RCVTIMEO 接受毫秒级 DWORD（而非 timeval）。
+	// 将绝对时间点 t 转换为相对超时毫秒数。
+	var timeoutMs int32
+	if t.IsZero() {
+		timeoutMs = 0 // 取消超时，阻塞读取
+	} else {
+		d := time.Until(t)
+		if d < 0 {
+			timeoutMs = 1 // 已过期，立即超时
+		} else {
+			timeoutMs = int32(d / time.Millisecond)
+			if timeoutMs <= 0 {
+				timeoutMs = 1
+			}
+		}
+	}
+	return windows.SetsockoptInt(s.handle, windows.SOL_SOCKET, SO_RCVTIMEO, int(timeoutMs))
 }
 
 func (s *WinSocket) SetWriteDeadline(t time.Time) error {
-	// Windows 上暂时禁用超时设置，避免 SetWaitableTimer 错误
-	// return windows.SetsockoptTimeval(s.handle, windows.SOL_SOCKET, SO_SNDTIMEO, &windows.Timeval{Sec: int32(t.Unix()), Usec: int32(t.UnixNano() % int64(time.Second))})
-	return nil
+	// Windows 的 SO_SNDTIMEO 接受毫秒级 DWORD。
+	var timeoutMs int32
+	if t.IsZero() {
+		timeoutMs = 0
+	} else {
+		d := time.Until(t)
+		if d < 0 {
+			timeoutMs = 1
+		} else {
+			timeoutMs = int32(d / time.Millisecond)
+			if timeoutMs <= 0 {
+				timeoutMs = 1
+			}
+		}
+	}
+	return windows.SetsockoptInt(s.handle, windows.SOL_SOCKET, SO_SNDTIMEO, int(timeoutMs))
 }
 
 func (s *WinSocket) LocalAddr() net.Addr {
