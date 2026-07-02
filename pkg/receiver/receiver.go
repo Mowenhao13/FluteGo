@@ -911,6 +911,11 @@ func (r *Receiver) processPacket(ctx context.Context, msck *sock.MsSocket, data 
 		atomic.AddInt64(&r.totalPackets, 1)
 		pool.GetConnPool().AddReceived(uint64(n))
 
+	// 第一次收到数据包时打印日志，帮助诊断
+	if atomic.LoadInt64(&r.totalPackets) == 1 {
+		log.Printf("[Receiver] fdtID=%d: first packet received, %d bytes", r.fdtID, n)
+	}
+
 	if n < meta.LCTHeaderLength {
 		log.Printf("Packet too short for LCT header: %d bytes", n)
 		return

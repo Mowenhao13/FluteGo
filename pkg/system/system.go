@@ -350,6 +350,7 @@ func (s *ReceiverSystem) reportError(ctx context.Context, level uint8, err error
 // registerReceiver 注册一个活跃的文件接收器，用于单端口数据包分发。
 func (s *ReceiverSystem) registerReceiver(fdtID uint8, recv *receiver.Receiver) {
 	s.activeReceiverMap.Store(fdtID, recv)
+	log.Printf("[MetaReceiver] Receiver registered for fdtID=%d", fdtID)
 }
 
 // unregisterReceiver 注销文件接收器。
@@ -364,7 +365,8 @@ func (s *ReceiverSystem) dispatchFilePacket(ctx context.Context, toi uint32, dat
 		recv := recvVal.(*receiver.Receiver)
 		recv.HandlePacket(ctx, data)
 	} else {
-		log.Printf("[MetaReceiver] No active receiver for TOI=%d, dropping packet", toi)
+		// Receiver 尚未注册（可能 FDT 还在处理中），打印日志帮助诊断
+		log.Printf("[MetaReceiver] No active receiver for TOI=%d (fdtID=%d), dropping packet (%d bytes)", toi, fdtID, len(data))
 	}
 }
 
