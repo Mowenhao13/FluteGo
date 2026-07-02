@@ -225,7 +225,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	fecType := r.FormValue("fecType")
 	if fecType == "" {
-		fecType = "NoCode"
+		fecType = "RaptorQ" // 默认使用 RaptorQ，抗丢包能力更强
 	}
 
 	fdtID, err := s.sendFn(header.Filename, file, fecType)

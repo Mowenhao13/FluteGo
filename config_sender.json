@@ -1,6 +1,6 @@
 {
   "destIP": "239.1.1.1",
   "network": { "maxPacketSize": 1408, "baseFilePort": 3400, "metaPort": 3399, "numPorts": 1, "multicastIfaceIP": "192.168.0.12" },
-  "sender": { "sendFileDir": "", "sendRedundancyRatio": 1.25, "rateLimitMbps": 50, "startSendWait": 2 },
+  "sender": { "sendFileDir": "", "sendRedundancyRatio": 1.25, "rateLimitMbps": 800, "startSendWait": 2 },
   "server": { "port": 8081, "enabled": true }
 }

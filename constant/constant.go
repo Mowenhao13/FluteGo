@@ -19,7 +19,7 @@ const (
 	SendFileDir_win          = "cmd\\send_files\\"
 	SaveFileDir_win          = "Downloads\\"
 	SendRedundancyRatio      = 1.15
-	DefaultSendRateLimitMbps = 50 // default send rate limit; 0 disables throttling (跨设备多播建议 50 Mbps)
+	DefaultSendRateLimitMbps = 800 // default send rate limit; 0 disables throttling
 	WindowsSize              = 1
 
 	START_SEND_WAIT = 2 // seconds to wait before starting to send data (给接收端足够时间创建 Receiver)
