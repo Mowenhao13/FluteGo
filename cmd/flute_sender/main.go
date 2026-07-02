@@ -289,6 +289,18 @@ func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverh
 		return fmt.Errorf("Failed to serialize FDT: %v", fdtErr)
 	}
 
+	// 构建 LCT 头部 (TOI=0 表示 FDT，RFC 6726)
+	lctHeader := meta.NewLCTHeader(meta.TOIFDT, 0, 0)
+	lctBytes, lctErr := lctHeader.Encode()
+	if lctErr != nil {
+		return fmt.Errorf("Failed to encode LCT header for FDT: %v", lctErr)
+	}
+
+	// 拼接 LCT 头部 + FDT XML
+	fdtPacket := make([]byte, len(lctBytes)+len(fdtXML))
+	copy(fdtPacket[:len(lctBytes)], lctBytes)
+	copy(fdtPacket[len(lctBytes):], fdtXML)
+
 	// 获取文件连接（统一端口）
 	_, fileConns, getConnErr := p.GetFileConn(mt.File.FdtID)
 	if getConnErr != nil || len(fileConns) == 0 {
@@ -297,8 +309,9 @@ func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverh
 	fileConn := fileConns[0]
 
 	destAddr := &net.UDPAddr{IP: net.ParseIP(p.DestIP), Port: mt.BasePort}
-	log.Printf("[SendFile] Sending FDT XML (%d bytes) to %s:%d (unified port) ...", len(fdtXML), p.DestIP, mt.BasePort)
-	if _, wErr := fileConn.Socket.WriteToUDP(fdtXML, destAddr); wErr != nil {
+	log.Printf("[SendFile] Sending FDT XML (%d bytes + %d LCT header) to %s:%d (unified port) ...",
+		len(fdtXML), len(lctBytes), p.DestIP, mt.BasePort)
+	if _, wErr := fileConn.Socket.WriteToUDP(fdtPacket, destAddr); wErr != nil {
 		return fmt.Errorf("Failed to send FDT XML: %v", wErr)
 	}
 
@@ -452,6 +465,18 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 		log.Fatalf("[CLI] Failed to serialize FDT: %v", fdtErr)
 	}
 
+	// 构建 LCT 头部 (TOI=0 表示 FDT，RFC 6726)
+	lctHeader := meta.NewLCTHeader(meta.TOIFDT, 0, 0)
+	lctBytes, lctErr := lctHeader.Encode()
+	if lctErr != nil {
+		log.Fatalf("[CLI] Failed to encode LCT header for FDT: %v", lctErr)
+	}
+
+	// 拼接 LCT 头部 + FDT XML
+	fdtPacket := make([]byte, len(lctBytes)+len(fdtXML))
+	copy(fdtPacket[:len(lctBytes)], lctBytes)
+	copy(fdtPacket[len(lctBytes):], fdtXML)
+
 	// Send FDT XML via unified port (TOI=0)
 	_, fileConns, getConnErr := p.GetFileConn(fid)
 	if getConnErr != nil || len(fileConns) == 0 {
@@ -459,8 +484,9 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 	}
 	fileConn := fileConns[0]
 	destAddr := &net.UDPAddr{IP: net.ParseIP(destIP), Port: baseFilePort}
-	log.Printf("[CLI] Sending FDT XML (%d bytes) to %s:%d (unified port) ...", len(fdtXML), destIP, baseFilePort)
-	if _, wErr := fileConn.Socket.WriteToUDP(fdtXML, destAddr); wErr != nil {
+	log.Printf("[CLI] Sending FDT XML (%d bytes + %d LCT header) to %s:%d (unified port) ...",
+		len(fdtXML), len(lctBytes), destIP, baseFilePort)
+	if _, wErr := fileConn.Socket.WriteToUDP(fdtPacket, destAddr); wErr != nil {
 		log.Fatalf("[CLI] Failed to send FDT XML: %v", wErr)
 	}
 	log.Printf("[CLI] FDT XML sent. Waiting %d seconds before data...", startSendWait)
