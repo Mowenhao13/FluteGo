@@ -57,6 +57,10 @@ type ReceiverSystem struct {
 	// 单端口架构下活跃的 Receiver 映射（fdtID -> *receiver.Receiver）
 	activeReceiverMap sync.Map
 
+	// 诊断计数器：dropped=队列满丢弃，orphan=Receiver未注册时丢弃
+	droppedPackets uint64
+	orphanPackets  uint64
+
 	FileReporter FileReporter
 	DestIP       string
 	SaveDir      string
@@ -371,11 +375,12 @@ func (s *ReceiverSystem) dispatchFilePacket(ctx context.Context, toi uint32, dat
 		recv := recvVal.(*receiver.Receiver)
 		// 通过带缓冲的队列异步处理，避免 AddSymbol 或写入文件阻塞接收循环
 		if err := recv.EnqueuePacket(ctx, data); err != nil {
-			// 队列满时丢弃包（日志在 EnqueuePacket 内部）
+			// 队列满时丢弃包
+			atomic.AddUint64(&s.droppedPackets, 1)
 		}
 	} else {
-		// Receiver 尚未注册（可能 FDT 还在处理中），打印日志帮助诊断
-		log.Printf("[MetaReceiver] No active receiver for TOI=%d (fdtID=%d), dropping packet (%d bytes)", toi, fdtID, len(data))
+		// Receiver 尚未注册（可能 FDT 还在处理中）
+		atomic.AddUint64(&s.orphanPackets, 1)
 	}
 }
 
@@ -542,7 +547,8 @@ func (s *ReceiverSystem) StartMetaProgram() {
 			}
 		}
 
-		log.Printf("[MetaReceiver] Reader stopped, total packets processed: %d", totalPackets)
+		log.Printf("[MetaReceiver] Reader stopped, total packets processed: %d, dropped=%d, orphan=%d",
+			totalPackets, atomic.LoadUint64(&s.droppedPackets), atomic.LoadUint64(&s.orphanPackets))
 	}()
 }
 

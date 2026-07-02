@@ -414,7 +414,10 @@ func (r *Receiver) EnqueuePacket(ctx context.Context, data []byte) error {
 	case r.packetChan <- data:
 		return nil
 	default:
-		atomic.AddInt64(&r.totalDropped, 1)
+		dropped := atomic.AddInt64(&r.totalDropped, 1)
+		if dropped <= 5 || dropped%1000 == 0 {
+			log.Printf("[Receiver] fdtID=%d: packet queue full, dropped %d packets", r.fdtID, dropped)
+		}
 		return fmt.Errorf("packet queue full for fdtID=%d", r.fdtID)
 	}
 }
@@ -949,16 +952,20 @@ func (r *Receiver) processPacket(ctx context.Context, msck *sock.MsSocket, data 
 	if atomic.LoadInt64(&r.totalPackets) == 1 {
 		log.Printf("[Receiver] fdtID=%d: first packet received, %d bytes", r.fdtID, n)
 	}
+	// 每 100 个包打印一次进度，帮助诊断
+	if atomic.LoadInt64(&r.totalPackets)%100 == 0 {
+		log.Printf("[Receiver] fdtID=%d: processed %d packets, %d bytes received so far", r.fdtID, atomic.LoadInt64(&r.totalPackets), atomic.LoadInt64(&r.totalReceived))
+	}
 
 	if n < meta.LCTHeaderLength {
-		log.Printf("Packet too short for LCT header: %d bytes", n)
+		log.Printf("[Receiver] fdtID=%d: Packet too short for LCT header: %d bytes", r.fdtID, n)
 		return
 	}
 
 	// 解析 LCT 头部 (RFC 6726)
 	var lctHeader meta.LCTHeader
 	if err := lctHeader.Decode(data[:meta.LCTHeaderLength]); err != nil {
-		log.Printf("Decode LCT header failed: %v", err)
+		log.Printf("[Receiver] fdtID=%d: Decode LCT header failed: %v", r.fdtID, err)
 		return
 	}
 
@@ -966,13 +973,18 @@ func (r *Receiver) processPacket(ctx context.Context, msck *sock.MsSocket, data 
 	if lctHeader.IsFDT() {
 		// TOI=0: FDT XML，由 FDTReceiver 处理
 		// 这里暂时忽略，因为 FDT 接收在更上层处理
+		if atomic.LoadInt64(&r.totalPackets) <= 3 {
+			log.Printf("[Receiver] fdtID=%d: dropping FDT packet (TOI=0) in processPacket", r.fdtID)
+		}
 		return
 	}
 
 	// TOI>0: 文件数据
 	// 验证 TOI 是否匹配当前接收的文件
 	if lctHeader.TOI != r.toi {
-		log.Printf("TOI mismatch: expected %d, got %d", r.toi, lctHeader.TOI)
+		if atomic.LoadInt64(&r.totalPackets) <= 5 {
+			log.Printf("[Receiver] fdtID=%d: TOI mismatch: expected %d, got %d", r.fdtID, r.toi, lctHeader.TOI)
+		}
 		return
 	}
 
