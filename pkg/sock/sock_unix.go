@@ -125,6 +125,9 @@ func (s *UnixSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) er
 		Multiaddr: [4]byte{mcastIP[0], mcastIP[1], mcastIP[2], mcastIP[3]},
 	}
 
+	var selectedIfName string
+	var selectedIfIP net.IP
+
 	if iface != nil {
 		// 使用接口的第一个 IPv4 地址
 		addrs, err := iface.Addrs()
@@ -132,30 +135,90 @@ func (s *UnixSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) er
 			for _, addr := range addrs {
 				if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
 					copy(mreq.Interface[:], ipnet.IP.To4())
+					selectedIfName = iface.Name
+					selectedIfIP = ipnet.IP.To4()
 					break
 				}
 			}
 		}
 	} else {
 		// 没有指定接口时，自动找一个非回环、已启动的网卡
+		// 优先选择以太网（en0 通常是 macOS 主网卡），避免选到 WiFi
 		ifaces, err := net.Interfaces()
 		if err == nil {
+			// 打印所有可用接口，帮助诊断
+			fmt.Printf("[multicast] Available interfaces:\n")
 			for _, ifc := range ifaces {
 				if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
 					continue
 				}
-				addrs, err := ifc.Addrs()
-				if err != nil {
-					continue
-				}
+				addrs, _ := ifc.Addrs()
 				for _, addr := range addrs {
 					if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
-						copy(mreq.Interface[:], ipnet.IP.To4())
+						flags := ""
+						if ifc.Flags&net.FlagRunning != 0 {
+							flags += "RUNNING,"
+						}
+						if ifc.HardwareAddr != nil && len(ifc.HardwareAddr) > 0 {
+							// 以太网和 WiFi 都有 MAC，但可以通过名字区分
+						}
+						fmt.Printf("[multicast]   %s: %s (%s)\n", ifc.Name, ipnet.IP.To4().String(), flags)
+					}
+				}
+			}
+
+			// 优先选择以太网接口（en0），其次选择其他非回环接口
+			preferredOrder := []string{"en0", "eth0", "en1"}
+			for _, prefName := range preferredOrder {
+				for _, ifc := range ifaces {
+					if ifc.Name != prefName {
+						continue
+					}
+					if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+						continue
+					}
+					addrs, err := ifc.Addrs()
+					if err != nil {
+						continue
+					}
+					for _, addr := range addrs {
+						if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+							copy(mreq.Interface[:], ipnet.IP.To4())
+							selectedIfName = ifc.Name
+							selectedIfIP = ipnet.IP.To4()
+							break
+						}
+					}
+					if selectedIfIP != nil {
 						break
 					}
 				}
-				if mreq.Interface != [4]byte{0, 0, 0, 0} {
+				if selectedIfIP != nil {
 					break
+				}
+			}
+
+			// 如果优先接口没找到，回退到第一个可用的非回环接口
+			if selectedIfIP == nil {
+				for _, ifc := range ifaces {
+					if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+						continue
+					}
+					addrs, err := ifc.Addrs()
+					if err != nil {
+						continue
+					}
+					for _, addr := range addrs {
+						if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+							copy(mreq.Interface[:], ipnet.IP.To4())
+							selectedIfName = ifc.Name
+							selectedIfIP = ipnet.IP.To4()
+							break
+						}
+					}
+					if selectedIfIP != nil {
+						break
+					}
 				}
 			}
 		}
@@ -164,6 +227,9 @@ func (s *UnixSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) er
 	if mreq.Interface == [4]byte{0, 0, 0, 0} {
 		return fmt.Errorf("no suitable interface found for multicast")
 	}
+
+	fmt.Printf("[multicast] Selected interface: %s (%s) for group %s\n",
+		selectedIfName, selectedIfIP.String(), mcastIP.String())
 
 	if err := syscall.SetsockoptIPMreq(s.fd, syscall.IPPROTO_IP, syscall.IP_ADD_MEMBERSHIP, &mreq); err != nil {
 		return err

@@ -103,6 +103,7 @@ func main() {
 	percentageFlag := flag.Int("percentage", 100, "Send percentage of total data (1-100, for loss recovery testing)")
 	startSendWaitFlag := flag.Int("start-send-wait", 1, "Seconds to wait before sending")
 	csvFlag := flag.Bool("csv", false, "Save transfer results to CSV file alongside the sent file")
+	mcastIfaceFlag := flag.String("mcast-iface", "", "Multicast outgoing interface IP (e.g. 192.168.0.5, required for cross-device multicast)")
 	flag.Parse()
 
 	if *cliMode {
@@ -111,6 +112,11 @@ func main() {
 		if targetDestIP == "" {
 			targetDestIP = constant.MulticastAddr
 			log.Printf("[CLI] No --dest-ip specified, using multicast: %s", targetDestIP)
+		}
+		// 设置多播出口接口（跨设备必须指定，否则可能选错网卡）
+		if *mcastIfaceFlag != "" {
+			pool.SetMulticastIfaceIP(*mcastIfaceFlag)
+			log.Printf("[CLI] Multicast interface set to %s", *mcastIfaceFlag)
 		}
 		runCLISender(targetDestIP, *filePathFlag, *fecTypeFlag, uint8(*fdtIDFlag),
 			*maxPacketSizeFlag, *baseFilePortFlag, *numPortsFlag,
@@ -123,6 +129,12 @@ func main() {
 	if err != nil {
 		log.Printf("[config] load error: %v, using defaults", err)
 		cfg = config.Default()
+	}
+
+	// 设置多播出口接口（跨设备多播必须指定，从配置文件读取）
+	if cfg.Network.MulticastIfaceIP != "" {
+		pool.SetMulticastIfaceIP(cfg.Network.MulticastIfaceIP)
+		log.Printf("[config] Multicast interface set to %s", cfg.Network.MulticastIfaceIP)
 	}
 
 	// Signal context for graceful shutdown.

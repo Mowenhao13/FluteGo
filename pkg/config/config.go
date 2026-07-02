@@ -16,12 +16,13 @@ type Config struct {
 	Server   ServerConfig   `json:"server"`
 }
 
-// NetworkConfig holds UDP transport parameters.
+// NetworkConfig holds network parameters.
 type NetworkConfig struct {
-	MaxPacketSize int `json:"maxPacketSize"` // 1408
-	BaseFilePort  int `json:"baseFilePort"`  // 3400
-	MetaPort      int `json:"metaPort"`      // 3399
-	NumPorts      int `json:"numPorts"`      // 1
+	MaxPacketSize     int    `json:"maxPacketSize"`     // 1408
+	BaseFilePort      int    `json:"baseFilePort"`      // 3400
+	MetaPort          int    `json:"metaPort"`          // 3399 (deprecated)
+	NumPorts          int    `json:"numPorts"`          // 1
+	MulticastIfaceIP  string `json:"multicastIfaceIP"`  // 多播出口接口 IP（跨设备多播必须指定）
 }
 
 // SenderConfig holds sender-side parameters.

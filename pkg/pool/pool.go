@@ -28,6 +28,7 @@ type ConnPool struct {
 	DestIP       string
 	FileChunks   sync.Map
 	MulticastIP  string // 多播地址，为空时表示单播模式
+	MulticastIfaceIP string // 多播出口接口的 IP 地址，为空时自动选择
 }
 
 type PoolStats struct {
@@ -51,13 +52,18 @@ func InitConnPool(destIP string, mode uint8) {
 
 func InitConnPoolWithMulticast(destIP string, mode uint8, multicastIP string) {
 	poolOnce.Do(func() {
+		ifaceIPLock.Lock()
+		ifaceIP := globalMulticastIfaceIP
+		ifaceIPLock.Unlock()
+
 		connPool = &ConnPool{
-			Mode:        mode,
-			MaxConns:    100,
-			ConnTimeout: -1,
-			DestIP:      destIP,
-			StopChan:    make(chan struct{}),
-			MulticastIP: multicastIP,
+			Mode:             mode,
+			MaxConns:         100,
+			ConnTimeout:      -1,
+			DestIP:           destIP,
+			StopChan:         make(chan struct{}),
+			MulticastIP:      multicastIP,
+			MulticastIfaceIP: ifaceIP,
 		}
 		stats.LastPort = 0 // 统一端口架构，不再使用 meta port
 		go connPool.healthCheck()
@@ -122,8 +128,21 @@ func (p *ConnPool) createNewConn(ip string, port int) (*sock.MsSocket, error) {
 				} else {
 					log.Printf("[multicast] sender TTL set to %d", constant.MulticastTTL)
 				}
+				// 查找指定的多播出口接口（如果设置了 MulticastIfaceIP）
+				var iface *net.Interface
+				if p.MulticastIfaceIP != "" {
+					ifaceIP := net.ParseIP(p.MulticastIfaceIP)
+					if ifaceIP != nil {
+						if foundIf, err := findInterfaceByIP(ifaceIP); err == nil {
+							iface = foundIf
+							log.Printf("[multicast] using specified interface: %s (%s)", iface.Name, p.MulticastIfaceIP)
+						} else {
+							log.Printf("[multicast] interface with IP %s not found: %v, using auto-select", p.MulticastIfaceIP, err)
+						}
+					}
+				}
 				// 加入多播组以自动设置出口接口（JoinMulticastGroup 会设置 IP_MULTICAST_IF）
-				if err := msck.Socket.JoinMulticastGroup(mcastIP.To4(), nil); err != nil {
+				if err := msck.Socket.JoinMulticastGroup(mcastIP.To4(), iface); err != nil {
 					log.Printf("[multicast] sender join group %s failed: %v", p.MulticastIP, err)
 				} else {
 					log.Printf("[multicast] sender joined group %s", p.MulticastIP)
@@ -234,8 +253,44 @@ func (p *ConnPool) ChunkTargetReached(fdtID uint8) bool {
 	return atomic.LoadUint32(&cp.written) >= expected
 }
 
+// findInterfaceByIP 根据 IP 地址查找对应的网络接口
+func findInterfaceByIP(ip net.IP) (*net.Interface, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok {
+				if ipnet.IP.Equal(ip) {
+					return &ifc, nil
+				}
+			}
+		}
+	}
+	return nil, fmt.Errorf("no interface found with IP %s", ip.String())
+}
+
+// SetMulticastIfaceIP 设置多播出口接口 IP（全局，必须在 InitConnPool 之前调用）
+func SetMulticastIfaceIP(ip string) {
+	ifaceIPLock.Lock()
+	defer ifaceIPLock.Unlock()
+	globalMulticastIfaceIP = ip
+}
+
+var (
+	ifaceIPLock            sync.Mutex
+	globalMulticastIfaceIP string
+)
+
 // InitMetaConn 已废弃，统一端口架构不再使用独立的 meta port
-// 保留此函数以兼容旧代码，但实际不再创建 meta 连接
 func (p *ConnPool) InitMetaConn() (*sock.MsSocket, error) {
 	return nil, fmt.Errorf("InitMetaConn is deprecated, use unified port architecture")
 }
