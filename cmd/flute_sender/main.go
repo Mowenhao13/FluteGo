@@ -272,6 +272,10 @@ func sendData(p *pool.ConnPool, wsck *sock.MsSocket, data []byte, port int) erro
 func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverhead func(int64), onProgress func(int64), maxConcurrentSends int, srv *apiserver.Server, redundancyRatio float64, csvEnabled bool) error {
 	// 构建 FDT XML 并通过统一端口发送
 	fdt := meta.NewFDTInstance(uint32(mt.File.FdtID), 1, uint32(time.Now().Add(24*time.Hour).Unix()))
+	// 设置会话级 FEC-OTI (RFC 5052)，接收端依赖这些参数解码
+	fdt.FECOTIFECEncodingID = mt.Oti.FECEncodingID
+	fdt.FECOTIMaxSourceBlockLength = mt.Oti.MaximumChunkSize
+	fdt.FECOTIEncodingSymbolLength = mt.Oti.SymbolSize
 	fdtFile := meta.FDTFile{
 		ContentLocation: mt.File.Name,
 		TOI:             uint32(mt.File.FdtID),
@@ -448,6 +452,10 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 
 	// 构建 FDT XML 并通过统一端口发送
 	fdt := meta.NewFDTInstance(uint32(fid), 1, uint32(time.Now().Add(24*time.Hour).Unix()))
+	// 设置会话级 FEC-OTI (RFC 5052)，接收端依赖这些参数解码
+	fdt.FECOTIFECEncodingID = o.FECEncodingID
+	fdt.FECOTIMaxSourceBlockLength = o.MaximumChunkSize
+	fdt.FECOTIEncodingSymbolLength = o.SymbolSize
 	fdtFile := meta.FDTFile{
 		ContentLocation: filepath.Base(filePath),
 		TOI:             uint32(fid),
