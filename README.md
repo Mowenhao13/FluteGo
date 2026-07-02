@@ -28,19 +28,49 @@ sequenceDiagram
     participant FS as File Sender
     participant FR as File Receiver
     
-    Note over MS,MR: Step 1: Metadata Transfer
-    MS->>MR: Send File Metadata<br/>(OTI, File Size, File Name, Type)
+    Note over MS,MR: Step 1: FDT Metadata Transfer
+    MS->>MR: Send FDT XML<br/>(File Description Table: OTI, File Size, File Name, FEC Type)
+    Note right of MS: FDT 重发 3 次<br/>确保跨设备接收
     
     Note over MR,FR: Step 2: Receiver Preparation
-    MR->>FR: Start File Receiver<br/>Open Corresponding Port
+    MR->>FR: Parse FDT & Start File Receiver<br/>Register Receiver for fdtID
     
     Note over MS,FS: Step 3: Data Transmission
     MS->>FS: Start File Sender
-    FS->>FR: Asynchronously Send File Data
+    FS->>FR: Send File Data Packets<br/>(LCT Header + Symbol)
+    Note right of FS: 支持 NoCode/RaptorQ/ReedSolomon<br/>速率限制 + 百分比控制
     
-    Note over FR: Step 4: Resource Cleanup
-    FR->>FR: Data Receiving Completed<br/>Close Port
+    Note over FR: Step 4: Data Processing
+    FR->>FR: Decode Symbols & Write Chunks<br/>Async Queue (4096 buffer)
+    
+    Note over FR: Step 5: File Assembly & Cleanup
+    FR->>FR: Reassemble File & Verify MD5<br/>Close Port
 ```
+
+## 传输模式
+
+### 单播模式（Unicast）
+- 发送端指定接收端 IP 地址，通过 UDP 单播传输文件
+- 适用于点对点传输，支持跨网段（需路由可达）
+- 配置简单，无需特殊网络设置
+
+### 多播模式（Multicast）
+- 使用多播地址（如 `239.1.1.1`）进行一对多传输
+- 支持同一子网内多个接收端同时接收
+- 需要配置多播接口（`--mcast-iface`）指定出口网卡
+- 发送端设置 `IP_MULTICAST_TTL=2`，支持跨 1 个路由器
+- 接收端需加入多播组（IGMP）
+
+**多播配置示例：**
+```bash
+# 发送端（指定以太网接口 192.168.0.12）
+go run ./cmd/flute_sender/main.go --cli --file test.pdf --dest-ip 239.1.1.1 --mcast-iface 192.168.0.12
+
+# 接收端（指定以太网接口 192.168.0.10）
+go run ./cmd/flute_receiver/main.go --cli --dest-ip 239.1.1.1 --mcast-iface 192.168.0.10
+```
+
+**注意：** 多播模式下，发送端和接收端必须在同一子网或相邻子网（TTL=2）。多网卡环境必须指定正确的以太网接口，否则多播包会从错误的网卡发出。
 
 ## 开始使用前
 [静态 ARP 配置说明](STATIC_ARP.md)
@@ -126,14 +156,16 @@ Both sender and receiver support a CLI mode (`--cli` flag) that bypasses config 
 ### 一键编译所有平台
 
 ```bash
-# 发送端
+# macOS Intel
 GOOS=darwin GOARCH=amd64 go build -o release/flute_sender_darwin_amd64 ./cmd/flute_sender/
-GOOS=darwin GOARCH=arm64 go build -o release/flute_sender_darwin_arm64 ./cmd/flute_sender/
-GOOS=windows GOARCH=amd64 go build -o release/flute_sender_windows_amd64.exe ./cmd/flute_sender/
-
-# 接收端
 GOOS=darwin GOARCH=amd64 go build -o release/flute_receiver_darwin_amd64 ./cmd/flute_receiver/
+
+# macOS Apple Silicon (M1/M2/M3/M4)
+GOOS=darwin GOARCH=arm64 go build -o release/flute_sender_darwin_arm64 ./cmd/flute_sender/
 GOOS=darwin GOARCH=arm64 go build -o release/flute_receiver_darwin_arm64 ./cmd/flute_receiver/
+
+# Windows 64-bit
+GOOS=windows GOARCH=amd64 go build -o release/flute_sender_windows_amd64.exe ./cmd/flute_sender/
 GOOS=windows GOARCH=amd64 go build -o release/flute_receiver_windows_amd64.exe ./cmd/flute_receiver/
 ```
 
@@ -145,15 +177,15 @@ GOOS=windows GOARCH=amd64 go build -o release/flute_receiver_windows_amd64.exe .
 | macOS Apple Silicon (M1/M2/M3/M4) | `darwin` | `arm64` | `flute_sender_darwin_arm64` / `flute_receiver_darwin_arm64` |
 | Windows 64-bit | `windows` | `amd64` | `flute_sender_windows_amd64.exe` / `flute_receiver_windows_amd64.exe` |
 
-### 编译当前平台
+编译产物统一输出到 `release/` 目录，方便分发。
+
+### 当前平台快速编译
 
 ```bash
 # 直接编译（默认当前平台）
 go build -o flute_sender ./cmd/flute_sender/
 go build -o flute_receiver ./cmd/flute_receiver/
 ```
-
-编译产物统一输出到 `release/` 目录，方便分发。
 
 ## 性能测试
 
