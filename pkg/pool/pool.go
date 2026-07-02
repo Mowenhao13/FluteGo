@@ -112,6 +112,24 @@ func (p *ConnPool) createNewConn(ip string, port int) (*sock.MsSocket, error) {
 				}
 			}
 		}
+		// 多播模式：设置 TTL 和出口接口（默认 TTL=1 只能本机回环，跨设备需要更大值）
+		if p.MulticastIP != "" {
+			mcastIP := net.ParseIP(p.MulticastIP)
+			if mcastIP != nil && mcastIP.To4() != nil {
+				// 设置多播 TTL
+				if err := msck.Socket.SetMulticastTTL(constant.MulticastTTL); err != nil {
+					log.Printf("[multicast] set TTL %d failed: %v", constant.MulticastTTL, err)
+				} else {
+					log.Printf("[multicast] sender TTL set to %d", constant.MulticastTTL)
+				}
+				// 加入多播组以自动设置出口接口（JoinMulticastGroup 会设置 IP_MULTICAST_IF）
+				if err := msck.Socket.JoinMulticastGroup(mcastIP.To4(), nil); err != nil {
+					log.Printf("[multicast] sender join group %s failed: %v", p.MulticastIP, err)
+				} else {
+					log.Printf("[multicast] sender joined group %s", p.MulticastIP)
+				}
+			}
+		}
 	}
 	if p.Mode == POOL_RECV {
 		msck.Socket.Shutdown(1)

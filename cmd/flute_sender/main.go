@@ -58,7 +58,12 @@ func ensurePool(destIP string) error {
 	if globalPool != nil {
 		globalPool.CloseAllConns()
 	}
-	pool.InitConnPool(destIP, 0)
+	// 如果目标是多播地址，使用多播模式初始化（设置 TTL 和出口接口）
+	if net.ParseIP(destIP).IsMulticast() {
+		pool.InitConnPoolWithMulticast(destIP, 0, destIP)
+	} else {
+		pool.InitConnPool(destIP, 0)
+	}
 	p := pool.GetConnPool()
 	if p == nil {
 		return fmt.Errorf("pool init failed")
@@ -315,11 +320,17 @@ func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverh
 	destAddr := &net.UDPAddr{IP: net.ParseIP(p.DestIP), Port: mt.BasePort}
 	log.Printf("[SendFile] Sending FDT XML (%d bytes + %d LCT header) to %s:%d (unified port) ...",
 		len(fdtXML), len(lctBytes), p.DestIP, mt.BasePort)
-	if _, wErr := fileConn.Socket.WriteToUDP(fdtPacket, destAddr); wErr != nil {
-		return fmt.Errorf("Failed to send FDT XML: %v", wErr)
+	// 重发 FDT XML 3 次，防止跨设备多播丢包导致接收端无法创建 Receiver
+	for i := 0; i < 3; i++ {
+		if _, wErr := fileConn.Socket.WriteToUDP(fdtPacket, destAddr); wErr != nil {
+			return fmt.Errorf("Failed to send FDT XML: %v", wErr)
+		}
+		if i < 2 {
+			time.Sleep(200 * time.Millisecond)
+		}
 	}
 
-	log.Printf("[SendFile] FDT XML sent successfully")
+	log.Printf("[SendFile] FDT XML sent (3x for redundancy)")
 	log.Printf("Sender will be started after %d seconds\n", constant.START_SEND_WAIT)
 	time.Sleep(constant.START_SEND_WAIT * time.Second)
 
@@ -428,7 +439,12 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 		o.FECEncodingID, o.SymbolSize, o.MaximumChunkSize)
 
 	// Init connection pool (sender mode) - 统一端口，不再使用 meta port
-	pool.InitConnPool(destIP, constant.POOL_SEND)
+	// 如果目标是多播地址，使用多播模式初始化（设置 TTL 和出口接口）
+	if net.ParseIP(destIP).IsMulticast() {
+		pool.InitConnPoolWithMulticast(destIP, constant.POOL_SEND, destIP)
+	} else {
+		pool.InitConnPool(destIP, constant.POOL_SEND)
+	}
 	p := pool.GetConnPool()
 	if p == nil {
 		log.Fatal("[CLI] Failed to initialize connection pool")
@@ -494,8 +510,14 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 	destAddr := &net.UDPAddr{IP: net.ParseIP(destIP), Port: baseFilePort}
 	log.Printf("[CLI] Sending FDT XML (%d bytes + %d LCT header) to %s:%d (unified port) ...",
 		len(fdtXML), len(lctBytes), destIP, baseFilePort)
-	if _, wErr := fileConn.Socket.WriteToUDP(fdtPacket, destAddr); wErr != nil {
-		log.Fatalf("[CLI] Failed to send FDT XML: %v", wErr)
+	// 重发 FDT XML 3 次，防止跨设备多播丢包导致接收端无法创建 Receiver
+	for i := 0; i < 3; i++ {
+		if _, wErr := fileConn.Socket.WriteToUDP(fdtPacket, destAddr); wErr != nil {
+			log.Fatalf("[CLI] Failed to send FDT XML: %v", wErr)
+		}
+		if i < 2 {
+			time.Sleep(200 * time.Millisecond)
+		}
 	}
 	log.Printf("[CLI] FDT XML sent. Waiting %d seconds before data...", startSendWait)
 	time.Sleep(time.Duration(startSendWait) * time.Second)
