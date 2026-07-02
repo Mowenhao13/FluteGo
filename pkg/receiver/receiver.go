@@ -933,15 +933,17 @@ func (r *Receiver) consumeLoop(ctx context.Context, ioHandler io.IOHandler, msck
 func (r *Receiver) processPacket(ctx context.Context, msck *sock.MsSocket, data []byte) {
 	n := len(data)
 
-		// 更新统计
-		now := time.Now().Unix()
-		if msck != nil {
-			atomic.StoreInt64(&msck.LastUsed, now)
-		}
-		atomic.StoreInt64(&r.lastDataTime, now)
-		atomic.AddInt64(&r.totalReceived, int64(n))
-		atomic.AddInt64(&r.totalPackets, 1)
-		pool.GetConnPool().AddReceived(uint64(n))
+	// 更新统计
+	now := time.Now().Unix()
+	if msck != nil {
+		atomic.StoreInt64(&msck.LastUsed, now)
+	}
+	atomic.StoreInt64(&r.lastDataTime, now)
+	atomic.AddInt64(&r.totalReceived, int64(n))
+	atomic.AddInt64(&r.totalPackets, 1)
+	if cp := pool.GetConnPool(); cp != nil {
+		cp.AddReceived(uint64(n))
+	}
 
 	// 第一次收到数据包时打印日志，帮助诊断
 	if atomic.LoadInt64(&r.totalPackets) == 1 {
