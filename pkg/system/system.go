@@ -426,9 +426,12 @@ func (s *ReceiverSystem) StartMetaProgram() {
 		conn := tempConn[0]
 		s.metaConn = conn
 
-		// 增大 UDP 接收缓冲区，防止突发流量导致丢包
-		if err := conn.Socket.SetReadBuffer(4 * 1024 * 1024); err != nil {
-			log.Printf("[MetaReceiver] Warning: failed to set receive buffer size: %v", err)
+		// 增大 UDP 接收缓冲区，防止突发流量导致丢包。
+		// 注意：pool.createNewConn 已尝试设置更大的缓冲区（64MB→1MB），
+		// 这里不应缩小它，只在当前值过小时尝试增大。
+		// Windows 上 SO_RCVBUF 有系统上限，设置失败也不致命。
+		if err := conn.Socket.SetReadBuffer(16 * 1024 * 1024); err != nil {
+			log.Printf("[MetaReceiver] Warning: failed to enlarge receive buffer to 16MB: %v", err)
 		}
 
 		log.Printf("[MetaReceiver] Unified port receiver listening on port %d", baseFilePort)
