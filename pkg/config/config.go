@@ -83,8 +83,8 @@ func Default() *Config {
 		Sender: SenderConfig{
 			SendFileDir:         "cmd/send_files/",
 			SendRedundancyRatio: 1.05,
-			RateLimitMbps:       500,
-			StartSendWait:       1,
+			RateLimitMbps:       50,
+			StartSendWait:       2,
 		},
 		Receiver: ReceiverConfig{
 			SaveFileDir:      "", // 为空时由 utils.SelectSaveFileDir() 决定（$HOME/Downloads/）

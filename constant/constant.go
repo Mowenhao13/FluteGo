@@ -19,10 +19,10 @@ const (
 	SendFileDir_win          = "cmd\\send_files\\"
 	SaveFileDir_win          = "Downloads\\"
 	SendRedundancyRatio      = 1.15
-	DefaultSendRateLimitMbps = 300 // default send rate limit; 0 disables throttling
+	DefaultSendRateLimitMbps = 50 // default send rate limit; 0 disables throttling (跨设备多播建议 50 Mbps)
 	WindowsSize              = 1
 
-	START_SEND_WAIT = 1 // seconds to wait before starting to send data
+	START_SEND_WAIT = 2 // seconds to wait before starting to send data (给接收端足够时间创建 Receiver)
 )
 
 // Arp param
@@ -76,7 +76,7 @@ const (
 	HEALTH_CHECK_INTERVAL      = 10 // in seconds
 	IDLE_SENDER_CHECK_INTERVAL = 5  // in seconds
 	IDLE_SENDER_TIMEOUT        = 60 // in seconds
-	IDLE_DATA_TIMEOUT          = 10 // in seconds，接收端无数据超时
+	IDLE_DATA_TIMEOUT          = 30 // in seconds，接收端无数据超时（跨设备多播延迟较大）
 
 	META_PORT = 3400
 	POOL_SEND = 0
