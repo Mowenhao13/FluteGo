@@ -517,16 +517,8 @@ func (s *ReceiverSystem) StartMetaProgram() {
 					}
 				}
 			} else {
-<<<<<<< HEAD
 				// TOI>0: 文件数据，根据 TOI 分发给对应 Receiver
 				s.dispatchFilePacket(s.ctx, lctHeader.TOI, data)
-=======
-				// TOI>0: 文件数据，转发给文件接收器
-				// 这里需要将数据传递给对应的 Receiver
-				// 暂时记录日志，后续实现
-				log.Printf("[MetaReceiver] Received file data: TOI=%d, ChunkIndex=%d, SymbolID=%d",
-					lctHeader.TOI, lctHeader.ChunkIndex, lctHeader.SymbolID)
->>>>>>> 9bedd66 (feat: implement RFC 6726 unified port architecture with FDT XML)
 			}
 		}
 	}()
