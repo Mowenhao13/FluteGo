@@ -27,7 +27,7 @@ const (
 
 // Arp param
 const (
-	DestIP          = "192.168.0.12"
+	DestIP          = "192.168.0.10"
 )
 
 // Multicast param

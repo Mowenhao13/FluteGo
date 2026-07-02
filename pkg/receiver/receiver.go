@@ -786,7 +786,9 @@ func (r *Receiver) runLifecycle(ctx context.Context, conns []*sock.MsSocket) err
 						r.closeOnce.Do(func() { close(r.finishChan) })
 						return
 					}
-					log.Printf("fdtID(%d): DATA IDLE TIMEOUT (%ds) — received %d/%d bytes (%.1f%%), %d/%d chunks", r.fdtID, constant.IDLE_DATA_TIMEOUT, got, int64(r.config.FileSize), float64(got)*100/float64(int64(r.config.FileSize)), chunks, r.expectedChunks)
+					log.Printf("fdtID(%d): DATA IDLE TIMEOUT (%ds) — written %d/%d bytes (%.1f%%), %d/%d chunks, received %d bytes in %d packets",
+					r.fdtID, constant.IDLE_DATA_TIMEOUT, got, int64(r.config.FileSize), float64(got)*100/float64(int64(r.config.FileSize)), chunks, r.expectedChunks,
+					atomic.LoadInt64(&r.totalReceived), atomic.LoadInt64(&r.totalPackets))
 					r.MarkTimedOut()
 					stats := r.CollectStats("timeout")
 					go WriteTransferCSV(r.saveDir, stats)

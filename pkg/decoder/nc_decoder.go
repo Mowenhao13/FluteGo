@@ -9,7 +9,7 @@ package decoder
 import (
 	"FluteGo/pkg/shard_map"
 	"fmt"
-	// "log"
+	"log"
 	"sync"
 	"time"
 )
@@ -112,7 +112,7 @@ func (d *NcDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 
 	chunkSize := int(d.calChunkSize(chunkIdx))
 	if chunkSize == 0 {
-		// nothing to do (out of range)
+		// chunkIdx 超出文件范围，静默丢弃
 		return nil
 	}
 
@@ -138,7 +138,8 @@ func (d *NcDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 	// compute write offset for this symbol
 	off := symIdx * symbolSize
 	if off >= len(st.data) {
-		// symbol index out of range for this chunk
+		// symbolIdx 超出 chunk 范围，记录日志帮助诊断
+		log.Printf("[NcDecoder] symbolIdx %d out of range for chunk %d (off=%d, chunkDataLen=%d)", symIdx, chunkIdx, off, len(st.data))
 		return nil
 	}
 
@@ -165,6 +166,8 @@ func (d *NcDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 
 		// delete from map to free memory
 		d.chunks.Delete(chunkIdx)
+
+		log.Printf("[NcDecoder] chunk %d completed: %d/%d symbols", chunkIdx, st.got, st.expected)
 
 		// calculate offset in file
 		offset := int64(chunkIdx) * int64(d.Config.ChunkSize)
