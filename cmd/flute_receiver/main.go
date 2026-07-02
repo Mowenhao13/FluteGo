@@ -4,6 +4,7 @@ import (
 	"FluteGo/constant"
 	"FluteGo/pkg/apiserver"
 	"FluteGo/pkg/config"
+	"FluteGo/pkg/pool"
 	"FluteGo/pkg/receiver"
 	"FluteGo/pkg/system"
 	"FluteGo/pkg/utils"
@@ -88,7 +89,6 @@ func runCLIReceiver(destIP, saveDir string, csvEnabled bool) {
 	go func() {
 		log.Println("[CLI] Monitoring file progress...")
 		completedFiles := 0
-		totalFiles := -1
 
 		for {
 			select {
@@ -97,24 +97,15 @@ func runCLIReceiver(destIP, saveDir string, csvEnabled bool) {
 			case report := <-sys.FileReporter.ReportChan:
 				switch report.Status {
 				case 0: // Transferring
-					if totalFiles == -1 && report.TotalFiles > 0 {
-						totalFiles = int(report.TotalFiles)
-						log.Printf("[CLI] Session total files: %d", totalFiles)
-					}
 					pct := float64(report.ReceivedBytes) / float64(report.TotalBytes) * 100
 					log.Printf("[CLI] [FdtID:%d] Progress: %.1f%% (%d/%d bytes)",
 						report.FdtID, pct, report.ReceivedBytes, report.TotalBytes)
 
 				case 1: // Completed
 					completedFiles++
-					log.Printf("[CLI] ✅ File %d transfer COMPLETED. Total: %d bytes. Progress: %d/%d",
-						report.FdtID, report.TotalBytes, completedFiles, totalFiles)
-
-					if totalFiles > 0 && completedFiles >= totalFiles {
-						log.Println("[CLI] All files received. Initiating shutdown...")
-						stop()
-						return
-					}
+					log.Printf("[CLI] ✅ File %d transfer COMPLETED. Total: %d bytes. Completed: %d",
+						report.FdtID, report.TotalBytes, completedFiles)
+					// 不自动退出，持续接收后续文件，由用户 Ctrl+C 退出
 
 				case 2: // Error
 					log.Printf("[CLI] ❌ File %d transfer ERROR.", report.FdtID)
@@ -137,7 +128,14 @@ func main() {
 	destIPFlag := flag.String("dest-ip", "127.0.0.1", "Destination IP address")
 	saveDirFlag := flag.String("save-dir", "/tmp/receiver_test/", "Directory to save received files")
 	csvFlag := flag.Bool("csv", false, "Save transfer results to CSV file")
+	mcastIfaceFlag := flag.String("mcast-iface", "", "Multicast incoming interface IP (e.g. 192.168.0.10, required for cross-device multicast)")
 	flag.Parse()
+
+	// 设置多播接口（跨设备多播必须指定，否则可能加入错误的接口导致收不到包）
+	if *mcastIfaceFlag != "" {
+		pool.SetMulticastIfaceIP(*mcastIfaceFlag)
+		log.Printf("[receiver] Multicast interface set to %s", *mcastIfaceFlag)
+	}
 
 	if *cliMode {
 		runCLIReceiver(*destIPFlag, *saveDirFlag, *csvFlag)
@@ -148,6 +146,12 @@ func main() {
 	if err != nil {
 		log.Printf("[config] load error: %v, using defaults", err)
 		cfg = config.Default()
+	}
+
+	// 从配置文件读取多播接口（如果命令行未指定）
+	if *mcastIfaceFlag == "" && cfg.Network.MulticastIfaceIP != "" {
+		pool.SetMulticastIfaceIP(cfg.Network.MulticastIfaceIP)
+		log.Printf("[config] Multicast interface set to %s", cfg.Network.MulticastIfaceIP)
 	}
 
 	// Receiver 模式：获取本机实际 IP 地址而不是使用配置中的 127.0.0.1
@@ -229,7 +233,6 @@ func main() {
 	go func() {
 		log.Println("Monitoring file progress...")
 		completedFiles := 0
-		totalFiles := -1
 
 		bars := make(map[uint8]*progressbar.ProgressBar)
 
@@ -247,11 +250,6 @@ func main() {
 				)
 				switch report.Status {
 				case 0: // Transferring
-					if totalFiles == -1 && report.TotalFiles > 0 {
-						totalFiles = int(report.TotalFiles)
-						log.Printf("Session total files: %d", totalFiles)
-					}
-
 					bar, ok := bars[report.FdtID]
 					if !ok {
 						bar = progressbar.NewOptions64(
@@ -279,14 +277,9 @@ func main() {
 						delete(bars, report.FdtID)
 					}
 
-					log.Printf("✅ File %d transfer COMPLETED. Total: %d bytes. Progress: %d/%d",
-						report.FdtID, report.TotalBytes, completedFiles, totalFiles)
-
-					if totalFiles > 0 && completedFiles >= totalFiles {
-						log.Println("All files received. Initiating shutdown...")
-						stop()
-						return
-					}
+					log.Printf("✅ File %d transfer COMPLETED. Total: %d bytes. Completed: %d",
+						report.FdtID, report.TotalBytes, completedFiles)
+					// 不自动退出，持续接收后续文件，由用户 Ctrl+C 退出
 				case 2: // Error
 					if bar, ok := bars[report.FdtID]; ok {
 						bar.Finish() //nolint:errcheck

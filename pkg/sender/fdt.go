@@ -14,6 +14,19 @@ import (
 	"time"
 )
 
+// PublishMode 定义 FDT 发布模式
+type PublishMode int
+
+const (
+	// PublishModeFullFDT 手动控制发布，调用 publish() 时才发布
+	// 适用于需要精确控制 FDT 更新时机的场景
+	PublishModeFullFDT PublishMode = iota
+
+	// PublishModeObjectsBeingTransferred 每次传输对象前自动发布
+	// 适用于实时性要求高的场景，确保接收端能及时获取文件列表
+	PublishModeObjectsBeingTransferred
+)
+
 // FDTManager 管理 FDT 实例的增量更新
 type FDTManager struct {
 	mu sync.RWMutex
@@ -38,16 +51,23 @@ type FDTManager struct {
 	
 	// 发送函数
 	sendFDT func(*meta.FDTInstance) error
+	
+	// 发布模式
+	publishMode PublishMode
+	
+	// 待发布标记（用于 ObjectsBeingTransferred 模式）
+	pendingPublish bool
 }
 
 // NewFDTManager 创建 FDT 管理器
-func NewFDTManager(updateInterval time.Duration, sendFDT func(*meta.FDTInstance) error) *FDTManager {
+func NewFDTManager(updateInterval time.Duration, publishMode PublishMode, sendFDT func(*meta.FDTInstance) error) *FDTManager {
 	return &FDTManager{
 		fdtIDCounter:   1,
 		version:        1,
 		updateInterval: updateInterval,
 		updateChan:     make(chan struct{}, 10),
 		sendFDT:        sendFDT,
+		publishMode:    publishMode,
 	}
 }
 
@@ -79,7 +99,12 @@ func (m *FDTManager) AddFile(file meta.FDTFile) {
 	}
 	
 	m.currentFDT.AddFile(file)
-	m.triggerUpdate()
+	
+	// 根据 PublishMode 决定是否立即发布
+	if m.publishMode == PublishModeObjectsBeingTransferred {
+		m.pendingPublish = true
+		m.triggerUpdate()
+	}
 }
 
 // RemoveFile 从 FDT 中移除文件
@@ -89,7 +114,12 @@ func (m *FDTManager) RemoveFile(toi uint32) {
 	
 	if m.currentFDT != nil {
 		m.currentFDT.RemoveFile(toi)
-		m.triggerUpdate()
+		
+		// 根据 PublishMode 决定是否立即发布
+		if m.publishMode == PublishModeObjectsBeingTransferred {
+			m.pendingPublish = true
+			m.triggerUpdate()
+		}
 	}
 }
 
@@ -103,8 +133,22 @@ func (m *FDTManager) UpdateFile(file meta.FDTFile) {
 		m.currentFDT.RemoveFile(file.TOI)
 		// 再添加新文件
 		m.currentFDT.AddFile(file)
-		m.triggerUpdate()
+		
+		// 根据 PublishMode 决定是否立即发布
+		if m.publishMode == PublishModeObjectsBeingTransferred {
+			m.pendingPublish = true
+			m.triggerUpdate()
+		}
 	}
+}
+
+// Publish 手动发布 FDT（用于 FullFDT 模式）
+func (m *FDTManager) Publish() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	m.pendingPublish = true
+	m.triggerUpdate()
 }
 
 // triggerUpdate 触发 FDT 更新
@@ -133,12 +177,20 @@ func (m *FDTManager) updateLoop() {
 
 // publishFDT 发布 FDT
 func (m *FDTManager) publishFDT() {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	
 	if m.currentFDT == nil || m.sendFDT == nil {
 		return
 	}
+	
+	// 对于 ObjectsBeingTransferred 模式，只在有待发布标记时才发布
+	if m.publishMode == PublishModeObjectsBeingTransferred && !m.pendingPublish {
+		return
+	}
+	
+	// 重置待发布标记
+	m.pendingPublish = false
 	
 	// 创建 FDT 副本
 	fdtCopy := *m.currentFDT
@@ -150,6 +202,18 @@ func (m *FDTManager) publishFDT() {
 		// 记录错误但不中断
 		return
 	}
+}
+
+// GetPublishMode 获取当前发布模式
+func (m *FDTManager) GetPublishMode() PublishMode {
+	return m.publishMode
+}
+
+// SetPublishMode 设置发布模式
+func (m *FDTManager) SetPublishMode(mode PublishMode) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.publishMode = mode
 }
 
 // GetCurrentFDT 获取当前 FDT

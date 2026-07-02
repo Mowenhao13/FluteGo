@@ -121,7 +121,7 @@ type Receiver struct {
 	reportChan       chan<- Report // 保存报告通道用于发送进度更新
 	// 统计
 	currWritten   int64     // 当前已写入字节数
-	totalReceived int64     // 总共接收字节数
+	totalReceived int64     // 总共接收字节数（网络层，含 LCT 头部）
 	totalPackets  int64     // 总共接收数据包数
 	totalDropped  int64     // 总共丢包数
 	receiveErrs   int64     // 接收错误数
@@ -132,6 +132,7 @@ type Receiver struct {
 	receiveStarted int32
 	receiveStart   time.Time
 	receiveEnd     time.Time
+	lastPacketEnd  int64     // 最后一个数据包接收完成的时间戳（nanoseconds），用于纯接收速率计算
 	memStatsStart  runtime.MemStats
 
 	// 单端口架构：异步数据包队列，避免阻塞 MetaReceiver 主循环
@@ -502,21 +503,41 @@ func (r *Receiver) startWriterLoop() {
 
 				if shouldFinish {
 					r.closeOnce.Do(func() {
-						close(r.finishChan)
-						// 记录接收结束时间
-						if atomic.LoadInt32(&r.receiveStarted) == 1 {
-							r.receiveEnd = time.Now()
-							dur := r.receiveEnd.Sub(r.receiveStart)
-							bytesWritten := atomic.LoadInt64(&r.currWritten)
+					close(r.finishChan)
+					// 记录接收结束时间
+					if atomic.LoadInt32(&r.receiveStarted) == 1 {
+						r.receiveEnd = time.Now()
+						// 纯接收时间：从第一个包到最后一个包接收完成（不含文件写入时间）
+						lastPacketNs := atomic.LoadInt64(&r.lastPacketEnd)
+						var recvEnd time.Time
+						if lastPacketNs > 0 {
+							recvEnd = time.Unix(0, lastPacketNs)
+						} else {
+							recvEnd = r.receiveEnd
+						}
+						recvDur := recvEnd.Sub(r.receiveStart)
+						// 端到端时间（含文件写入）
+						e2eDur := r.receiveEnd.Sub(r.receiveStart)
 
-							seconds := dur.Seconds()
-							if seconds <= 0 {
-								seconds = 0.000001 // 防止除以零
-							}
-							mbps := (float64(bytesWritten) * 8.0 / seconds) / 1e6
+						bytesWritten := atomic.LoadInt64(&r.currWritten)
+						totalRecvBytes := atomic.LoadInt64(&r.totalReceived)
 
-							fmt.Printf("File transfer completed (fdtID=%d): %d/%d chunks, duration=%s\n", r.fdtID, finished, r.expectedChunks, dur.String())
-							fmt.Printf("fdtID(%d): bytes received=%d, duration=%s, throughput=%.4f Mbps\n", r.fdtID, bytesWritten, dur.String(), mbps)
+						recvSeconds := recvDur.Seconds()
+						if recvSeconds <= 0 {
+							recvSeconds = 0.000001
+						}
+						e2eSeconds := e2eDur.Seconds()
+						if e2eSeconds <= 0 {
+							e2eSeconds = 0.000001
+						}
+
+						// 纯网络接收速率（与发送端 throughput 对齐，用网络字节数 / 接收时间）
+						recvMbps := (float64(totalRecvBytes) * 8.0 / recvSeconds) / 1e6
+						// 端到端有效速率（文件大小 / 端到端时间）
+						e2eMbps := (float64(bytesWritten) * 8.0 / e2eSeconds) / 1e6
+
+						fmt.Printf("File transfer completed (fdtID=%d): %d/%d chunks, recv duration=%s, e2e duration=%s\n", r.fdtID, finished, r.expectedChunks, recvDur.String(), e2eDur.String())
+						fmt.Printf("fdtID(%d): bytes received=%d (wire), %d (file), throughput=%.4f Mbps (recv), %.4f Mbps (e2e)\n", r.fdtID, totalRecvBytes, bytesWritten, recvMbps, e2eMbps)
 
 							// 包统计：预期 vs 实际
 							receivedPkts := atomic.LoadInt64(&r.totalPackets)
@@ -944,6 +965,7 @@ func (r *Receiver) processPacket(ctx context.Context, msck *sock.MsSocket, data 
 		atomic.StoreInt64(&msck.LastUsed, now)
 	}
 	atomic.StoreInt64(&r.lastDataTime, now)
+	atomic.StoreInt64(&r.lastPacketEnd, now) // 记录最后一个包的接收时间，用于纯接收速率计算
 	atomic.AddInt64(&r.totalReceived, int64(n))
 	atomic.AddInt64(&r.totalPackets, 1)
 	if cp := pool.GetConnPool(); cp != nil {

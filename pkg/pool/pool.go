@@ -169,7 +169,20 @@ func (p *ConnPool) createNewConn(ip string, port int) (*sock.MsSocket, error) {
 		if p.MulticastIP != "" {
 			mcastIP := net.ParseIP(p.MulticastIP)
 			if mcastIP != nil && mcastIP.To4() != nil {
-				if err := msck.Socket.JoinMulticastGroup(mcastIP.To4(), nil); err != nil {
+				// 查找指定的多播接口（如果设置了 MulticastIfaceIP）
+				var iface *net.Interface
+				if p.MulticastIfaceIP != "" {
+					ifaceIP := net.ParseIP(p.MulticastIfaceIP)
+					if ifaceIP != nil {
+						if foundIf, err := findInterfaceByIP(ifaceIP); err == nil {
+							iface = foundIf
+							log.Printf("[multicast] receiver using specified interface: %s (%s)", iface.Name, p.MulticastIfaceIP)
+						} else {
+							log.Printf("[multicast] interface with IP %s not found: %v, using auto-select", p.MulticastIfaceIP, err)
+						}
+					}
+				}
+				if err := msck.Socket.JoinMulticastGroup(mcastIP.To4(), iface); err != nil {
 					log.Printf("[multicast] join group %s on port %d failed: %v", p.MulticastIP, port, err)
 				} else {
 					log.Printf("[multicast] joined group %s on port %d", p.MulticastIP, port)
