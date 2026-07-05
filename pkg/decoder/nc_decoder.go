@@ -35,16 +35,18 @@ type ncChunkState struct {
 }
 
 func (d *NcDecoder) calChunkSize(chunkIdx uint32) uint32 {
-	startOffset := uint64(chunkIdx) * uint64(d.Config.ChunkSize)
+	// ChunkSize 现在是 symbol 数量，需要转换为字节数
+	chunkBytes := uint64(d.Config.ChunkSize) * uint64(d.Config.SymbolSize)
+	startOffset := uint64(chunkIdx) * chunkBytes
 	if startOffset >= d.Config.FileSize {
 		return 0
 	}
 
-	endOffset := startOffset + uint64(d.Config.ChunkSize)
+	endOffset := startOffset + chunkBytes
 	if endOffset > d.Config.FileSize {
 		return uint32(d.Config.FileSize - startOffset)
 	}
-	return d.Config.ChunkSize
+	return uint32(chunkBytes)
 }
 
 // NewNcDecoder 初始化一个用于没有 FEC 的 Decoder。
@@ -60,8 +62,9 @@ func (d *NcDecoder) calChunkSize(chunkIdx uint32) uint32 {
 //
 //	若参数合法则返回 `NcDecoder` 实例，否则返回错误。
 func NewNcDecoder(config DecoderConfig, output OutputHandler) (*NcDecoder, error) {
-	if config.ChunkSize > 1024*1024*1024 { // 最大1GB per chunk
-		return nil, fmt.Errorf("chunk大小超过限制: %d", config.ChunkSize)
+	// ChunkSize 现在是 symbol 数量，检查是否合理（最大 1M symbols）
+	if config.ChunkSize > 1024*1024 {
+		return nil, fmt.Errorf("chunk symbol count exceeds limit: %d", config.ChunkSize)
 	}
 
 	return &NcDecoder{
@@ -169,8 +172,9 @@ func (d *NcDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 
 		log.Printf("[NcDecoder] chunk %d completed: %d/%d symbols", chunkIdx, st.got, st.expected)
 
-		// calculate offset in file
-		offset := int64(chunkIdx) * int64(d.Config.ChunkSize)
+		// ChunkSize 现在是 symbol 数量，需要转换为字节数
+		chunkBytes := int64(d.Config.ChunkSize) * int64(d.Config.SymbolSize)
+		offset := int64(chunkIdx) * chunkBytes
 		if err := d.output.OnDecodedData(out, offset, chunkIdx); err != nil {
 			return err
 		}

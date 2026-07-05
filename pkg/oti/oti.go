@@ -9,7 +9,6 @@ package oti
 
 import (
 	"FluteGo/constant"
-	"os"
 )
 
 // Oti 对象传输信息 (Object Transmission Information)
@@ -28,7 +27,7 @@ import (
 //     编码算法的具体实例标识符，用于区分同一算法的不同配置或版本。
 //
 //   - `MaximumChunkSize`: `uint32`
-//     最大分块大小（字节）。源文件会被分割成多个块进行编码传输。
+//     每个 source block 包含的最大 symbol 数量。源文件会被分割成多个块进行编码传输。
 //
 //   - `SymbolSize`: `uint16`
 //     符号大小（字节）。编码符号是 FEC 方案生成的最小数据单元。
@@ -67,7 +66,7 @@ type Oti struct {
 //
 //   - `FECEncodingID`: 0 (NoCode)
 //   - `FECInstanceID`: 0
-//   - `MaximumChunkSize`: 基于 `constant.MaxNoCodeChunkSize` 并按页大小对齐。
+//   - `MaximumChunkSize`: `constant.MaxNoCodeChunkSize` (32 个 symbol)
 //
 // # 示例
 //
@@ -78,21 +77,11 @@ type Oti struct {
 // noCodeOti := oti.NewNoCode(1400)
 // ```
 func NewNoCode(SymbolSize uint16) Oti {
-	maxChunkSize := int(constant.MaxNoCodeChunkSize)
-	pageSize := os.Getpagesize()
-
-	// 向下对齐到页大小的整数倍，以优化内存映射性能
-	alignedSize := uint32((maxChunkSize / pageSize) * pageSize)
-	if alignedSize == 0 {
-		// 如果小于一页，则直接使用原大小
-		alignedSize = uint32(maxChunkSize)
-	}
-
 	return Oti{
 		FECEncodingID:    0,
 		FECInstanceID:    0,
 		SymbolSize:       SymbolSize,
-		MaximumChunkSize: alignedSize,
+		MaximumChunkSize: uint32(constant.MaxNoCodeChunkSize),
 	}
 }
 
@@ -111,7 +100,7 @@ func NewNoCode(SymbolSize uint16) Oti {
 //
 //   - `FECEncodingID`: 1 (RaptorQ)
 //   - `FECInstanceID`: 1
-//   - `MaximumChunkSize`: 基于 `constant.MaxRaptorQChunkSize` 并按页大小对齐。
+//   - `MaximumChunkSize`: `constant.MaxRaptorQChunkSize` (32 个 symbol)
 //
 // # 示例
 //
@@ -122,20 +111,11 @@ func NewNoCode(SymbolSize uint16) Oti {
 // raptorQOti := oti.NewRaptorQ(1400)
 // ```
 func NewRaptorQ(SymbolSize uint16) Oti {
-	maxChunkSize := int(constant.MaxRaptorQChunkSize)
-	pageSize := os.Getpagesize()
-
-	// 向下对齐到页大小的整数倍
-	alignedSize := uint32((maxChunkSize / pageSize) * pageSize)
-	if alignedSize == 0 {
-		alignedSize = uint32(maxChunkSize)
-	}
-
 	return Oti{
 		FECEncodingID:    1,
 		FECInstanceID:    1,
 		SymbolSize:       SymbolSize,
-		MaximumChunkSize: alignedSize,
+		MaximumChunkSize: uint32(constant.MaxRaptorQChunkSize),
 	}
 }
 

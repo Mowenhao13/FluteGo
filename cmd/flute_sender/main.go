@@ -386,11 +386,11 @@ func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverh
 func fecTypeToOti(fecType string) oti.Oti {
 	switch fecType {
 	case "RaptorQ":
-		return oti.NewRaptorQ(1400)
+		return oti.NewRaptorQ(1024) // SymbolSize = 1KB
 	case "ReedSolomon":
 		return oti.NewReedSolomon(12, 4)
 	default:
-		return oti.NewNoCode(1400)
+		return oti.NewNoCode(1024) // SymbolSize = 1KB
 	}
 }
 
@@ -436,18 +436,17 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 	log.Printf("[CLI] File: %s, Size: %d bytes (%.2f MB)", filepath.Base(filePath), fileInfo.Size(), fileSizeMB)
 
 	// Build OTI from FEC type
-	// Note: SymbolSize = maxPacketSize - 8 (8 bytes for seqNum header)
-	payloadSize := uint16(maxPacketSize - 8)
+	// SymbolSize = 1024 for RaptorQ/NoCode, MAX_PACKET_SIZE for ReedSolomon
 	var o oti.Oti
 	switch fecType {
 	case "RaptorQ":
-		o = oti.NewRaptorQ(payloadSize)
+		o = oti.NewRaptorQ(1024) // SymbolSize = 1KB
 	case "ReedSolomon":
 		o = oti.NewReedSolomon(12, 4)
 	default:
-		o = oti.NewNoCode(payloadSize)
+		o = oti.NewNoCode(1024) // SymbolSize = 1KB
 	}
-	log.Printf("[CLI] OTI: FEC=%d, Symbol=%d (payload), Chunk=%d",
+	log.Printf("[CLI] OTI: FEC=%d, Symbol=%d (payload), Chunk=%d (symbols)",
 		o.FECEncodingID, o.SymbolSize, o.MaximumChunkSize)
 
 	// Init connection pool (sender mode) - 统一端口，不再使用 meta port
@@ -549,7 +548,7 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 		RedundancyRatio: sendRedundancyRatio, // From CLI flag, not constant!
 		MaxPacketSize:   uint16(maxPacketSize),
 	}
-	log.Printf("[CLI] Encoder config: ratio=%.2f, chunk=%d, symbol=%d",
+	log.Printf("[CLI] Encoder config: ratio=%.2f, chunk=%d (symbols), symbol=%d",
 		config.RedundancyRatio, config.ChunkSize, config.SymbolSize)
 
 	// Create rate limiter

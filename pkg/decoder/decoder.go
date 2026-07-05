@@ -54,7 +54,7 @@ const (
 type DecoderConfig struct {
 	Type            DecoderType
 	FileSize        uint64
-	ChunkSize       uint32  // 单个chunk最大大小
+	ChunkSize       uint32  // 每个 source block 包含的最大 symbol 数量
 	SymbolSize      uint16  // 符号大小（RaptorQ/NoCode）
 	DataShards      uint16  // 数据分片数（ReedSolomon）
 	ParityShards    uint16  // 校验分片数（ReedSolomon）

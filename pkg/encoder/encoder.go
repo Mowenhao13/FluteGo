@@ -65,7 +65,7 @@ const (
 // 核心字段：
 //
 //	Type            - 编码器类型
-//	ChunkSize      - 单个块的最大大小（字节）
+//	ChunkSize      - 每个 source block 包含的最大 symbol 数量
 //	SymbolSize     - 符号大小（字节）
 //	DataShards     - 数据分片数，Reed-Solomon使用
 //	ParityShards   - 校验分片数，Reed-Solomon使用
@@ -76,7 +76,7 @@ const (
 //	FName          - 发送文件完整路径
 type EncoderConfig struct {
 	Type            EncoderType
-	ChunkSize       uint32  // 单个chunk最大大小
+	ChunkSize       uint32  // 每个 source block 包含的最大 symbol 数量
 	SymbolSize      uint16  // 符号大小
 	DataShards      uint16  // 数据分片数（ReedSolomon）
 	ParityShards    uint16  // 校验分片数（ReedSolomon）

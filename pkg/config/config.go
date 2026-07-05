@@ -36,7 +36,7 @@ type SenderConfig struct {
 // ReceiverConfig holds receiver-side parameters.
 type ReceiverConfig struct {
 	SaveFileDir      string `json:"saveFileDir"`
-	DefaultChunkSize int    `json:"defaultChunkSize"` // 65536
+	DefaultChunkSize int    `json:"defaultChunkSize"` // 64 (symbol count per source block)
 }
 
 // ServerConfig holds API server parameters.
@@ -89,7 +89,7 @@ func Default() *Config {
 		},
 		Receiver: ReceiverConfig{
 			SaveFileDir:      "", // 为空时由 utils.SelectSaveFileDir() 决定（$HOME/Downloads/）
-			DefaultChunkSize: 65536,
+			DefaultChunkSize: 128,
 		},
 		Server: ServerConfig{
 			Port:    8080,

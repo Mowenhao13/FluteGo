@@ -46,15 +46,17 @@ func (r *RqDecoder) calRequiredSymbols(actualChunkSize uint32) uint16 {
 }
 
 func (r *RqDecoder) calChunkSize(chunkIdx uint32) uint32 {
-	startOffset := uint64(chunkIdx) * uint64(r.Config.ChunkSize)
+	// ChunkSize 现在是 symbol 数量，需要转换为字节数
+	chunkBytes := uint64(r.Config.ChunkSize) * uint64(r.Config.SymbolSize)
+	startOffset := uint64(chunkIdx) * chunkBytes
 	if startOffset >= r.Config.FileSize {
 		return 0
 	}
-	endOffset := startOffset + uint64(r.Config.ChunkSize)
+	endOffset := startOffset + chunkBytes
 	if endOffset > r.Config.FileSize {
 		return uint32(r.Config.FileSize - startOffset)
 	}
-	return r.Config.ChunkSize
+	return uint32(chunkBytes)
 }
 
 func (r *RqDecoder) getrqChunkDecoder(chunkIdx uint32) (*rqChunkDecoder, error) {
@@ -78,7 +80,9 @@ func (r *RqDecoder) getrqChunkDecoder(chunkIdx uint32) (*rqChunkDecoder, error) 
 	}
 
 	requiredSymbols := r.calRequiredSymbols(actualChunkSize)
-	startSeq := uint64(chunkIdx) * uint64(r.Config.ChunkSize)
+	// ChunkSize 现在是 symbol 数量，需要转换为字节数
+	chunkBytes := uint64(r.Config.ChunkSize) * uint64(r.Config.SymbolSize)
+	startSeq := uint64(chunkIdx) * chunkBytes
 
 	newrqChunkDecoder := &rqChunkDecoder{
 		decoder:   dec,
@@ -107,8 +111,9 @@ func (r *RqDecoder) getrqChunkDecoder(chunkIdx uint32) (*rqChunkDecoder, error) 
 }
 
 func NewRqDecoder(config DecoderConfig, output OutputHandler) (*RqDecoder, error) {
-	if config.ChunkSize > 1024*1024*1024 {
-		return nil, fmt.Errorf("chunk大小超过限制: %d", config.ChunkSize)
+	// ChunkSize 现在是 symbol 数量，检查是否合理（最大 1M symbols）
+	if config.ChunkSize > 1024*1024 {
+		return nil, fmt.Errorf("chunk symbol count exceeds limit: %d", config.ChunkSize)
 	}
 
 	engine := raptorq.NewRaptorQ(uint32(config.SymbolSize))
@@ -175,7 +180,9 @@ func (r *RqDecoder) AddSymbol(chunkIdx uint32, symbolIdx uint32, data []byte) er
 					chunkIdx, dec.received, dec.expected)
 			}
 
-			offset := int64(chunkIdx) * int64(r.Config.ChunkSize)
+			// ChunkSize 现在是 symbol 数量，需要转换为字节数
+			chunkBytes := int64(r.Config.ChunkSize) * int64(r.Config.SymbolSize)
+			offset := int64(chunkIdx) * chunkBytes
 			r.output.OnDecodedData(result, offset, chunkIdx)
 
 			dec.decoded = true

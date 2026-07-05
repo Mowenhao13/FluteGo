@@ -2,14 +2,14 @@ package constant
 
 // UDP Param
 const (
-	MAX_PACKET_SIZE = 1408
+	MAX_PACKET_SIZE = 1048 // LCT header (24) + SymbolSize (1024)
 	BASE_FILE_PORT  = 3400
 	NUM_PORTS       = 1
 )
 
-// Receiver param
+// Receiver param rs
 const (
-	DefaultChunkSize = 64 * 1024 // 64KB chunks
+	DefaultChunkSize = 128 // 默认每个 source block 包含 128 个 symbol
 )
 
 // Sender param
@@ -59,8 +59,8 @@ const (
 
 // Oti param
 const (
-	MaxNoCodeChunkSize  = 32 * 1024
-	MaxRaptorQChunkSize = 32 * 1024
+	MaxNoCodeChunkSize  = 128 // NoCode 模式下每个 source block 最多 128 个 symbol (128KB)
+	MaxRaptorQChunkSize = 128 // RaptorQ 模式下每个 source block 最多 128 个 symbol (128KB)
 )
 
 const (

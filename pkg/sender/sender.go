@@ -124,8 +124,7 @@ func initEncoderConfig(mt *meta.MetaPkt, redundancyRatio float64) encoder.Encode
 
 	// 基础文件信息
 	fileSize := mt.File.TransferLen
-	chunkSize := mt.Oti.MaximumChunkSize
-	// log.Printf("OTI MaximumChunkSize: %d", chunkSize)
+	chunkSize := mt.Oti.MaximumChunkSize // symbol count per source block
 	if chunkSize == 0 {
 		chunkSize = uint32(constant.DefaultChunkSize)
 	}
@@ -231,19 +230,17 @@ func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, 
 		return nil, fmt.Errorf("input file is empty")
 	}
 
-	// 验证和调整分块大小
-	chunkSize := int(config.ChunkSize)
-	if chunkSize <= 0 {
+	// ChunkSize 现在是 symbol 数量，需要转换为字节数用于文件分块
+	symbolsPerChunk := int(config.ChunkSize)
+	if symbolsPerChunk <= 0 {
 		file.Close()
-		return nil, fmt.Errorf("invalid chunk size: %d", config.ChunkSize)
+		return nil, fmt.Errorf("invalid chunk size (symbol count): %d", config.ChunkSize)
 	}
+	chunkBytes := int64(symbolsPerChunk) * int64(config.SymbolSize) // 每个 chunk 的字节数
 
-	config.ChunkSize = uint32(chunkSize)
 	config.FileSize = uint64(info.Size())
 	config.Fd = int(file.Fd())
 	config.FName = inputFilePath
-
-	// log.Printf("Sender initialized with ChunkSize: %d, FileSize: %d, ChunkCount: %d", config.ChunkSize, config.FileSize, (info.Size()+int64(chunkSize)-1)/int64(chunkSize))
 
 	// 创建编码器实例
 	enc, err := encoder.NewEncoder(config)
@@ -252,8 +249,8 @@ func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, 
 		return nil, fmt.Errorf("failed to create encoder: unsupported type %d", config.Type)
 	}
 
-	// 计算总分块数
-	chunkCount := uint32((info.Size() + int64(chunkSize) - 1) / int64(chunkSize))
+	// 计算总分块数（基于字节数）
+	chunkCount := uint32((info.Size() + chunkBytes - 1) / chunkBytes)
 
 	// 配置速率限制器
 	var rateBytesPerSec int
@@ -291,23 +288,23 @@ func NewSender(inputFilePath string, config encoder.EncoderConfig, fdtID uint8, 
 		MaxConcurrentSends:   maxConcurrentSends,
 	}
 	// Log redundancy parameters
-	symPerChunk := (int64(config.ChunkSize) + int64(config.SymbolSize) - 1) / int64(config.SymbolSize)
+	symPerChunk := int64(symbolsPerChunk) // ChunkSize 现在是 symbol 数量
 	switch config.Type {
 	case encoder.EncoderNoCode:
-		log.Printf("[Sender] fdtID(%d) FEC=NoCode, Symbol=%d, Chunk=%d, Chunks=%d, Symbols/Chunk~%d, Overhead=0%%",
-			fdtID, config.SymbolSize, config.ChunkSize, chunkCount, symPerChunk)
+		log.Printf("[Sender] fdtID(%d) FEC=NoCode, Symbol=%d, SymbolsPerChunk=%d, Chunks=%d, ChunkBytes=%d, Overhead=0%%",
+			fdtID, config.SymbolSize, symbolsPerChunk, chunkCount, chunkBytes)
 	case encoder.EncoderRaptorQ:
 		overheadPct := (config.RedundancyRatio - 1.0) * 100
 		totalSym := int64(float64(symPerChunk) * config.RedundancyRatio)
-		log.Printf("[Sender] fdtID(%d) FEC=RaptorQ, Symbol=%d, Chunk=%d, Chunks=%d, Ratio=%.2f, Symbols/Chunk=%d→%d, Overhead=+%.2f%%",
-			fdtID, config.SymbolSize, config.ChunkSize, chunkCount,
-			config.RedundancyRatio, symPerChunk, totalSym, overheadPct)
+		log.Printf("[Sender] fdtID(%d) FEC=RaptorQ, Symbol=%d, SymbolsPerChunk=%d, Chunks=%d, ChunkBytes=%d, Ratio=%.2f, TotalSymbols=%d, Overhead=+%.2f%%",
+			fdtID, config.SymbolSize, symbolsPerChunk, chunkCount, chunkBytes,
+			config.RedundancyRatio, totalSym, overheadPct)
 	case encoder.EncoderReedSolomon:
 		totalShards := config.DataShards + config.ParityShards
 		overheadPct := float64(config.ParityShards) / float64(config.DataShards) * 100
-		log.Printf("[Sender] fdtID(%d) FEC=ReedSolomon, Data=%d, Parity=%d, TotalShards=%d, Overhead=+%.2f%%, Symbol=%d, Chunk=%d, Chunks=%d",
+		log.Printf("[Sender] fdtID(%d) FEC=ReedSolomon, Data=%d, Parity=%d, TotalShards=%d, Overhead=+%.2f%%, Symbol=%d, SymbolsPerChunk=%d, Chunks=%d, ChunkBytes=%d",
 			fdtID, config.DataShards, config.ParityShards, totalShards,
-			overheadPct, config.SymbolSize, config.ChunkSize, chunkCount)
+			overheadPct, config.SymbolSize, symbolsPerChunk, chunkCount, chunkBytes)
 	}
 	return sender, nil
 }
@@ -442,12 +439,14 @@ func (s *Sender) GetTotalBytesToSend() int64 {
 		symSize = 1
 	}
 
-	chunkSize := int64(s.config.ChunkSize)
+	// ChunkSize 现在是 symbol 数量，需要转换为字节数
+	symbolsPerChunk := int64(s.config.ChunkSize)
+	chunkBytes := symbolsPerChunk * symSize
 	fileSize := int64(s.fileSize)
 
 	// Calculate full chunks
-	fullChunks := fileSize / chunkSize
-	lastChunkSize := fileSize % chunkSize
+	fullChunks := fileSize / chunkBytes
+	lastChunkSize := fileSize % chunkBytes
 
 	var totalBytes int64
 
@@ -464,7 +463,7 @@ func (s *Sender) GetTotalBytesToSend() int64 {
 	}
 
 	if fullChunks > 0 {
-		totalBytes += fullChunks * calcChunkBytes(chunkSize)
+		totalBytes += fullChunks * calcChunkBytes(chunkBytes)
 	}
 	if lastChunkSize > 0 {
 		totalBytes += calcChunkBytes(lastChunkSize)
@@ -579,19 +578,21 @@ func (s *Sender) Start(ctx context.Context) error {
 
 	// 数据提供器函数 - 通过 ReadAt 直接读取文件
 	// 这种方式对超大文件更稳定，且不会占用大量虚拟内存
+	// ChunkSize 现在是 symbol 数量，需要转换为字节数
+	chunkBytes := int64(s.config.ChunkSize) * int64(s.config.SymbolSize)
 	provider := func(chunkIdx uint32) ([]byte, int, error) {
 		if chunkIdx >= s.chunkCount {
 			return nil, 0, fmt.Errorf("chunk index out of bounds")
 		}
 
 		// 计算文件偏移
-		offset := int64(chunkIdx) * int64(s.config.ChunkSize)
+		offset := int64(chunkIdx) * chunkBytes
 		if offset >= s.fileSize {
 			return nil, 0, fmt.Errorf("chunk offset out of bounds")
 		}
 
 		// 计算分块长度
-		length := int64(s.config.ChunkSize)
+		length := chunkBytes
 		if offset+length > s.fileSize {
 			length = s.fileSize - offset
 		}
@@ -703,10 +704,11 @@ func (s *Sender) Start(ctx context.Context) error {
 			if symSz == 0 {
 				symSz = 1
 			}
-			chunkSz := int64(s.config.ChunkSize)
-			lastSz := s.fileSize % chunkSz
-			fullCh := s.fileSize / chunkSz
-			baseSymbols = fullCh * ((chunkSz + symSz - 1) / symSz)
+			// ChunkSize 现在是 symbol 数量，需要转换为字节数
+			chunkBytes := int64(s.config.ChunkSize) * symSz
+			lastSz := s.fileSize % chunkBytes
+			fullCh := s.fileSize / chunkBytes
+			baseSymbols = fullCh * ((chunkBytes + symSz - 1) / symSz)
 			if lastSz > 0 {
 				baseSymbols += (lastSz + symSz - 1) / symSz
 			}
