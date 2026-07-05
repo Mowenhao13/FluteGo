@@ -34,7 +34,7 @@ test_files/
 *.a
 *.so
 *.dylib
-*.exe
+
 *.dll
 *.orig
 
@@ -42,8 +42,7 @@ test_files/
 *.go.bak
 vendor/
 go.sum.bak
-cmd/cmd/
-bin/
+cmd/
 .claude
 *.csv
 release/
