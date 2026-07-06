@@ -108,7 +108,12 @@ func (e *RqEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 		callback = e.Callback
 	}
 
-	// 窗口大小，可以根据内存情况调整
+	// 窗口大小：symbol 级交织的 chunk 数量
+	// 每个窗口内按 symbol ID 交织发送，提高抗突发丢包能力
+	// 例如 windowSize=10 时，发送顺序为：
+	//   symID=0: chunk0, chunk1, ..., chunk9
+	//   symID=1: chunk0, chunk1, ..., chunk9
+	//   ...
 	windowSize := uint32(constant.WindowsSize)
 
 	rq := raptorq.NewRaptorQ(uint32(e.Config.SymbolSize))
