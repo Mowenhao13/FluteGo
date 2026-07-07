@@ -35,8 +35,7 @@ type SenderConfig struct {
 
 // ReceiverConfig holds receiver-side parameters.
 type ReceiverConfig struct {
-	SaveFileDir      string `json:"saveFileDir"`
-	DefaultChunkSize int    `json:"defaultChunkSize"` // 64 (symbol count per source block)
+	SaveFileDir string `json:"saveFileDir"`
 }
 
 // ServerConfig holds API server parameters.
