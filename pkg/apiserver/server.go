@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -28,16 +29,17 @@ type Server struct {
 	state    *StateStore
 	hub      *Hub
 
-	sendFn       func(fileName string, data io.Reader, fecType string) (uint8, error)
-	setSaveDirFn func(dir string) error
-	setDestFn    func(ip string) error
-	uploadDir    string
-	staticContent []byte
-	browseDirFn   func() (string, error)
+	sendFn              func(fileName string, data io.Reader, fecType string, redundancyRatio float64) (uint8, error)
+	setSaveDirFn        func(dir string) error
+	setDestFn           func(ip string) error
+	uploadDir           string
+	staticContent       []byte
+	browseDirFn         func() (string, error)
 
-	mu        sync.RWMutex
-	recvReady bool
-	saveDir   string
+	mu                  sync.RWMutex
+	recvReady           bool
+	saveDir             string
+	sendRedundancyRatio float64
 }
 
 // New creates a new Server with the given port and mode ("sender"|"receiver").
@@ -65,7 +67,7 @@ func (s *Server) WithFilePort(port int) *Server {
 }
 
 // SetSendFunc registers the function called by POST /api/send.
-func (s *Server) SetSendFunc(fn func(string, io.Reader, string) (uint8, error)) *Server {
+func (s *Server) SetSendFunc(fn func(string, io.Reader, string, float64) (uint8, error)) *Server {
 	s.sendFn = fn
 	return s
 }
@@ -111,6 +113,14 @@ func (s *Server) SetReceiverReady(v bool) {
 func (s *Server) WithSaveDir(dir string) *Server {
 	s.mu.Lock()
 	s.saveDir = dir
+	s.mu.Unlock()
+	return s
+}
+
+// WithSendRedundancyRatio sets the default redundancy ratio returned by /api/status.
+func (s *Server) WithSendRedundancyRatio(ratio float64) *Server {
+	s.mu.Lock()
+	s.sendRedundancyRatio = ratio
 	s.mu.Unlock()
 	return s
 }
@@ -175,16 +185,18 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	recvReady := s.recvReady
 	saveDir := s.saveDir
+	ratio := s.sendRedundancyRatio
 	s.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-		"mode":          s.mode,
-		"destIP":        s.destIP,
-		"filePort":      s.filePort,
-		"apiVersion":    "1",
-		"receiverReady": recvReady,
-		"saveDir":       saveDir,
+		"mode":                s.mode,
+		"destIP":              s.destIP,
+		"filePort":            s.filePort,
+		"apiVersion":          "1",
+		"receiverReady":       recvReady,
+		"saveDir":             saveDir,
+		"sendRedundancyRatio": ratio,
 	})
 }
 
@@ -228,7 +240,15 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		fecType = "RaptorQ" // 默认使用 RaptorQ，抗丢包能力更强
 	}
 
-	fdtID, err := s.sendFn(header.Filename, file, fecType)
+	// 读取前端传入的冗余率，若未提供则使用默认值
+	redundancyRatio := 1.15
+	if v := r.FormValue("redundancyRatio"); v != "" {
+		if parsed, err := strconv.ParseFloat(v, 64); err == nil && parsed > 0 {
+			redundancyRatio = parsed
+		}
+	}
+
+	fdtID, err := s.sendFn(header.Filename, file, fecType, redundancyRatio)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)

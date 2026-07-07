@@ -7,10 +7,6 @@ const (
 	NUM_PORTS       = 1
 )
 
-// Receiver param rs
-const (
-	DefaultChunkSize = 128 // 默认每个 source block 包含 128 个 symbol
-)
 
 // Sender param
 const (
@@ -19,7 +15,7 @@ const (
 	SendFileDir_win          = "cmd\\send_files\\"
 	SaveFileDir_win          = "Downloads\\"
 	SendRedundancyRatio      = 1.15
-	DefaultSendRateLimitMbps = 800 // default send rate limit; 0 disables throttling
+	DefaultSendRateLimitMbps = 0 // default send rate limit; 0 disables throttling
 	WindowsSize              = 1
 
 	START_SEND_WAIT = 2 // seconds to wait before starting to send data (给接收端足够时间创建 Receiver)
@@ -59,8 +55,8 @@ const (
 
 // Oti param
 const (
-	MaxNoCodeChunkSize  = 128 // NoCode 模式下每个 source block 最多 128 个 symbol (128KB)
-	MaxRaptorQChunkSize = 128 // RaptorQ 模式下每个 source block 最多 128 个 symbol (128KB)
+	MaxNoCodeChunkSize  = 256 // NoCode 模式下每个 source block 最多 128 个 symbol (128KB)
+	MaxRaptorQChunkSize = 256 // RaptorQ 模式下每个 source block 最多 128 个 symbol (128KB)
 )
 
 const (
@@ -76,7 +72,7 @@ const (
 	HEALTH_CHECK_INTERVAL      = 10 // in seconds
 	IDLE_SENDER_CHECK_INTERVAL = 5  // in seconds
 	IDLE_SENDER_TIMEOUT        = 60 // in seconds
-	IDLE_DATA_TIMEOUT          = 30 // in seconds，接收端无数据超时（跨设备多播延迟较大）
+	IDLE_DATA_TIMEOUT          = 10 // in seconds，接收端无数据超时（跨设备多播延迟较大）
 
 	META_PORT = 3400
 	POOL_SEND = 0
@@ -89,4 +85,9 @@ const (
 // FDT (File Delivery Table) 相关常量
 const (
 	FDT_EXPIRES = 4294967295 // FDT 过期时间 (Unix 时间戳)，默认永不过期
+)
+
+// Receiver param rs
+const (
+	DefaultChunkSize = 256 // 默认每个 source block 包含 256 个 symbol
 )

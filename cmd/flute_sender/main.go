@@ -156,7 +156,8 @@ func main() {
 	// Set up API server.
 	srv := apiserver.New(cfg.Server.Port, "sender").
 		WithDestIP(cfg.DestIP).
-		WithFilePort(cfg.Network.BaseFilePort)
+		WithFilePort(cfg.Network.BaseFilePort).
+		WithSendRedundancyRatio(cfg.Sender.SendRedundancyRatio)
 
 	// Register setDestFn — lets the frontend update the destination IP at runtime.
 	srv.SetDestFunc(func(ip string) error {
@@ -168,7 +169,7 @@ func main() {
 	})
 
 	// Register send function.
-	srv.SetSendFunc(func(fileName string, data io.Reader, fecType string) (uint8, error) {
+	srv.SetSendFunc(func(fileName string, data io.Reader, fecType string, redundancyRatio float64) (uint8, error) {
 		currentDestIPMu.RLock()
 		destIP := currentDestIP
 		currentDestIPMu.RUnlock()
@@ -236,7 +237,7 @@ func main() {
 			defer p.CloseFileConn(fid)
 			defer f.Close()
 				defer os.Remove(savePath)
-			if err := SendFile(p, metaPkt, limiter, nil, nil, 1, srv, cfg.Sender.SendRedundancyRatio, *csvFlag); err != nil {
+			if err := SendFile(p, metaPkt, limiter, nil, nil, 1, srv, redundancyRatio, *csvFlag); err != nil {
 				log.Printf("[sendFn] SendFile error fdtID %d: %v", fid, err)
 			}
 		}()
