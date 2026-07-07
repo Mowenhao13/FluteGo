@@ -222,7 +222,8 @@ func InitReceiver(mt *meta.MetaPkt, saveDir string, enableMd5 bool) (*Receiver, 
 	// 构建输出文件路径
 	outFilePath := saveDir + mt.File.Name
 	config := initDecoderConfig(mt, saveDir)
-	chunkSize := int64(config.ChunkSize)
+	// ChunkSize 现在是 symbol 数量，需要转换为字节数
+	chunkSize := int64(config.ChunkSize) * int64(config.SymbolSize)
 	chunkCount := uint32((mt.File.TransferLen + uint64(chunkSize) - 1) / uint64(chunkSize))
 	if chunkCount == 0 {
 		chunkCount = 1
@@ -251,7 +252,8 @@ func calcExpectedPackets(config decoder.DecoderConfig, chunkCount uint32) int64 
 		return int64(chunkCount) * int64(config.DataShards+config.ParityShards)
 
 	case decoder.DecoderNoCode, decoder.DecoderRaptorQ:
-		chunkSize := int64(config.ChunkSize)
+		// ChunkSize 现在是 symbol 数量，需要转换为字节数
+		chunkBytes := int64(config.ChunkSize) * int64(config.SymbolSize)
 		symSize := int64(config.SymbolSize)
 		if symSize <= 0 {
 			symSize = 1
@@ -261,20 +263,20 @@ func calcExpectedPackets(config decoder.DecoderConfig, chunkCount uint32) int64 
 			return int64(chunkCount)
 		}
 
-		// 计算总基符号数（与发送端 RqEncoder 一致） = 每个完整chunk的符号数 + 最后一个chunk的符号数
+		// 计算总基符号数（与发送端 RqEncoder 一致）
 		totalBaseSymbols := int64(0)
 		for i := int64(0); i < int64(chunkCount); i++ {
-			var thisChunkSize int64
+			var thisChunkBytes int64
 			if i < int64(chunkCount)-1 {
-				thisChunkSize = chunkSize
+				thisChunkBytes = chunkBytes
 			} else {
 				// 最后一个chunk：剩余字节数
-				thisChunkSize = fileSize - i*chunkSize
-				if thisChunkSize <= 0 {
-					thisChunkSize = chunkSize
+				thisChunkBytes = fileSize - i*chunkBytes
+				if thisChunkBytes <= 0 {
+					thisChunkBytes = chunkBytes
 				}
 			}
-			baseSymbols := (thisChunkSize + symSize - 1) / symSize
+			baseSymbols := (thisChunkBytes + symSize - 1) / symSize
 			if baseSymbols <= 0 {
 				baseSymbols = 1
 			}
@@ -648,7 +650,7 @@ func (r *Receiver) showDecoderInfo() {
 	switch config.Type {
 	case decoder.DecoderRaptorQ, decoder.DecoderNoCode:
 		log.Printf("符号大小: %d bytes", config.SymbolSize)
-		log.Printf("Chunk大小: %d bytes", config.ChunkSize)
+		log.Printf("Chunk大小: %d symbols (%d bytes)", config.ChunkSize, int64(config.ChunkSize)*int64(config.SymbolSize))
 
 case decoder.DecoderReedSolomon:
 		log.Printf("数据分片: %d", config.DataShards)
