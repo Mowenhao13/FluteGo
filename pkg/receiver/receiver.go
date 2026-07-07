@@ -175,9 +175,6 @@ func initDecoderConfig(mt *meta.MetaPkt, saveDir string) decoder.DecoderConfig {
 	decoderType := mt.Oti.FECEncodingID
 	fileSize := mt.File.TransferLen
 	chunkSize := mt.Oti.MaximumChunkSize
-	if chunkSize == 0 {
-		chunkSize = uint32(constant.DefaultChunkSize)
-	}
 	symbolSize := mt.Oti.SymbolSize
 	dataShards := mt.Oti.DataShards
 	parityShards := mt.Oti.ParityShards
@@ -226,9 +223,6 @@ func InitReceiver(mt *meta.MetaPkt, saveDir string, enableMd5 bool) (*Receiver, 
 	outFilePath := saveDir + mt.File.Name
 	config := initDecoderConfig(mt, saveDir)
 	chunkSize := int64(config.ChunkSize)
-	if chunkSize <= 0 {
-		chunkSize = int64(constant.DefaultChunkSize)
-	}
 	chunkCount := uint32((mt.File.TransferLen + uint64(chunkSize) - 1) / uint64(chunkSize))
 	if chunkCount == 0 {
 		chunkCount = 1
@@ -258,9 +252,6 @@ func calcExpectedPackets(config decoder.DecoderConfig, chunkCount uint32) int64 
 
 	case decoder.DecoderNoCode, decoder.DecoderRaptorQ:
 		chunkSize := int64(config.ChunkSize)
-		if chunkSize <= 0 {
-			chunkSize = int64(constant.DefaultChunkSize)
-		}
 		symSize := int64(config.SymbolSize)
 		if symSize <= 0 {
 			symSize = 1

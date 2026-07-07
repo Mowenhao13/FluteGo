@@ -430,9 +430,6 @@ func (r *RsDecoder) decode() error {
 		defer of.Close()
 
 		chunkSize := int64(r.Config.ChunkSize)
-		if chunkSize <= 0 {
-			chunkSize = int64(constant.DefaultChunkSize)
-		}
 		totalChunks := int64((outSize + chunkSize - 1) / chunkSize)
 
 		for i := int64(0); i < totalChunks; i++ {

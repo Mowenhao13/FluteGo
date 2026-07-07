@@ -87,8 +87,7 @@ func Default() *Config {
 			StartSendWait:       2,
 		},
 		Receiver: ReceiverConfig{
-			SaveFileDir:      "", // 为空时由 utils.SelectSaveFileDir() 决定（$HOME/Downloads/）
-			DefaultChunkSize: 128,
+			SaveFileDir: "", // 为空时由 utils.SelectSaveFileDir() 决定（$HOME/Downloads/）
 		},
 		Server: ServerConfig{
 			Port:    8080,
