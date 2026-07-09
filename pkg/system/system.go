@@ -505,8 +505,7 @@ func (s *ReceiverSystem) StartMetaProgram() {
 					orph := atomic.LoadUint64(&s.orphanPackets)
 					drop := atomic.LoadUint64(&s.droppedPackets)
 					lctErr := atomic.LoadUint64(&s.lctDecodeErrors)
-					log.Printf("[MetaReceiver] STATS: total=%d, fdt=%d, fileData=%d, orphan=%d, dropped=%d, lctErr=%d",
-						tp, fdt, fdp, orph, drop, lctErr)
+					_, _, _, _, _, _ = tp, fdt, fdp, orph, drop, lctErr
 				}
 			}
 		}()
