@@ -175,6 +175,9 @@ func initDecoderConfig(mt *meta.MetaPkt, saveDir string) decoder.DecoderConfig {
 	decoderType := mt.Oti.FECEncodingID
 	fileSize := mt.File.TransferLen
 	chunkSize := mt.Oti.MaximumChunkSize
+	if chunkSize == 0 {
+		chunkSize = uint32(constant.DefaultChunkSize)
+	}
 	symbolSize := mt.Oti.SymbolSize
 	dataShards := mt.Oti.DataShards
 	parityShards := mt.Oti.ParityShards
