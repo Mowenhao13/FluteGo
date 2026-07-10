@@ -66,6 +66,17 @@ func createWinSocket(ip string, port int) (windows.Handle, error) {
 		return 0, fmt.Errorf("Set SO_REUSEADDR failed: %v", err)
 	}
 
+	// 禁用 Windows UDP 的 WSAECONNRESET 行为（关键修复）
+	// Windows 上，当 UDP 发送触发 ICMP Port Unreachable 时（接收端未就绪、防火墙拦截等），
+	// 后续的 WSASendTo/WSARecvFrom 会返回 WSAECONNRESET(10054) 错误。
+	// 这会导致大文件传输中途中断（发送端 fatalSendErr=1 后停止编码）。
+	// Unix 没有此问题。通过 SIO_UDP_CONNRESET ioctl 禁用此行为。
+	var connResetEnabled uint32 = 0 // FALSE = 禁用 CONNRESET 上报
+	var bytesReturned uint32
+	if err := windows.WSAIoctl(sock, windows.SIO_UDP_CONNRESET, (*byte)(unsafe.Pointer(&connResetEnabled)), uint32(unsafe.Sizeof(connResetEnabled)), nil, 0, &bytesReturned, nil, 0); err != nil {
+		log.Printf("[sock_win] Warning: SIO_UDP_CONNRESET ioctl failed: %v", err)
+	}
+
 	// 注意：不在 UDP socket 上设置 TCP_NODELAY —— 它是 TCP 选项，对 UDP 无效且可能引发问题
 
 	sockaddr := &windows.SockaddrInet4{
@@ -236,8 +247,10 @@ func ipv4ToWindowsRawSockaddr(ipv4 net.IP, port int) (*windows.RawSockaddrAny, i
 	// 设置地址族
 	rawAddr.Family = windows.AF_INET
 
-	// Windows 的 RawSockaddrInet4 结构体与 SockaddrInet4 不同
-	// WSASendTo 函数会自动处理端口字节序，或者该结构体使用主机字节序
+	// RawSockaddrInet4.Port 必须使用网络字节序（big-endian），与 sockaddr_in 一致。
+	// 这里手动将主机字节序的 port 转换为网络字节序。
+	// 注意：windows.SockaddrInet4.Port 使用主机字节序（Bind 时内核自动转换），
+	// 但 RawSockaddrInet4 直接传给 WSASendTo，必须已是网络字节序。
 	rawAddr.Port = uint16((port>>8)&0xFF) | uint16((port&0xFF)<<8)
 
 	// 复制IP地址
@@ -287,6 +300,7 @@ func (s *WinSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) err
 
 	// 在每个目标接口上加入多播组
 	var firstErr error
+	var joinedIfIP net.IP
 	for _, ip := range targets {
 		mreq := windows.IPMreq{}
 		copy(mreq.Multiaddr[:], mcastIP.To4())
@@ -296,8 +310,31 @@ func (s *WinSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) err
 				firstErr = err
 			}
 			log.Printf("[multicast] join %s on interface %s failed: %v", mcastIP.String(), ip.String(), err)
+		} else {
+			log.Printf("[multicast] joined group %s on interface %s", mcastIP.String(), ip.String())
+			if joinedIfIP == nil {
+				joinedIfIP = ip
+			}
 		}
 	}
+
+	// 设置多播出口接口（IP_MULTICAST_IF）—— 与 Unix 版本保持一致
+	// 缺少此设置时，Windows 使用默认路由接口发送多播，可能不是期望的网卡。
+	// 这在多网卡环境（以太网 + WiFi + 虚拟适配器）下会导致多播发错接口。
+	if joinedIfIP != nil {
+		ifaceBytes := [4]byte{joinedIfIP[0], joinedIfIP[1], joinedIfIP[2], joinedIfIP[3]}
+		if err := windows.SetsockoptInet4Addr(s.handle, windows.IPPROTO_IP, windows.IP_MULTICAST_IF, ifaceBytes); err != nil {
+			log.Printf("[multicast] set IP_MULTICAST_IF to %s failed: %v", joinedIfIP.String(), err)
+		} else {
+			log.Printf("[multicast] output interface set to %s", joinedIfIP.String())
+		}
+	}
+
+	// 允许接收多播回环（与 Unix 版本保持一致）
+	if err := windows.SetsockoptInt(s.handle, windows.IPPROTO_IP, windows.IP_MULTICAST_LOOP, 1); err != nil {
+		log.Printf("[multicast] set IP_MULTICAST_LOOP failed: %v", err)
+	}
+
 	return firstErr
 }
 
