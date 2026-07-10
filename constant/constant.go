@@ -55,8 +55,8 @@ const (
 
 // Oti param
 const (
-	MaxNoCodeChunkSize  = 256 // NoCode 模式下每个 source block 最多 128 个 symbol (128KB)
-	MaxRaptorQChunkSize = 256 // RaptorQ 模式下每个 source block 最多 128 个 symbol (128KB)
+	MaxNoCodeChunkSize  = 128 // NoCode 模式下每个 source block 最多 128 个 symbol (128KB)
+	MaxRaptorQChunkSize = 128 // RaptorQ 模式下每个 source block 最多 128 个 symbol (128KB)
 )
 
 const (
@@ -72,7 +72,7 @@ const (
 	HEALTH_CHECK_INTERVAL      = 10 // in seconds
 	IDLE_SENDER_CHECK_INTERVAL = 5  // in seconds
 	IDLE_SENDER_TIMEOUT        = 60 // in seconds
-	IDLE_DATA_TIMEOUT          = 10 // in seconds，接收端无数据超时（跨设备多播延迟较大）
+	IDLE_DATA_TIMEOUT          = 30 // in seconds，接收端无数据超时（大文件尾部解码需要时间）
 
 	META_PORT = 3400
 	POOL_SEND = 0

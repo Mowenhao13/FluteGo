@@ -359,8 +359,8 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 		enableMd5:      enableMd5,
 		finishChan:     make(chan struct{}),
 		OnComplete:     nil,
-		dataChan:       make(chan *WriteRequest, 2560), // 初始化缓冲通道（增大以容纳重组后大量回调）
-		packetChan:     make(chan []byte, 4096),        // 单端口架构：异步数据包队列
+		dataChan:       make(chan *WriteRequest, 4096), // 初始化缓冲通道（增大以容纳解码突发）
+		packetChan:     make(chan []byte, 16384),       // 单端口架构：异步数据包队列（增大容量减少丢包）
 		writeRequestPool: sync.Pool{
 			New: func() interface{} {
 				return &WriteRequest{}
@@ -393,29 +393,43 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 }
 
 // startPacketLoop 启动异步数据包消费循环（单端口架构）
-// 从 packetChan 读取数据包并调用 processPacket 处理，避免阻塞 MetaReceiver 主循环
+// 从 packetChan 读取数据包并调用 processPacket 处理，避免阻塞 MetaReceiver 主循环。
+// 使用多个 goroutine 并行处理，提高高吞吐下的解码吞吐量。
 func (r *Receiver) startPacketLoop() {
-	r.packetWg.Add(1)
-	go func() {
-		defer r.packetWg.Done()
-		for data := range r.packetChan {
-			r.processPacket(context.Background(), nil, data)
-		}
-	}()
+	workers := runtime.NumCPU()
+	if workers < 2 {
+		workers = 2
+	}
+	if workers > 8 {
+		workers = 8 // 限制最大并行度，避免过多锁竞争
+	}
+	for i := 0; i < workers; i++ {
+		r.packetWg.Add(1)
+		go func() {
+			defer r.packetWg.Done()
+			for data := range r.packetChan {
+				r.processPacket(context.Background(), nil, data)
+			}
+		}()
+	}
 }
 
 // EnqueuePacket 将数据包放入异步队列（单端口架构）
-// 由 MetaReceiver 的 dispatchFilePacket 调用，非阻塞
+// 由 MetaReceiver 的 dispatchFilePacket 调用。
+// 使用带超时的阻塞式入队，避免高吞吐下大量丢包导致 chunk 无法解码。
 func (r *Receiver) EnqueuePacket(ctx context.Context, data []byte) error {
 	select {
 	case r.packetChan <- data:
 		return nil
-	default:
+	case <-time.After(500 * time.Millisecond):
+		// 超时丢弃，防止完全阻塞 MetaReceiver 主循环
 		dropped := atomic.AddInt64(&r.totalDropped, 1)
 		if dropped <= 5 || dropped%1000 == 0 {
-			log.Printf("[Receiver] fdtID=%d: packet queue full, dropped %d packets", r.fdtID, dropped)
+			log.Printf("[Receiver] fdtID=%d: packet queue full after 500ms, dropped %d packets", r.fdtID, dropped)
 		}
 		return fmt.Errorf("packet queue full for fdtID=%d", r.fdtID)
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
