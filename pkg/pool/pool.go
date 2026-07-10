@@ -93,15 +93,19 @@ func (p *ConnPool) createNewConn(ip string, port int) (*sock.MsSocket, error) {
 
 	// 设置接收缓冲区，防止高吞吐下丢包
 	// 尝试设置较大的缓冲区，如果失败则逐步降级
-	bufferSizes := []int{64 * 1024 * 1024, 32 * 1024 * 1024, 16 * 1024 * 1024, 8 * 1024 * 1024, 4 * 1024 * 1024}
+	bufferSizes := []int{constant.RX_BUF, 32 * 1024 * 1024, 16 * 1024 * 1024, 8 * 1024 * 1024, 4 * 1024 * 1024}
 	setSuccess := false
+	lastSetSize := 0
 	for _, bufSize := range bufferSizes {
 		if err := msck.Socket.SetReadBuffer(bufSize); err == nil {
 			setSuccess = true
+			lastSetSize = bufSize
 			break
 		}
 	}
-	if !setSuccess {
+	if setSuccess {
+		log.Printf("[buffer] initial rcvbuf set to requested %d (kernel may clamp)", lastSetSize)
+	} else {
 		// 最后尝试系统默认值（不设置）
 	}
 
@@ -109,6 +113,7 @@ func (p *ConnPool) createNewConn(ip string, port int) (*sock.MsSocket, error) {
 		msck.Socket.Shutdown(0)
 		// 尝试设置发送缓冲区，如果失败则逐步降级
 		if err := msck.Socket.SetWriteBuffer(constant.TX_BUF); err != nil {
+			log.Printf("[buffer] set sndbuf=%d failed (%v), falling back", constant.TX_BUF, err)
 			// 尝试 4MB
 			if err := msck.Socket.SetWriteBuffer(4 * 1024 * 1024); err != nil {
 				// 尝试 2MB
@@ -117,6 +122,8 @@ func (p *ConnPool) createNewConn(ip string, port int) (*sock.MsSocket, error) {
 					msck.Socket.SetWriteBuffer(1 * 1024 * 1024)
 				}
 			}
+		} else {
+			log.Printf("[buffer] send buffer set to %d", constant.TX_BUF)
 		}
 		// 多播模式：设置 TTL 和出口接口（默认 TTL=1 只能本机回环，跨设备需要更大值）
 		if p.MulticastIP != "" {

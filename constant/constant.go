@@ -16,7 +16,7 @@ const (
 	SaveFileDir_win          = "Downloads\\"
 	SendRedundancyRatio      = 1.15
 	DefaultSendRateLimitMbps = 0 // default send rate limit; 0 disables throttling
-	WindowsSize              = 1
+	WindowsSize              = 20  // 符号级交织窗口大小。增大此值可更充分地利用并行 worker，提高发送管道利用率
 
 	START_SEND_WAIT = 2 // seconds to wait before starting to send data (给接收端足够时间创建 Receiver)
 )
@@ -55,13 +55,13 @@ const (
 
 // Oti param
 const (
-	MaxNoCodeChunkSize  = 128 // NoCode 模式下每个 source block 最多 128 个 symbol (128KB)
-	MaxRaptorQChunkSize = 128 // RaptorQ 模式下每个 source block 最多 128 个 symbol (128KB)
+	MaxNoCodeChunkSize  = 256 // NoCode 模式下每个 source block 最多 256 个 symbol (256KB)
+	MaxRaptorQChunkSize = 256 // RaptorQ 模式下每个 source block 最多 256 个 symbol (256KB)
 )
 
 const (
-	TX_BUF = 64 * 1024 * 1024  // 64 MB send buffer (reduced for Windows compatibility)
-	RX_BUF = 64 * 1024 * 1024 // 16 MB recv buffer (reduced for Windows compatibility)
+	TX_BUF = 32 * 1024 * 1024 // 32 MB send buffer (compatible with macOS kern.ipc.maxsockbuf=32MB, Windows=64MB)
+	RX_BUF = 32 * 1024 * 1024 // 32 MB recv buffer (compatible with macOS kern.ipc.maxsockbuf=32MB, Windows=64MB)
 )
 
 const (

@@ -554,7 +554,7 @@ func (s *Sender) Start(ctx context.Context) error {
 
 	workerCount := runtime.NumCPU()
 	// 创建发送任务通道
-	taskChan := make(chan sendTask, 2048)
+	taskChan := make(chan sendTask, 8192)
 	var wgSender sync.WaitGroup
 	wgSender.Add(workerCount)
 	for i := 0; i < workerCount; i++ {

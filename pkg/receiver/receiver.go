@@ -361,6 +361,8 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 		OnComplete:     nil,
 		dataChan:       make(chan *WriteRequest, 4096), // 初始化缓冲通道（增大以容纳解码突发）
 		packetChan:     make(chan []byte, 16384),       // 单端口架构：异步数据包队列（增大容量减少丢包）
+		dataChan:       make(chan *WriteRequest, 10240), // 初始化缓冲通道（增大以容纳高吞吐场景下大量回调）
+		packetChan:     make(chan []byte, 16384),       // 单端口架构：异步数据包队列（增大以容纳高吞吐场景）
 		writeRequestPool: sync.Pool{
 			New: func() interface{} {
 				return &WriteRequest{}
