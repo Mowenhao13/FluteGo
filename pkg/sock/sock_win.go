@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sort"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -278,6 +280,7 @@ func (s *WinSocket) Shutdown(mode int) error {
 func (s *WinSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) error {
 	// 收集要加入的接口 IPv4 地址列表
 	var targets []net.IP
+	var selectedIfName string
 
 	if iface != nil {
 		// 指定了接口：只加入该接口
@@ -286,6 +289,7 @@ func (s *WinSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) err
 			for _, addr := range addrs {
 				if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
 					targets = append(targets, ipnet.IP.To4())
+					selectedIfName = iface.Name
 					break
 				}
 			}
@@ -294,11 +298,19 @@ func (s *WinSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) err
 			targets = append(targets, net.IPv4zero)
 		}
 	} else {
-		// 未指定接口：在所有非回环、已启用的 IPv4 接口上都加入多播
-		targets = listMulticastInterfaces()
+		// 未指定接口：智能选择最优接口（以太网优先，过滤虚拟适配器）
+		bestIP, bestName := selectBestMulticastInterface()
+		if bestIP != nil {
+			targets = []net.IP{bestIP}
+			selectedIfName = bestName
+			log.Printf("[multicast] auto-selected interface: %s (%s)", bestName, bestIP.String())
+		} else {
+			targets = []net.IP{net.IPv4zero}
+			log.Printf("[multicast] WARNING: no suitable interface found, falling back to 0.0.0.0")
+		}
 	}
 
-	// 在每个目标接口上加入多播组
+	// 只在选定的接口上加入多播组（避免在虚拟适配器上加入导致多播路由混乱）
 	var firstErr error
 	var joinedIfIP net.IP
 	for _, ip := range targets {
@@ -311,22 +323,19 @@ func (s *WinSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) err
 			}
 			log.Printf("[multicast] join %s on interface %s failed: %v", mcastIP.String(), ip.String(), err)
 		} else {
-			log.Printf("[multicast] joined group %s on interface %s", mcastIP.String(), ip.String())
-			if joinedIfIP == nil {
-				joinedIfIP = ip
-			}
+			log.Printf("[multicast] joined group %s on interface %s (%s)", mcastIP.String(), ip.String(), selectedIfName)
+			joinedIfIP = ip
 		}
 	}
 
 	// 设置多播出口接口（IP_MULTICAST_IF）—— 与 Unix 版本保持一致
 	// 缺少此设置时，Windows 使用默认路由接口发送多播，可能不是期望的网卡。
-	// 这在多网卡环境（以太网 + WiFi + 虚拟适配器）下会导致多播发错接口。
 	if joinedIfIP != nil {
 		ifaceBytes := [4]byte{joinedIfIP[0], joinedIfIP[1], joinedIfIP[2], joinedIfIP[3]}
 		if err := windows.SetsockoptInet4Addr(s.handle, windows.IPPROTO_IP, windows.IP_MULTICAST_IF, ifaceBytes); err != nil {
 			log.Printf("[multicast] set IP_MULTICAST_IF to %s failed: %v", joinedIfIP.String(), err)
 		} else {
-			log.Printf("[multicast] output interface set to %s", joinedIfIP.String())
+			log.Printf("[multicast] output interface set to %s (%s)", joinedIfIP.String(), selectedIfName)
 		}
 	}
 
@@ -338,9 +347,113 @@ func (s *WinSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) err
 	return firstErr
 }
 
+// virtualAdapterKeywords 列出 Windows 上常见的虚拟适配器关键字（小写匹配）。
+// Go 的 net.Interface.Name 在 Windows 上返回接口描述，通常包含这些关键字。
+var virtualAdapterKeywords = []string{
+	"virtualbox", "vmware", "hyper-v", "verthernet", "vethernet",
+	"loopback", "tap-", "tun0", "vpn", "wsl", "docker",
+	"tunnel", "6to4", "isatap", "teredo", "pseudo",
+	"virtual", "hamachi", "bluestacks", "tunnelbear",
+	"nord", "expressvpn", "ppp", "ras", "sangfor",
+}
+
+// isVirtualInterface 通过接口名称判断是否为虚拟适配器。
+func isVirtualInterface(name string) bool {
+	nameLower := strings.ToLower(name)
+	for _, kw := range virtualAdapterKeywords {
+		if strings.Contains(nameLower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// selectBestMulticastInterface 智能选择最优的多播接口。
+// 优先级：物理以太网 > WiFi > 其他非虚拟接口 > 虚拟接口（兜底）。
+// 过滤掉回环、未启用、无 MAC 地址的接口。
+func selectBestMulticastInterface() (net.IP, string) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, ""
+	}
+
+	type candidate struct {
+		ip    net.IP
+		name  string
+		score int
+	}
+
+	var physical []candidate // 物理网卡（以太网/WiFi）
+	var virtualIfs []candidate // 虚拟适配器（兜底用）
+
+	// 打印所有接口，帮助诊断
+	log.Printf("[multicast] scanning interfaces for best multicast candidate:")
+	for _, f := range ifaces {
+		if f.Flags&net.FlagLoopback != 0 || f.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := f.Addrs()
+		if err != nil {
+			continue
+		}
+		var ipv4 net.IP
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+				ipv4 = ipnet.IP.To4()
+				break
+			}
+		}
+		if ipv4 == nil {
+			continue
+		}
+
+		isVirtual := isVirtualInterface(f.Name)
+		c := candidate{ip: ipv4, name: f.Name, score: 0}
+
+		if isVirtual {
+			log.Printf("[multicast]   %s: IP=%s, MTU=%d, VIRTUAL (skipped)", f.Name, ipv4.String(), f.MTU)
+			virtualIfs = append(virtualIfs, c)
+			continue
+		}
+
+		// 物理网卡打分
+		score := 10
+		if len(f.HardwareAddr) >= 6 {
+			score += 5 // 有 MAC 地址加分
+		}
+		if f.MTU == 1500 {
+			score += 2 // 标准以太网 MTU
+		}
+		c.score = score
+
+		log.Printf("[multicast]   %s: IP=%s, MAC=%v, MTU=%d, score=%d",
+			f.Name, ipv4.String(), len(f.HardwareAddr) > 0, f.MTU, score)
+
+		physical = append(physical, c)
+	}
+
+	// 优先选物理网卡
+	if len(physical) > 0 {
+		sort.Slice(physical, func(i, j int) bool {
+			return physical[i].score > physical[j].score
+		})
+		best := physical[0]
+		log.Printf("[multicast] selected physical interface: %s (%s)", best.name, best.ip.String())
+		return best.ip, best.name
+	}
+
+	// 兜底：没有物理网卡，用第一个虚拟适配器
+	if len(virtualIfs) > 0 {
+		v := virtualIfs[0]
+		log.Printf("[multicast] WARNING: no physical interface found, using virtual: %s (%s)", v.name, v.ip.String())
+		return v.ip, v.name
+	}
+
+	return nil, ""
+}
+
 // listMulticastInterfaces 返回所有适合加入多播的接口 IPv4 地址。
-// 筛选条件：非回环、已启用、有 IPv4 地址。
-// 兜底返回 0.0.0.0。
+// 保留用于向后兼容，但 JoinMulticastGroup 现在使用 selectBestMulticastInterface。
 func listMulticastInterfaces() []net.IP {
 	ifaces, err := net.Interfaces()
 	if err != nil {
