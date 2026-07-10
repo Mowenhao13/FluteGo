@@ -64,7 +64,7 @@ func runCLIReceiver(destIP, saveDir string, csvEnabled bool) {
 
 	// 初始化接收系统
 	log.Println("[CLI] Initializing receiver system...")
-	sys, err := system.InitReceiverSystemWithMulticast(2, "0.0.0.0", saveDir, csvEnabled, destIP)
+	sys, err := system.InitReceiverSystemWithMulticast(10, "0.0.0.0", saveDir, csvEnabled, destIP)
 	if err != nil {
 		log.Fatalf("[CLI] Failed to initialize system: %v", err)
 	}
@@ -179,7 +179,7 @@ func main() {
 	}
 
 	// 1. Initialize System.
-	sys, err := system.InitReceiverSystemWithMulticast(2, "0.0.0.0", saveFileDir, true, multicastIP)
+	sys, err := system.InitReceiverSystemWithMulticast(10, "0.0.0.0", saveFileDir, true, multicastIP)
 	if err != nil {
 		log.Fatalf("Failed to initialize system: %v", err)
 	}
