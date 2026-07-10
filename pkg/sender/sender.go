@@ -736,6 +736,11 @@ func (s *Sender) Start(ctx context.Context) error {
 		if s.CSVEnabled {
 			csvDir := filepath.Dir(s.config.FName)
 			csvPath := filepath.Join(csvDir, "sender_performance.csv")
+			// 修复符号数 = 实际发送符号数 - 源符号数
+			repairSymbols := totalPackets - baseSymbols
+			if repairSymbols < 0 {
+				repairSymbols = 0
+			}
 			writeSendCSV(
 				csvPath, (1.0-s.dropRatio)*100,
 				s.fdtID, fecTypeName(s.config.Type), filepath.Base(s.config.FName),
@@ -744,7 +749,7 @@ func (s *Sender) Start(ctx context.Context) error {
 				s.sendEnd, dur, mbps, goodput,
 				totalPackets, totalBytes, headerBytes, symbolPayload,
 				symRatio, wireRatio, symOverhead, wireOverhead,
-				baseSymbols,
+				baseSymbols, repairSymbols,
 			)
 		}
 
@@ -785,7 +790,7 @@ func writeSendCSV(csvPath string, sendPct float64,
 	sendEnd time.Time, dur time.Duration, throughputMbps float64, goodputMbps float64,
 	totalPackets int64, totalBytes int64, headerBytes int64, symbolPayload int64,
 	symRatio float64, wireRatio float64, symOverhead int64, wireOverhead int64,
-	baseSymbols int64) {
+	baseSymbols int64, repairSymbols int64) {
 
 	needHeader := false
 	if _, err := os.Stat(csvPath); os.IsNotExist(err) {
@@ -809,7 +814,7 @@ func writeSendCSV(csvPath string, sendPct float64,
 			"DurationSec", "ThroughputMbps", "GoodputMbps",
 			"TotalPackets", "TotalBytes", "HeaderBytes", "SymbolPayload",
 			"SymRatio", "WireRatio", "SymOverheadBytes", "WireOverheadBytes",
-			"BaseSymbols~",
+			"SourceBlockSymbols", "RepairSymbols",
 		})
 	}
 
@@ -836,6 +841,7 @@ func writeSendCSV(csvPath string, sendPct float64,
 		strconv.FormatInt(symOverhead, 10),
 		strconv.FormatInt(wireOverhead, 10),
 		strconv.FormatInt(baseSymbols, 10),
+		strconv.FormatInt(repairSymbols, 10),
 	}
 
 	if err := w.Write(record); err != nil {

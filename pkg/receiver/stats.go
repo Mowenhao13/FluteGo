@@ -36,6 +36,10 @@ var CSVHeader = []string{
 	"packets_received",
 	"expected_packets",
 	"packet_ratio_pct",
+	"source_block_symbols",
+	"repair_symbols",
+	"redundancy_ratio",
+	"total_symbols_sent",
 	"total_alloc_mem_bytes",
 	"peak_heap_mem_bytes",
 	"sys_mem_mb",
@@ -65,6 +69,10 @@ type TransferStats struct {
 	PacketsRecv     int64
 	ExpectedPkts    int64
 	PacketRatio     float64
+	SourceBlockSym  int64   // RaptorQ: 源块符号数（总基符号数）
+	RepairSymbols   int64   // RaptorQ: 修复符号数（预期总符号 - 源符号）
+	RedundancyRatio float64 // RaptorQ: 冗余比例
+	TotalSymbols    int64   // RaptorQ: 总发送符号数（预期）
 	MemTotalAlloc   uint64
 	MemPeakHeap     uint64
 	MemSys          uint64
@@ -119,6 +127,25 @@ func (r *Receiver) CollectStats(status string) TransferStats {
 		recovered = rq.GetRecoveredCount()
 	}
 
+	// 计算 RaptorQ 相关参数
+	// SourceBlockSymbols: 文件总基符号数 = ceil(fileSize / symbolSize)
+	// TotalSymbols: 预期总发送符号数 = expectedPackets（与发送端 RqEncoder.Encode 一致）
+	// RepairSymbols: 修复符号数 = TotalSymbols - SourceBlockSymbols
+	var sourceBlockSym, repairSymbols, totalSymbols int64
+	var redundancyRatio float64
+	if r.config.Type == decoder.DecoderRaptorQ {
+		redundancyRatio = r.config.RedundancyRatio
+		symSize := int64(r.config.SymbolSize)
+		if symSize > 0 {
+			sourceBlockSym = (int64(r.config.FileSize) + symSize - 1) / symSize
+		}
+		totalSymbols = r.expectedPackets
+		repairSymbols = totalSymbols - sourceBlockSym
+		if repairSymbols < 0 {
+			repairSymbols = 0
+		}
+	}
+
 	return TransferStats{
 		Timestamp:       time.Now(),
 		FdtID:           r.fdtID,
@@ -138,6 +165,10 @@ func (r *Receiver) CollectStats(status string) TransferStats {
 		PacketsRecv:     receivedPkts,
 		ExpectedPkts:    r.expectedPackets,
 		PacketRatio:     pktRatio,
+		SourceBlockSym:  sourceBlockSym,
+		RepairSymbols:   repairSymbols,
+		RedundancyRatio: redundancyRatio,
+		TotalSymbols:    totalSymbols,
 		MemTotalAlloc:   memStatsEnd.TotalAlloc - r.memStatsStart.TotalAlloc,
 		MemPeakHeap:     memStatsEnd.HeapAlloc,
 		MemSys:          memStatsEnd.Sys,
@@ -169,6 +200,10 @@ func (s TransferStats) toCSVRow() []string {
 		fmt.Sprintf("%d", s.PacketsRecv),
 		fmt.Sprintf("%d", s.ExpectedPkts),
 		fmt.Sprintf("%.2f", s.PacketRatio),
+		fmt.Sprintf("%d", s.SourceBlockSym),
+		fmt.Sprintf("%d", s.RepairSymbols),
+		fmt.Sprintf("%.4f", s.RedundancyRatio),
+		fmt.Sprintf("%d", s.TotalSymbols),
 		fmt.Sprintf("%d", s.MemTotalAlloc),
 		fmt.Sprintf("%d", s.MemPeakHeap),
 		fmt.Sprintf("%d", s.MemSys/(1024*1024)),
