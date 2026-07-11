@@ -734,7 +734,10 @@ func (s *Sender) Start(ctx context.Context) error {
 
 		// Write CSV performance record (if enabled)
 		if s.CSVEnabled {
-			csvDir := filepath.Dir(s.config.FName)
+			csvDir := "results"
+			if err := os.MkdirAll(csvDir, 0755); err != nil {
+				log.Printf("[CSV] failed to create results directory: %v", err)
+			}
 			csvPath := filepath.Join(csvDir, "sender_performance.csv")
 			// 修复符号数 = 实际发送符号数 - 源符号数
 			repairSymbols := totalPackets - baseSymbols

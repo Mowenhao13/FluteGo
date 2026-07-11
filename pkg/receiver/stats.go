@@ -224,10 +224,12 @@ func WriteTransferCSV(saveDir string, stats TransferStats) {
 	if !CsvEnabled {
 		return
 	}
-	if saveDir == "" {
-		saveDir = "."
+	csvDir := "results"
+	if err := os.MkdirAll(csvDir, 0755); err != nil {
+		log.Printf("[stats] Failed to create results directory: %v", err)
+		return
 	}
-	csvPath := filepath.Join(saveDir, "transfer_stats.csv")
+	csvPath := filepath.Join(csvDir, "transfer_stats.csv")
 
 	writeHeader := false
 	if _, err := os.Stat(csvPath); os.IsNotExist(err) {
