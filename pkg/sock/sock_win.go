@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -64,6 +65,17 @@ func createWinSocket(ip string, port int) (windows.Handle, error) {
 	if err := windows.SetsockoptInt(sock, windows.SOL_SOCKET, windows.SO_REUSEADDR, 1); err != nil {
 		windows.CloseHandle(sock)
 		return 0, fmt.Errorf("Set SO_REUSEADDR failed: %v", err)
+	}
+
+	// 禁用 Windows UDP 的 WSAECONNRESET 行为（关键修复）
+	// Windows 上，当 UDP 发送触发 ICMP Port Unreachable 时（接收端未就绪、防火墙拦截等），
+	// 后续的 WSASendTo/WSARecvFrom 会返回 WSAECONNRESET(10054) 错误。
+	// 这会导致大文件传输中途中断（发送端 fatalSendErr=1 后停止编码）。
+	// Unix 没有此问题。通过 SIO_UDP_CONNRESET ioctl 禁用此行为。
+	var connResetEnabled uint32 = 0 // FALSE = 禁用 CONNRESET 上报
+	var bytesReturned uint32
+	if err := windows.WSAIoctl(sock, windows.SIO_UDP_CONNRESET, (*byte)(unsafe.Pointer(&connResetEnabled)), uint32(unsafe.Sizeof(connResetEnabled)), nil, 0, &bytesReturned, nil, 0); err != nil {
+		log.Printf("[sock_win] Warning: SIO_UDP_CONNRESET ioctl failed: %v", err)
 	}
 
 	// 注意：不在 UDP socket 上设置 TCP_NODELAY —— 它是 TCP 选项，对 UDP 无效且可能引发问题
@@ -236,8 +248,10 @@ func ipv4ToWindowsRawSockaddr(ipv4 net.IP, port int) (*windows.RawSockaddrAny, i
 	// 设置地址族
 	rawAddr.Family = windows.AF_INET
 
-	// Windows 的 RawSockaddrInet4 结构体与 SockaddrInet4 不同
-	// WSASendTo 函数会自动处理端口字节序，或者该结构体使用主机字节序
+	// RawSockaddrInet4.Port 必须使用网络字节序（big-endian），与 sockaddr_in 一致。
+	// 这里手动将主机字节序的 port 转换为网络字节序。
+	// 注意：windows.SockaddrInet4.Port 使用主机字节序（Bind 时内核自动转换），
+	// 但 RawSockaddrInet4 直接传给 WSASendTo，必须已是网络字节序。
 	rawAddr.Port = uint16((port>>8)&0xFF) | uint16((port&0xFF)<<8)
 
 	// 复制IP地址
@@ -263,74 +277,95 @@ func (s *WinSocket) Shutdown(mode int) error {
 }
 
 func (s *WinSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) error {
-	// 收集要加入的接口 IPv4 地址列表
-	var targets []net.IP
+	var joinIP net.IP
+	var ifName string
 
 	if iface != nil {
-		// 指定了接口：只加入该接口
+		// 指定了接口：在该接口上加入多播组
 		addrs, err := iface.Addrs()
 		if err == nil {
 			for _, addr := range addrs {
 				if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
-					targets = append(targets, ipnet.IP.To4())
+					joinIP = ipnet.IP.To4()
+					ifName = iface.Name
 					break
 				}
 			}
 		}
-		if len(targets) == 0 {
-			targets = append(targets, net.IPv4zero)
-		}
-	} else {
-		// 未指定接口：在所有非回环、已启用的 IPv4 接口上都加入多播
-		targets = listMulticastInterfaces()
 	}
 
-	// 在每个目标接口上加入多播组
-	var firstErr error
-	for _, ip := range targets {
-		mreq := windows.IPMreq{}
-		copy(mreq.Multiaddr[:], mcastIP.To4())
-		copy(mreq.Interface[:], ip.To4())
-		if err := windows.SetsockoptIPMreq(s.handle, windows.IPPROTO_IP, windows.IP_ADD_MEMBERSHIP, &mreq); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			log.Printf("[multicast] join %s on interface %s failed: %v", mcastIP.String(), ip.String(), err)
+	if joinIP == nil {
+		// 未指定接口或找不到：打印所有接口信息用于诊断，然后回退到 INADDR_ANY
+		// 让 Windows 自动选择默认路由接口（比用关键字猜接口更可靠）
+		logMulticastInterfaces()
+		joinIP = net.IPv4zero
+		ifName = "INADDR_ANY (auto)"
+		log.Printf("[multicast] WARNING: no specific interface selected, using INADDR_ANY")
+		log.Printf("[multicast] HINT: set 'multicastIfaceIP' in config to the receiver's own LAN IP (e.g. 192.168.0.12)")
+	}
+
+	// 加入多播组
+	mreq := windows.IPMreq{}
+	copy(mreq.Multiaddr[:], mcastIP.To4())
+	copy(mreq.Interface[:], joinIP.To4())
+	if err := windows.SetsockoptIPMreq(s.handle, windows.IPPROTO_IP, windows.IP_ADD_MEMBERSHIP, &mreq); err != nil {
+		return fmt.Errorf("join multicast %s on %s failed: %w", mcastIP.String(), ifName, err)
+	}
+	log.Printf("[multicast] joined group %s on interface %s (%s)", mcastIP.String(), joinIP.String(), ifName)
+
+	// 设置多播出口接口（仅当指定了具体接口时；INADDR_ANY 时让系统用默认路由）
+	if joinIP[0] != 0 || joinIP[1] != 0 || joinIP[2] != 0 || joinIP[3] != 0 {
+		ifaceBytes := [4]byte{joinIP[0], joinIP[1], joinIP[2], joinIP[3]}
+		if err := windows.SetsockoptInet4Addr(s.handle, windows.IPPROTO_IP, windows.IP_MULTICAST_IF, ifaceBytes); err != nil {
+			log.Printf("[multicast] set IP_MULTICAST_IF to %s failed: %v", joinIP.String(), err)
 		}
 	}
-	return firstErr
+
+	// 允许接收多播回环（与 Unix 版本保持一致）
+	if err := windows.SetsockoptInt(s.handle, windows.IPPROTO_IP, windows.IP_MULTICAST_LOOP, 1); err != nil {
+		log.Printf("[multicast] set IP_MULTICAST_LOOP failed: %v", err)
+	}
+
+	return nil
 }
 
-// listMulticastInterfaces 返回所有适合加入多播的接口 IPv4 地址。
-// 筛选条件：非回环、已启用、有 IPv4 地址。
-// 兜底返回 0.0.0.0。
-func listMulticastInterfaces() []net.IP {
+// logMulticastInterfaces 打印所有网络接口信息，用于诊断多播网卡绑定问题。
+func logMulticastInterfaces() {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return []net.IP{net.IPv4zero}
+		log.Printf("[multicast] failed to list interfaces: %v", err)
+		return
 	}
 
-	var result []net.IP
-	for _, f := range ifaces {
-		if f.Flags&net.FlagLoopback != 0 || f.Flags&net.FlagUp == 0 {
-			continue
+	log.Printf("[multicast] === available network interfaces ===")
+	for i, f := range ifaces {
+		flags := ""
+		if f.Flags&net.FlagUp != 0 {
+			flags += "UP "
 		}
+		if f.Flags&net.FlagLoopback != 0 {
+			flags += "LOOPBACK "
+		}
+		if f.Flags&net.FlagMulticast != 0 {
+			flags += "MULTICAST "
+		}
+
+		var addrsStr string
 		addrs, err := f.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, addr := range addrs {
-			if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
-				result = append(result, ipnet.IP.To4())
-				break
+		if err == nil {
+			var ipStrs []string
+			for _, addr := range addrs {
+				if ipnet, ok := addr.(*net.IPNet); ok {
+					ipStrs = append(ipStrs, ipnet.IP.String())
+				}
 			}
+			addrsStr = strings.Join(ipStrs, ", ")
 		}
-	}
 
-	if len(result) == 0 {
-		result = append(result, net.IPv4zero)
+		log.Printf("[multicast]   #%d: name=%q, mac=%x, mtu=%d, flags=[%s], addrs=[%s]",
+			i, f.Name, f.HardwareAddr, f.MTU, flags, addrsStr)
 	}
-	return result
+	log.Printf("[multicast] === end of interface list ===")
 }
 
 func (s *WinSocket) LeaveMulticastGroup(mcastIP net.IP, iface *net.Interface) error {

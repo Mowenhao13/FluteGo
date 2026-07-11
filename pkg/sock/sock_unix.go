@@ -4,7 +4,9 @@ package sock
 
 import (
 	"fmt"
+	"log"
 	"net"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -121,131 +123,95 @@ func (s *UnixSocket) Shutdown(mode int) error {
 }
 
 func (s *UnixSocket) JoinMulticastGroup(mcastIP net.IP, iface *net.Interface) error {
+	var joinIP net.IP
+	var ifName string
+
+	if iface != nil {
+		// 指定了接口：在该接口上加入多播组
+		addrs, err := iface.Addrs()
+		if err == nil {
+			for _, addr := range addrs {
+				if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+					joinIP = ipnet.IP.To4()
+					ifName = iface.Name
+					break
+				}
+			}
+		}
+	}
+
+	if joinIP == nil {
+		// 未指定接口或找不到：打印所有接口信息用于诊断，然后回退到 INADDR_ANY
+		// 让系统内核用默认路由接口（比硬编码 en0/eth0 猜接口更可靠）
+		logMulticastInterfaces()
+		joinIP = net.IPv4zero
+		ifName = "INADDR_ANY (auto)"
+		log.Printf("[multicast] WARNING: no specific interface selected, using INADDR_ANY")
+		log.Printf("[multicast] HINT: set 'multicastIfaceIP' in config to the host's own LAN IP")
+	}
+
 	mreq := syscall.IPMreq{
 		Multiaddr: [4]byte{mcastIP[0], mcastIP[1], mcastIP[2], mcastIP[3]},
 	}
-
-	var selectedIfName string
-	var selectedIfIP net.IP
-
-	if iface != nil {
-		// 使用接口的第一个 IPv4 地址
-		addrs, err := iface.Addrs()
-		if err == nil && len(addrs) > 0 {
-			for _, addr := range addrs {
-				if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
-					copy(mreq.Interface[:], ipnet.IP.To4())
-					selectedIfName = iface.Name
-					selectedIfIP = ipnet.IP.To4()
-					break
-				}
-			}
-		}
-	} else {
-		// 没有指定接口时，自动找一个非回环、已启动的网卡
-		// 优先选择以太网（en0 通常是 macOS 主网卡），避免选到 WiFi
-		ifaces, err := net.Interfaces()
-		if err == nil {
-			// 打印所有可用接口，帮助诊断
-			fmt.Printf("[multicast] Available interfaces:\n")
-			for _, ifc := range ifaces {
-				if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
-					continue
-				}
-				addrs, _ := ifc.Addrs()
-				for _, addr := range addrs {
-					if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
-						flags := ""
-						if ifc.Flags&net.FlagRunning != 0 {
-							flags += "RUNNING,"
-						}
-						if ifc.HardwareAddr != nil && len(ifc.HardwareAddr) > 0 {
-							// 以太网和 WiFi 都有 MAC，但可以通过名字区分
-						}
-						fmt.Printf("[multicast]   %s: %s (%s)\n", ifc.Name, ipnet.IP.To4().String(), flags)
-					}
-				}
-			}
-
-			// 优先选择以太网接口（en0），其次选择其他非回环接口
-			preferredOrder := []string{"en0", "eth0", "en1"}
-			for _, prefName := range preferredOrder {
-				for _, ifc := range ifaces {
-					if ifc.Name != prefName {
-						continue
-					}
-					if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
-						continue
-					}
-					addrs, err := ifc.Addrs()
-					if err != nil {
-						continue
-					}
-					for _, addr := range addrs {
-						if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
-							copy(mreq.Interface[:], ipnet.IP.To4())
-							selectedIfName = ifc.Name
-							selectedIfIP = ipnet.IP.To4()
-							break
-						}
-					}
-					if selectedIfIP != nil {
-						break
-					}
-				}
-				if selectedIfIP != nil {
-					break
-				}
-			}
-
-			// 如果优先接口没找到，回退到第一个可用的非回环接口
-			if selectedIfIP == nil {
-				for _, ifc := range ifaces {
-					if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
-						continue
-					}
-					addrs, err := ifc.Addrs()
-					if err != nil {
-						continue
-					}
-					for _, addr := range addrs {
-						if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
-							copy(mreq.Interface[:], ipnet.IP.To4())
-							selectedIfName = ifc.Name
-							selectedIfIP = ipnet.IP.To4()
-							break
-						}
-					}
-					if selectedIfIP != nil {
-						break
-					}
-				}
-			}
-		}
-	}
-
-	if mreq.Interface == [4]byte{0, 0, 0, 0} {
-		return fmt.Errorf("no suitable interface found for multicast")
-	}
-
-	fmt.Printf("[multicast] Selected interface: %s (%s) for group %s\n",
-		selectedIfName, selectedIfIP.String(), mcastIP.String())
+	copy(mreq.Interface[:], joinIP.To4())
 
 	if err := syscall.SetsockoptIPMreq(s.fd, syscall.IPPROTO_IP, syscall.IP_ADD_MEMBERSHIP, &mreq); err != nil {
-		return err
+		return fmt.Errorf("join multicast %s on %s failed: %w", mcastIP.String(), ifName, err)
+	}
+	log.Printf("[multicast] joined group %s on interface %s (%s)", mcastIP.String(), joinIP.String(), ifName)
+
+	// 设置多播出口接口（仅当指定了具体接口时；INADDR_ANY 时让系统用默认路由）
+	if joinIP[0] != 0 || joinIP[1] != 0 || joinIP[2] != 0 || joinIP[3] != 0 {
+		if err := syscall.SetsockoptInet4Addr(s.fd, syscall.IPPROTO_IP, syscall.IP_MULTICAST_IF, mreq.Interface); err != nil {
+			log.Printf("[multicast] set IP_MULTICAST_IF to %s failed: %v", joinIP.String(), err)
+		}
 	}
 
-	// 设置多播出口接口
-	if err := syscall.SetsockoptInet4Addr(s.fd, syscall.IPPROTO_IP, syscall.IP_MULTICAST_IF, mreq.Interface); err != nil {
-		return err
-	}
-
-	// 允许接收多播回环（本地发送端也能收到）
+	// 允许接收多播回环（与 Windows 版本保持一致）
 	if err := syscall.SetsockoptInt(s.fd, syscall.IPPROTO_IP, syscall.IP_MULTICAST_LOOP, 1); err != nil {
-		return err
+		log.Printf("[multicast] set IP_MULTICAST_LOOP failed: %v", err)
 	}
 
 	return nil
+}
+
+// logMulticastInterfaces 打印所有网络接口信息，用于诊断多播网卡绑定问题。
+func logMulticastInterfaces() {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		log.Printf("[multicast] failed to list interfaces: %v", err)
+		return
+	}
+
+	log.Printf("[multicast] === available network interfaces ===")
+	for i, f := range ifaces {
+		flags := ""
+		if f.Flags&net.FlagUp != 0 {
+			flags += "UP "
+		}
+		if f.Flags&net.FlagLoopback != 0 {
+			flags += "LOOPBACK "
+		}
+		if f.Flags&net.FlagMulticast != 0 {
+			flags += "MULTICAST "
+		}
+
+		var addrsStr string
+		addrs, err := f.Addrs()
+		if err == nil {
+			var ipStrs []string
+			for _, addr := range addrs {
+				if ipnet, ok := addr.(*net.IPNet); ok {
+					ipStrs = append(ipStrs, ipnet.IP.String())
+				}
+			}
+			addrsStr = strings.Join(ipStrs, ", ")
+		}
+
+		log.Printf("[multicast]   #%d: name=%q, mac=%x, mtu=%d, flags=[%s], addrs=[%s]",
+			i, f.Name, f.HardwareAddr, f.MTU, flags, addrsStr)
+	}
+	log.Printf("[multicast] === end of interface list ===")
 }
 
 func (s *UnixSocket) LeaveMulticastGroup(mcastIP net.IP, iface *net.Interface) error {

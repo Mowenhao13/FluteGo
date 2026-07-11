@@ -536,6 +536,75 @@
       cursor: pointer;
     }
 
+    /* ─── Redundancy ratio control ── */
+    .redundancy-group {
+      display: flex;
+      align-items: center;
+      border: 1px solid var(--border-md);
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--surface);
+      transition: border-color 0.15s;
+    }
+    .redundancy-group:focus-within { border-color: var(--amber); }
+    .redundancy-group.disabled {
+      opacity: 0.4;
+      pointer-events: none;
+    }
+
+    .redundancy-label {
+      font-size: 10px !important;
+      font-weight: 500 !important;
+      color: var(--text-mute) !important;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      padding: 3px 7px;
+      background: #FAFAF9;
+      border-right: 1px solid var(--border-md);
+      user-select: none;
+      white-space: nowrap;
+    }
+
+    .redundancy-input {
+      width: 44px;
+      font-size: 12px !important;
+      font-weight: 500 !important;
+      color: var(--amber) !important;
+      background: transparent;
+      border: none;
+      outline: none;
+      padding: 3px 5px;
+      text-align: right;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      -moz-appearance: textfield;
+    }
+    .redundancy-input::-webkit-outer-spin-button,
+    .redundancy-input::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    .redundancy-unit {
+      font-size: 10px !important;
+      color: var(--text-mute) !important;
+      padding: 3px 4px 3px 0;
+      user-select: none;
+    }
+
+    .redundancy-ratio {
+      font-size: 10px !important;
+      color: var(--text-mute) !important;
+      padding: 3px 7px;
+      background: #FAFAF9;
+      border-left: 1px solid var(--border-md);
+      white-space: nowrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .redundancy-ratio .ratio-val {
+      color: var(--text-sec) !important;
+      font-weight: 500 !important;
+    }
+
     /* ─── Action buttons (send / delete) ─── */
     .action-btn {
       display: inline-flex;
@@ -582,43 +651,6 @@
     .dir-status { font-size: 11px !important; }
     .dir-status.ok  { color: #16A34A !important; }
     .dir-status.err { color: var(--red) !important; }
-
-    /* ─── Sender settings row ─── */
-    .sender-settings-row {
-      display: flex;
-      align-items: stretch;
-      gap: 10px;
-      margin-bottom: 20px;
-      flex-wrap: nowrap;
-    }
-    /* IP bar — widest */
-    .sender-settings-row .bar-ip {
-      flex: 2 1 0;
-      margin-bottom: 0;
-      min-width: 0;
-    }
-    /* Redundancy & rate — equal narrow width */
-    .sender-settings-row .bar-param {
-      flex: 0.5 1 0;
-      margin-bottom: 0;
-      min-width: 0;
-    }
-    .sender-settings-row .bar-param .dir-input {
-      max-width: 80px;
-      text-align: right;
-    }
-    .sender-settings-row .unit-label {
-      font-size: 12px !important;
-      color: var(--text-sec) !important;
-      white-space: nowrap;
-    }
-    /* Apply button at far right */
-    .sender-settings-row .apply-wrapper {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-shrink: 0;
-    }
   </style>
 </head>
 <body>
@@ -670,35 +702,12 @@
       </span>
     </div>
 
-    <div class="sender-settings-row">
-      <!-- Target IP — widest -->
-      <div class="save-dir-bar bar-ip">
-        <i data-lucide="map-pin" style="width:14px;height:14px;color:#9E9B94;flex-shrink:0"></i>
-        <span>目标 IP：</span>
-        <input type="text" id="dest-ip-input" class="dir-input" placeholder="192.168.1.100" />
-      </div>
-
-      <!-- Redundancy Ratio — narrow, equal to rate limit -->
-      <div class="save-dir-bar bar-param">
-        <i data-lucide="repeat" style="width:14px;height:14px;color:#9E9B94;flex-shrink:0"></i>
-        <span>冗余率：</span>
-        <input type="number" id="redundancy-input" class="dir-input" value="1.05" step="0.05" min="1.0" max="5.0" />
-        <span class="unit-label">×</span>
-      </div>
-
-      <!-- Rate Limit — narrow, equal to redundancy -->
-      <div class="save-dir-bar bar-param">
-        <i data-lucide="zap" style="width:14px;height:14px;color:#9E9B94;flex-shrink:0"></i>
-        <span>限速：</span>
-        <input type="number" id="ratelimit-input" class="dir-input" value="500" step="50" min="0" max="10000" />
-        <span class="unit-label">Mbps</span>
-      </div>
-
-      <!-- Single Apply Button at the far right (same size as original action-btn) -->
-      <div class="apply-wrapper">
-        <button class="action-btn" id="sender-apply-btn" onclick="applySenderSettings()">设置</button>
-        <span id="sender-settings-status" class="dir-status"></span>
-      </div>
+    <div class="save-dir-bar" id="dest-ip-bar">
+      <i data-lucide="map-pin" style="width:14px;height:14px;color:#9E9B94;flex-shrink:0"></i>
+      <span>目标 IP：</span>
+      <input type="text" id="dest-ip-input" class="dir-input" placeholder="接收端 IP，例如 192.168.1.100" />
+      <button class="action-btn" onclick="setDestIP()">设置</button>
+      <span id="dest-ip-status" class="dir-status"></span>
     </div>
 
     <div class="panels">
@@ -715,6 +724,14 @@
               <option value="NoCode">NoCode</option>
               <option value="RaptorQ">RaptorQ</option>
             </select>
+            <div class="redundancy-group" id="redundancy-group">
+              <span class="redundancy-label">冗余</span>
+              <input type="number" class="redundancy-input" id="redundancy-input"
+                     min="0" max="100" step="1" value="15"
+                     title="输入冗余百分比 (0-100)，实际 ratio = 输入值/100 + 1" />
+              <span class="redundancy-unit">%</span>
+              <span class="redundancy-ratio">ratio=<span class="ratio-val" id="ratio-display">1.15</span></span>
+            </div>
             <button class="add-files-btn" id="add-files-btn" onclick="openFilePicker()">
               <i data-lucide="plus" style="width:12px;height:12px"></i>
               选择文件
@@ -883,6 +900,56 @@
   let modeAutoSwitched = false;
 
   // ══════════════════════════════════════════════════════════════════
+  //  Redundancy ratio control
+  // ══════════════════════════════════════════════════════════════════
+  const redundancyInput = document.getElementById('redundancy-input');
+  const ratioDisplay    = document.getElementById('ratio-display');
+  const redundancyGroup = document.getElementById('redundancy-group');
+  const fecSelect       = document.getElementById('fec-select');
+
+  function ratioToPercent(ratio) {
+    return Math.round((ratio - 1) * 100);
+  }
+  function percentToRatio(pct) {
+    return (pct / 100) + 1;
+  }
+  function updateRatioDisplay() {
+    let pct = parseFloat(redundancyInput.value);
+    if (isNaN(pct) || pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    ratioDisplay.textContent = percentToRatio(pct).toFixed(2);
+  }
+  function getRedundancyRatio() {
+    let pct = parseFloat(redundancyInput.value);
+    if (isNaN(pct) || pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    return percentToRatio(pct);
+  }
+  function applyRedundancyFromStatus(s) {
+    if (s && s.sendRedundancyRatio) {
+      redundancyInput.value = ratioToPercent(s.sendRedundancyRatio);
+      updateRatioDisplay();
+    }
+  }
+  function updateRedundancyGroupState() {
+    if (fecSelect.value === 'NoCode') {
+      redundancyGroup.classList.add('disabled');
+    } else {
+      redundancyGroup.classList.remove('disabled');
+    }
+  }
+
+  redundancyInput.addEventListener('input', updateRatioDisplay);
+  redundancyInput.addEventListener('change', () => {
+    let pct = parseFloat(redundancyInput.value);
+    if (isNaN(pct) || pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    redundancyInput.value = Math.round(pct);
+    updateRatioDisplay();
+  });
+  fecSelect.addEventListener('change', updateRedundancyGroupState);
+
+  // ══════════════════════════════════════════════════════════════════
   //  Init
   // ══════════════════════════════════════════════════════════════════
   async function init() {
@@ -890,6 +957,7 @@
     try {
       const s = await fetch(API_BASE + '/api/status').then(r => r.json());
       applyStatus(s);
+      applyRedundancyFromStatus(s);
     } catch (_) {}
 
     // 2. Fallback snapshot via REST (before WebSocket connects)
@@ -941,10 +1009,15 @@
         transfers = {};
         const list = msg.data;
         if (Array.isArray(list)) {
-          list.forEach(r => { transfers[r.fdtId] = r; });
+          list.forEach(r => {
+            transfers[r.fdtId] = r;
+            // Remove queued entries that have a real transfer record now
+            removeMatchingQueued(r);
+          });
         }
       } else if (msg.type === 'update' && msg.data) {
         transfers[msg.data.fdtId] = msg.data;
+        removeMatchingQueued(msg.data);
       }
       renderAll();
     };
@@ -988,12 +1061,6 @@
     }
     if (s.destIP && s.mode === 'sender') {
       document.getElementById('dest-ip-input').value = s.destIP;
-      if (s.redundancyRatio != null) {
-        document.getElementById('redundancy-input').value = s.redundancyRatio;
-      }
-      if (s.rateLimitMbps != null) {
-        document.getElementById('ratelimit-input').value = s.rateLimitMbps;
-      }
     }
     updateRecvReadyBadge(s.receiverReady);
 
@@ -1069,16 +1136,18 @@
       const pct     = progressPct(r.progress);
       const isFailed = r.status === 'failed';
       const actionCell = r._isQueued
-        ? `<td>
-            <div style="display:flex;gap:4px;">
-              <button class="action-btn send-btn" data-qkey="${escHtml(r._qkey)}">
-                <i data-lucide="send" style="width:11px;height:11px"></i> 发送
-              </button>
-              <button class="action-btn delete-btn" data-qkey="${escHtml(r._qkey)}">
-                <i data-lucide="trash-2" style="width:11px;height:11px"></i> 删除
-              </button>
-            </div>
-           </td>`
+        ? (r._sending
+          ? '<td></td>'  // sending in progress — buttons hidden, WS record will replace
+          : `<td>
+              <div style="display:flex;gap:4px;">
+                <button class="action-btn send-btn" data-qkey="${escHtml(r._qkey)}">
+                  <i data-lucide="send" style="width:11px;height:11px"></i> 发送
+                </button>
+                <button class="action-btn delete-btn" data-qkey="${escHtml(r._qkey)}">
+                  <i data-lucide="trash-2" style="width:11px;height:11px"></i> 删除
+                </button>
+              </div>
+             </td>`)
         : '<td></td>';
       return `
         <tr${isFailed ? ' class="row-failed"' : ''}>
@@ -1297,16 +1366,28 @@
   // ══════════════════════════════════════════════════════════════════
   //  File picker (pure UI — no backend call)
   // ══════════════════════════════════════════════════════════════════
+
+  // Remove queued entry when a real transfer record for the same file appears
+  function removeMatchingQueued(record) {
+    if (!record || record.role !== 'sender') return;
+    queuedFiles = queuedFiles.filter(e => {
+      const key = e.file.name + '_' + e.file.size;
+      return record.fileName !== e.file.name || record.fileSize !== e.file.size;
+    });
+  }
+
   function normalizeQueued(entry) {
     const file = entry.file;
+    const isSending = entry.sending;
     return {
       _isQueued: true,
       _qkey:     entry.key,
+      _sending:  isSending,
       fdtId:    'q_' + entry.key,
       fileName:  file.name,
       fileSize:  file.size,
       role:      'sender',
-      status:    entry.sending ? 'transferring' : (entry.error ? 'failed' : 'queued'),
+      status:    isSending ? 'transferring' : (entry.error ? 'failed' : 'queued'),
       progress:  0,
       speedMbps: 0,
       fecType:   '—',
@@ -1343,6 +1424,7 @@
     const fd = new FormData();
     fd.append('file', entry.file);
     fd.append('fecType', fecType);
+    fd.append('redundancyRatio', getRedundancyRatio().toFixed(2));
 
     entry.sending = true;
     entry.error   = false;
@@ -1350,13 +1432,12 @@
 
     try {
       const resp = await fetch(API_BASE + '/api/send', { method: 'POST', body: fd });
-      if (resp.ok) {
-        // Remove from local queue; WS will show progress
-        queuedFiles = queuedFiles.filter(e => e.key !== key);
-      } else {
+      if (!resp.ok) {
         entry.error   = true;
         entry.sending = false;
       }
+      // Keep entry in queuedFiles even on success — it shows "sending" state
+      // and will be removed only when the WS transfer record arrives.
     } catch (_) {
       entry.error   = true;
       entry.sending = false;
@@ -1382,6 +1463,7 @@
 
   async function sendAllQueuedFiles() {
     const fecType = document.getElementById('fec-select').value;
+    const redundancyRatio = getRedundancyRatio().toFixed(2);
     // 获取所有未发送的文件
     const toSend = queuedFiles.filter(e => !e.sending && !e.error);
     if (!toSend.length) return;
@@ -1394,15 +1476,16 @@
       const fd = new FormData();
       fd.append('file', entry.file);
       fd.append('fecType', fecType);
+      fd.append('redundancyRatio', redundancyRatio);
 
       try {
         const resp = await fetch(API_BASE + '/api/send', { method: 'POST', body: fd });
-        if (resp.ok) {
-          queuedFiles = queuedFiles.filter(e => e.key !== entry.key);
-        } else {
+        if (!resp.ok) {
           entry.error = true;
           entry.sending = false;
         }
+        // Keep entry in queuedFiles even on success — WS will remove it
+        // when the transfer record becomes active.
       } catch (_) {
         entry.error = true;
         entry.sending = false;
@@ -1414,59 +1497,12 @@
   }
 
   // ══════════════════════════════════════════════════════════════════
-  //  Sender settings (IP + redundancy + rate limit) — unified apply
-  // ══════════════════════════════════════════════════════════════════
-  async function applySenderSettings() {
-    const ip   = document.getElementById('dest-ip-input').value.trim();
-    const ratio = parseFloat(document.getElementById('redundancy-input').value);
-    const rate  = parseInt(document.getElementById('ratelimit-input').value, 10);
-
-    if (!ip) {
-      showSenderStatus('✗ 目标 IP 不能为空', 'err');
-      return;
-    }
-    if (isNaN(ratio) || ratio < 1.0) {
-      showSenderStatus('✗ 冗余率需 ≥ 1.0', 'err');
-      return;
-    }
-    if (isNaN(rate) || rate < 0) {
-      showSenderStatus('✗ 限速需 ≥ 0', 'err');
-      return;
-    }
-
-    showSenderStatus('保存中...', '');
-    try {
-      const resp = await fetch(API_BASE + '/api/sender/settings', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ destIP: ip, redundancyRatio: ratio, rateLimitMbps: rate }),
-      });
-      if (resp.ok) {
-        showSenderStatus('✓ 已保存', 'ok');
-        document.getElementById('sender-dest-ip').textContent = ip;
-        setTimeout(() => showSenderStatus('', ''), 2500);
-      } else {
-        const j = await resp.json().catch(() => ({}));
-        showSenderStatus('✗ ' + (j.error || '保存失败'), 'err');
-      }
-    } catch (_) {
-      showSenderStatus('✗ 连接失败', 'err');
-    }
-  }
-
-  function showSenderStatus(msg, type) {
-    const el = document.getElementById('sender-settings-status');
-    el.textContent = msg;
-    el.className = 'dir-status' + (type ? ' ' + type : '');
-  }
-
-  // ══════════════════════════════════════════════════════════════════
-  //  (Legacy) Sender dest IP — kept for backward compatibility
+  //  Sender dest IP
   // ══════════════════════════════════════════════════════════════════
   async function setDestIP() {
     const ip = document.getElementById('dest-ip-input').value.trim();
     if (!ip) return;
-    const statusEl = document.getElementById('sender-settings-status');
+    const statusEl = document.getElementById('dest-ip-status');
     statusEl.textContent = '';
     statusEl.className   = 'dir-status';
     try {
