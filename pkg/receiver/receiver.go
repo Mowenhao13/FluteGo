@@ -135,9 +135,24 @@ type Receiver struct {
 	lastPacketEnd  int64     // 最后一个数据包接收完成的时间戳（nanoseconds），用于纯接收速率计算
 	memStatsStart  runtime.MemStats
 
-	// 单端口架构：异步数据包队列，避免阻塞 MetaReceiver 主循环
-	packetChan chan []byte
+	// 异步数据包队列：startFileDataListener → packetChan → worker → processPacket
+	packetChan chan *queuedPacket
 	packetWg   sync.WaitGroup
+}
+
+// queuedPacket 包装数据包及其来源 pool，用于在处理完成后归还缓冲区。
+type queuedPacket struct {
+	data []byte
+	pool *sync.Pool // nil 表示非池化缓冲区（如 orphan buffer），无需归还
+}
+
+// PacketPool 是接收端共享的包缓冲区池，供 startFileDataListener 使用。
+// 通过复用缓冲区减少高吞吐下 GC 压力。
+var PacketPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, constant.MAX_PACKET_SIZE)
+		return b
+	},
 }
 
 // WriteRequest 写入请求结构
@@ -360,7 +375,7 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 		finishChan:     make(chan struct{}),
 		OnComplete:     nil,
 		dataChan:       make(chan *WriteRequest, 10240), // 初始化缓冲通道（增大以容纳高吞吐场景下大量回调）
-		packetChan:     make(chan []byte, 32768),       // 单端口架构：异步数据包队列（增大以容纳高吞吐场景）
+		packetChan:     make(chan *queuedPacket, 32768), // 异步数据包队列（增大以容纳高吞吐场景）
 		writeRequestPool: sync.Pool{
 			New: func() interface{} {
 				return &WriteRequest{}
@@ -392,9 +407,10 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 	return receiver, nil
 }
 
-// startPacketLoop 启动异步数据包消费循环（单端口架构）
-// 从 packetChan 读取数据包并调用 processPacket 处理，避免阻塞 MetaReceiver 主循环。
+// startPacketLoop 启动异步数据包消费循环
+// 从 packetChan 读取 queuedPacket 并调用 processPacket 处理，避免阻塞接收主循环。
 // 使用多个 goroutine 并行处理，提高高吞吐下的解码吞吐量。
+// 处理完成后，如果缓冲区来自 pool，自动归还以减少 GC 压力。
 func (r *Receiver) startPacketLoop() {
 	workers := runtime.NumCPU()
 	if workers < 4 {
@@ -407,29 +423,41 @@ func (r *Receiver) startPacketLoop() {
 		r.packetWg.Add(1)
 		go func() {
 			defer r.packetWg.Done()
-			for data := range r.packetChan {
-				r.processPacket(context.Background(), nil, data)
+			for qp := range r.packetChan {
+				r.processPacket(context.Background(), nil, qp.data)
+				// 归还池化缓冲区
+				if qp.pool != nil {
+					qp.pool.Put(qp.data[:cap(qp.data)])
+				}
 			}
 		}()
 	}
 }
 
-// EnqueuePacket 将数据包放入异步队列（单端口架构）
-// 由 MetaReceiver 的 dispatchFilePacket 调用。
-// 使用带超时的阻塞式入队，避免高吞吐下大量丢包导致 chunk 无法解码。
+// EnqueuePacket 将数据包放入异步队列（非池化，用于 orphan buffer 回放等场景）。
+// 非阻塞：队列满时立即丢弃。
 func (r *Receiver) EnqueuePacket(ctx context.Context, data []byte) error {
+	return r.EnqueuePooledPacket(ctx, data, nil)
+}
+
+// EnqueuePooledPacket 将数据包及其 pool 放入异步队列。
+// pool 非 nil 时，worker 处理完后会自动归还缓冲区。
+// 非阻塞：队列满时立即丢弃，防止阻塞 startFileDataListener 的接收主循环。
+// 丢弃的包由 RaptorQ 冗余符号恢复。
+func (r *Receiver) EnqueuePooledPacket(ctx context.Context, data []byte, pool *sync.Pool) error {
 	select {
-	case r.packetChan <- data:
+	case r.packetChan <- &queuedPacket{data: data, pool: pool}:
 		return nil
-	case <-time.After(500 * time.Millisecond):
-		// 超时丢弃，防止完全阻塞 MetaReceiver 主循环
+	default:
 		dropped := atomic.AddInt64(&r.totalDropped, 1)
 		if dropped <= 5 || dropped%1000 == 0 {
-			log.Printf("[Receiver] fdtID=%d: packet queue full after 500ms, dropped %d packets", r.fdtID, dropped)
+			log.Printf("[Receiver] fdtID=%d: packet queue full, dropped %d packets (non-blocking)", r.fdtID, dropped)
+		}
+		// 队列满时也要归还缓冲区，避免泄漏
+		if pool != nil {
+			pool.Put(data[:cap(data)])
 		}
 		return fmt.Errorf("packet queue full for fdtID=%d", r.fdtID)
-	case <-ctx.Done():
-		return ctx.Err()
 	}
 }
 

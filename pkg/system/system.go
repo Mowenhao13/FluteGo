@@ -436,14 +436,14 @@ func (s *ReceiverSystem) unregisterReceiver(fdtID uint8) {
 }
 
 // dispatchFilePacket 根据 TOI 将文件数据包分发给对应的 Receiver。
-// 通过 Receiver 的异步队列分发，避免阻塞 MetaReceiver 主接收循环。
-func (s *ReceiverSystem) dispatchFilePacket(ctx context.Context, toi uint32, data []byte) {
+// pool 非 nil 时表示 data 来自 sync.Pool，处理完后（或入队失败时）自动归还。
+func (s *ReceiverSystem) dispatchFilePacket(ctx context.Context, toi uint32, data []byte, pool *sync.Pool) {
 	fdtID := uint8(toi)
 	if recvVal, ok := s.activeReceiverMap.Load(fdtID); ok {
 		recv := recvVal.(*receiver.Receiver)
 		// 通过带缓冲的队列异步处理，避免 AddSymbol 或写入文件阻塞接收循环
-		if err := recv.EnqueuePacket(ctx, data); err != nil {
-			// 队列满时丢弃包
+		if err := recv.EnqueuePooledPacket(ctx, data, pool); err != nil {
+			// 队列满时丢弃包（EnqueuePooledPacket 已归还 pool buffer）
 			atomic.AddUint64(&s.droppedPackets, 1)
 		}
 	} else {
@@ -453,6 +453,10 @@ func (s *ReceiverSystem) dispatchFilePacket(ctx context.Context, toi uint32, dat
 		bufVal, _ := s.orphanBufs.LoadOrStore(uint32(fdtID), newOrphanBuffer(s.orphanBufSize))
 		buf := bufVal.(*orphanBuffer)
 		buf.add(data)
+		// orphan buffer 会拷贝数据，归还 pool buffer
+		if pool != nil {
+			pool.Put(data[:cap(data)])
+		}
 		if cnt <= 5 || cnt%1000 == 0 {
 			log.Printf("[MetaReceiver] ORPHAN packet: TOI=%d (fdtID=%d), buffered=%d (orphan #%d)", toi, fdtID, buf.count(), cnt)
 		}
@@ -605,9 +609,9 @@ func firstErr(errs []error) error {
 
 // startFileDataListener 启动共享的文件数据监听器（BASE_FILE_PORT=3400）
 //
-// 在统一端口架构下，所有文件数据包（TOI>0）通过此连接统一接收，
+// 所有文件数据包（TOI>0）通过此连接统一接收，
 // 解析 LCT 头部后根据 TOI 通过 dispatchFilePacket 分发给对应的 Receiver。
-// 此连接创建一次，加入多播组，运行在整个系统生命周期内。
+// 使用 sync.Pool 复用缓冲区，避免每包 make+copy 造成的 GC 压力。
 func (s *ReceiverSystem) startFileDataListener() {
 	filePort := constant.BASE_FILE_PORT
 
@@ -625,7 +629,6 @@ func (s *ReceiverSystem) startFileDataListener() {
 	s.fileDataConn = fileConns[0]
 	log.Printf("[FileDataListener] listening for file data on port %d", filePort)
 
-	buf := make([]byte, 65535)
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -633,8 +636,13 @@ func (s *ReceiverSystem) startFileDataListener() {
 		default:
 		}
 
+		// 从 pool 获取缓冲区，避免每包分配
+		buf := receiver.PacketPool.Get().([]byte)
+
 		bytesRecvd, err := s.fileDataConn.Socket.ReadFromUDP(buf)
 		if err != nil {
+			// 出错时归还缓冲区
+			receiver.PacketPool.Put(buf)
 			select {
 			case <-s.ctx.Done():
 				return
@@ -646,32 +654,35 @@ func (s *ReceiverSystem) startFileDataListener() {
 			continue
 		}
 		if bytesRecvd == 0 {
+			receiver.PacketPool.Put(buf)
 			continue
 		}
 
 		if bytesRecvd < meta.LCTHeaderLength {
+			receiver.PacketPool.Put(buf)
 			continue
 		}
 
 		var lctHeader meta.LCTHeader
 		if err := lctHeader.Decode(buf[:meta.LCTHeaderLength]); err != nil {
 			atomic.AddUint64(&s.lctDecodeErrors, 1)
+			receiver.PacketPool.Put(buf)
 			continue
 		}
 
 		if lctHeader.TOI == meta.TOIFDT {
 			// TOI=0: FDT XML，由 MetaReceiver 处理，此处跳过
 			atomic.AddUint64(&s.fdtPackets, 1)
+			receiver.PacketPool.Put(buf)
 			continue
 		}
 
 		// TOI>0: 文件数据包
 		atomic.AddUint64(&s.fileDataPackets, 1)
 
-		// 复制数据并分发
-		data := make([]byte, bytesRecvd)
-		copy(data, buf[:bytesRecvd])
-		s.dispatchFilePacket(s.ctx, lctHeader.TOI, data)
+		// 直接传递 pool buffer 切片，无需 copy
+		// dispatchFilePacket → EnqueuePooledPacket → worker 处理完后自动归还
+		s.dispatchFilePacket(s.ctx, lctHeader.TOI, buf[:bytesRecvd], &receiver.PacketPool)
 	}
 }
 
