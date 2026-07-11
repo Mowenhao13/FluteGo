@@ -189,6 +189,7 @@ go build -o flute_receiver ./cmd/flute_receiver/
 
 ## 性能测试
 
+<!-- 
 两种测试场景：
 - **Mac→Win**：Apple M4/16GB/macOS 26.2（发送端）→ AMD Ryzen/32GB/Win 11（接收端），**不限速**
 - **Win→Mac**：AMD Ryzen 9 7940HX@5.2GHz/32GB/Win 11（发送端）→ Apple M4/16GB/macOS 26.2（接收端），**500 Mbps 限速**（另有无限速对照）
@@ -278,11 +279,11 @@ go build -o flute_receiver ./cmd/flute_receiver/
 <!-- | Win→Mac 5×1GB RaptorQ 并发（不限速） | 25–41 MB | 99 MB | ~4300–5400 |
 | Win→Mac 5×1GB NoCode 并发（500M限速） | 12–31 MB | 58 MB | ~7300–10600 | -->
 
-- Win 发送端内存稳定（14–19 MB），无 FEC 解码状态。
+<!-- - Win 发送端内存稳定（14–19 MB），无 FEC 解码状态。
 - NoCode GC 高于 RaptorQ（`sync.Pool` 写缓冲无状态缓存），限速场景因耗时拉长 GC 最高。
 - 所有场景内存稳定，无泄漏。 -->
 
-### 接收端收包统计
+<!-- ### 接收端收包统计
 
 | 场景 | FEC | 预期包数 | 实际收包 | 比率 |
 |------|-----|---------|---------|------|
@@ -294,80 +295,68 @@ go build -o flute_receiver ./cmd/flute_receiver/
 
 - RaptorQ 收包率精确匹配 `基符号数 × 冗余比`，不限速和限速均稳定 125.00%。
 - NoCode 零丢包，100% 精确匹配。
+--> --> -->
 
-## RaptorQ Recovery Formula
+### Win→Win 单文件传输（直连网线，不限速）
 
-### Parameters
+**测试环境：**
+- 发送端 / 接收端：同一局域网两台 Windows 主机，千兆网线直连
+- 参数：`SymbolSize = 1024B`，`ChunkSize = 1024 symbols (1MB)`，`MaxPacketSize = 1048B`
+- 速率：不限速（`rateLimitMbps = 0`）
+- 文件：`bin/test_{128,256,512,768,1024}MB.bin`（随机二进制，MD5 校验通过）
+- 数据来源：`results/sender_performance.csv` + `results/transfer_stats.csv`
+- 速率以发送端为准（接收端因异步处理存在统计偏差）
 
-| Symbol | Meaning | How to compute |
-|--------|---------|---------------|
-| `S` | symbol size (bytes) | `maxPacketSize - 8` |
-| `C` | chunk size (bytes) | OTI `MaximumChunkSize` (default 32768) |
-| `F` | file size (bytes) | `os.Stat()` |
-| `R` | redundancy ratio | `--send-redundancy-ratio` |
-| `D` | drop probability | `1.0 - percentage/100` |
+#### NoCode（0% 冗余）
 
-### Derived values
+**发送端性能（速率权威）：**
 
-```
-baseSymbols   B = ceil(C / S)
-totalSymbols  T = ceil(B * R)
-chunkCount    N = ceil(F / C)
-sendRate      p = 1 - D
-```
+| 文件大小 | 耗时 (s) | 吞吐速率 (Mbps) | 有效速率 (Mbps) | 总发送包数 | 源符号数 | 修复符号数 |
+|---------|---------|----------------|----------------|-----------|---------|-----------|
+| 128 MB  | 2.314   | 474.84         | 463.97         | 131,072   | 131,072 | 0         |
+| 256 MB  | 4.707   | 466.92         | 456.23         | 262,144   | 262,144 | 0         |
+| 512 MB  | 9.717   | 452.37         | 442.01         | 524,288   | 524,288 | 0         |
+| 768 MB  | 14.168  | 465.37         | 454.71         | 786,432   | 786,432 | 0         |
+| 1024 MB | 19.579  | 449.03         | 438.74         | 1,048,576 | 1,048,576 | 0       |
 
-### Recovery condition
+**接收端统计：**
 
-A transfer **succeeds** when every chunk receives enough symbols to decode.
-With random independent packet loss at rate D, the probability a single chunk fails is:
+| 文件大小 | 收包数 | 收包率 | 完整性 | 峰值堆内存 (MB) | GC 次数 | 状态 |
+|---------|--------|-------|--------|----------------|---------|------|
+| 128 MB  | 131,072   | 100.00% | 128/128 chunks   | 52.3  | 47  | completed |
+| 256 MB  | 262,144   | 100.00% | 256/256 chunks   | 52.6  | 105 | completed |
+| 512 MB  | 524,288   | 100.00% | 512/512 chunks   | 81.6  | 200 | completed |
+| 768 MB  | 786,432   | 100.00% | 768/768 chunks   | 22.3  | 295 | completed |
+| 1024 MB | 1,048,576 | 100.00% | 1024/1024 chunks | 106.3 | 393 | completed |
 
-```
-P(fail per chunk) = P( Binomial(T, p) < B )
-```
+#### RaptorQ（15% 冗余）
 
-For `N` chunks to all succeed with high confidence:
+**发送端性能：**
 
-```
-P(fail per chunk) * N  <  0.5    (expected failures < 1)
-```
+| 文件大小 | 耗时 (s) | 吞吐速率 (Mbps) | 有效速率 (Mbps) | 总发送包数 | 源符号数 | 修复符号数 |
+|---------|---------|----------------|----------------|-----------|---------|-----------|
+| 128 MB  | 2.323   | 544.18         | 462.21         | 150,784   | 131,072 | 19,712    |
+| 256 MB  | 4.713   | 536.47         | 455.66         | 301,568   | 262,144 | 39,424    |
+| 512 MB  | 10.211  | 495.20         | 420.60         | 603,136   | 524,288 | 78,848    |
+| 768 MB  | 14.974  | 506.54         | 430.24         | 904,704   | 786,432 | 118,272   |
+| 1024 MB | 19.911  | 507.94         | 431.42         | 1,206,272 | 1,048,576 | 157,696 |
 
-### Verified boundaries (Windows localhost, RaptorQ, rate-limit=0)
+**接收端统计：**
 
-**100 MB file (N = 3,200 chunks):**
+| 文件大小 | 收包数 | 收包率 | 完整性 | 峰值堆内存 (MB) | GC 次数 | 状态 |
+|---------|--------|-------|--------|----------------|---------|------|
+| 128 MB  | 150,784   | 115.04% | 128/128 chunks   | 80.1  | 48  | completed |
+| 256 MB  | 301,568   | 115.04% | 256/256 chunks   | 38.5  | 96  | completed |
+| 512 MB  | 603,136   | 115.04% | 512/512 chunks   | 34.4  | 188 | completed |
+| 768 MB  | 904,704   | 115.04% | 768/768 chunks   | 53.7  | 277 | completed |
+| 1024 MB | 1,206,272 | 115.04% | 1024/1024 chunks | 77.7  | 362 | completed |
 
-| R | T | p min | Loss max | Overhead | Validated |
-|---|----|---------|----------|----------|-----------|
-| 1.30 | 32 | 0.95 | 5% | +30% | OK |
-| 1.50 | 36 | 0.90 | 10% | +50% | OK |
-| 1.60 | 39 | 0.85 | 15% | +60% | OK |
-| 2.00 | 48 | 0.75 | 25% | +100% | OK |
-| 2.50 | 60 | 0.60 | 40% | +150% | OK |
-| 3.00 | 72 | 0.60 | 40% | +200% | OK |
-
-**1 GB file (N = 32,768 chunks):**
-
-| R | T | p min | Loss max | Overhead | Validated |
-|---|----|---------|----------|----------|-----------|
-| 1.30 | 32 | 0.95 | 5% | +30% | OK |
-| 1.50 | 36 | 0.90 | 10% | +50% | OK |
-| 1.75 | 42 | 0.85 | 15% | +75% | OK |
-| 2.00 | 48 | 0.80 | 20% | +100% | OK |
-| 2.50 | 60 | 0.70 | 30% | +150% | OK |
-| 3.00 | 72 | 0.60 | 40% | +200% | OK |
-
-### Key insight
-
-Larger files have **more chunks** → higher chance of an extreme outlier.
-For a 1 GB file (32,768 chunks) you need **~1 extra symbol per chunk** of safety margin compared to a 100 MB file.
-
-### Quick reference
-
-```bash
-# 5% loss  -> ratio >= 1.3
-# 10% loss -> ratio >= 1.5
-# 15% loss -> ratio >= 1.75
-# 20% loss -> ratio >= 2.0
-# 30% loss -> ratio >= 2.5
-# 40% loss -> ratio >= 3.0
-```
+**关键发现：**
+- 所有文件 MD5 校验通过，两种 FEC 在直连不限速环境下均稳定完成传输。
+- NoCode 0% 冗余下收包率精确 100.00%，零丢包；有效速率 439–464 Mbps。
+- RaptorQ 15% 冗余下收包率精确 115.04%，匹配 `1.15×` 冗余比；有效速率 420–462 Mbps。
+- 两者吞吐速率接近（NoCode 449–475 Mbps，RaptorQ 495–544 Mbps），RaptorQ 总速率更高因多发了 15% 冗余包，但有效速率相当。
+- 1024 MB 文件约 20 秒完成，峰值堆内存 NoCode 106 MB / RaptorQ 78 MB，内存控制良好。
+- NoCode 开销：`SymRatio = 1.0156`，`WireRatio = 1.0234`（仅 24B LCT 头部），线缆开销约 2.3%。
+- RaptorQ 开销：`SymRatio = 1.1684`，`WireRatio = 1.1774`（含冗余 + LCT 头部），线缆开销约 17.7%。
 
