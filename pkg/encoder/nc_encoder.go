@@ -8,6 +8,7 @@
 package encoder
 
 import (
+	"FluteGo/constant"
 	"context"
 	"fmt"
 )
@@ -20,7 +21,7 @@ import (
 // 特性：
 //   - 零冗余开销
 //   - 适用于高可靠性网络
-//   - 简单的分片传输
+//   - 窗口化符号交织发送，分散突发丢包
 //
 // 性能特点：
 //  1. 编码/解码零延迟
@@ -72,7 +73,12 @@ func NewNcEncoder(config EncoderConfig) (*NcEncoder, error) {
 //
 //	error - 编码过程中的错误
 //
-// Encode 将源数据按符号大小直接传给回调函数，完成无编码的数据流。
+// Encode 以滑动窗口方式遍历所有 chunk，窗口内按符号 ID 交织发送。
+//
+// 与 RaptorQ 编码器保持一致的发送模式：
+//   - 窗口大小由 constant.WindowsSize 控制
+//   - 窗口内先发送所有 chunk 的 sym0，再发送所有 chunk 的 sym1，...
+//   - 这样突发丢包会分散到不同 chunk，而非集中在一个 chunk
 //
 // # 参数
 //
@@ -94,28 +100,80 @@ func (e *NcEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 		callback = e.Callback
 	}
 
-	// 遍历所有块
-	for chunkIdx := 0; chunkIdx < int(chunkCount); chunkIdx++ {
-		data, sz, err := provider(uint32(chunkIdx))
-		if err != nil {
-			return fmt.Errorf("failed to get data for chunk %d: %w", chunkIdx, err)
+	symbolSize := int(e.Config.SymbolSize)
+	windowSize := uint32(constant.WindowsSize)
+
+	// 滑动窗口处理
+	for startChunk := uint32(0); startChunk < chunkCount; startChunk += windowSize {
+		endChunk := startChunk + windowSize
+		if endChunk > chunkCount {
+			endChunk = chunkCount
 		}
 
-		// 遍历所有符号
-		for i := 0; i < sz; i += int(e.Config.SymbolSize) {
-			start := i
-			end := start + int(e.Config.SymbolSize)
-			// end should be capped by the current chunk length (sz), not the whole file size
-			if end > sz {
-				end = sz
+		currentBatchSize := endChunk - startChunk
+
+		// 1. 加载当前窗口内所有 chunk 的数据
+		type chunkData struct {
+			idx     uint32
+			data    []byte
+			size    int
+			numSyms int
+		}
+		chunks := make([]*chunkData, currentBatchSize)
+		maxSymbols := 0
+
+		for i := uint32(0); i < currentBatchSize; i++ {
+			chunkIdx := startChunk + i
+			data, sz, err := provider(chunkIdx)
+			if err != nil {
+				return fmt.Errorf("failed to get data for chunk %d: %w", chunkIdx, err)
 			}
-			symbol := data[start:end]
-			symID := i / int(e.Config.SymbolSize)
-			if err := callback(uint32(chunkIdx), uint32(symID), uint32(sz), symbol); err != nil {
-				return fmt.Errorf("callback failed for chunk %d symbol %d: %w", chunkIdx, symID, err)
+			numSyms := (sz + symbolSize - 1) / symbolSize
+			if numSyms > maxSymbols {
+				maxSymbols = numSyms
+			}
+			chunks[i] = &chunkData{
+				idx:     chunkIdx,
+				data:    data,
+				size:    sz,
+				numSyms: numSyms,
 			}
 		}
-		data = nil
+
+		// 2. 按符号 ID 交织发送：先所有 chunk 的 sym0，再所有 chunk 的 sym1，...
+		for symID := 0; symID < maxSymbols; symID++ {
+			if ctx != nil {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+				}
+			}
+
+			for _, c := range chunks {
+				if symID >= c.numSyms {
+					continue
+				}
+
+				start := symID * symbolSize
+				end := start + symbolSize
+				if end > c.size {
+					end = c.size
+				}
+				symbol := c.data[start:end]
+
+				if err := callback(c.idx, uint32(symID), uint32(c.size), symbol); err != nil {
+					return fmt.Errorf("callback failed for chunk %d symbol %d: %w", c.idx, symID, err)
+				}
+			}
+		}
+
+		// 3. 释放当前窗口的数据引用，帮助 GC
+		for i := range chunks {
+			chunks[i].data = nil
+			chunks[i] = nil
+		}
+		chunks = nil
 	}
 
 	return nil

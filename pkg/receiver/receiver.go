@@ -442,22 +442,28 @@ func (r *Receiver) EnqueuePacket(ctx context.Context, data []byte) error {
 
 // EnqueuePooledPacket 将数据包及其 pool 放入异步队列。
 // pool 非 nil 时，worker 处理完后会自动归还缓冲区。
-// 非阻塞：队列满时立即丢弃，防止阻塞 startFileDataListener 的接收主循环。
-// 丢弃的包由 RaptorQ 冗余符号恢复。
+// 使用带超时的阻塞式入队，避免高吞吐下大量丢包。
+// NoCode 模式下丢一个包就导致 chunk 不完整，因此不能静默丢弃。
 func (r *Receiver) EnqueuePooledPacket(ctx context.Context, data []byte, pool *sync.Pool) error {
 	select {
 	case r.packetChan <- &queuedPacket{data: data, pool: pool}:
 		return nil
-	default:
+	case <-time.After(500 * time.Millisecond):
+		// 超时丢弃，防止完全阻塞接收主循环
 		dropped := atomic.AddInt64(&r.totalDropped, 1)
 		if dropped <= 5 || dropped%1000 == 0 {
-			log.Printf("[Receiver] fdtID=%d: packet queue full, dropped %d packets (non-blocking)", r.fdtID, dropped)
+			log.Printf("[Receiver] fdtID=%d: packet queue full after 500ms, dropped %d packets", r.fdtID, dropped)
 		}
 		// 队列满时也要归还缓冲区，避免泄漏
 		if pool != nil {
 			pool.Put(data[:cap(data)])
 		}
 		return fmt.Errorf("packet queue full for fdtID=%d", r.fdtID)
+	case <-ctx.Done():
+		if pool != nil {
+			pool.Put(data[:cap(data)])
+		}
+		return ctx.Err()
 	}
 }
 
