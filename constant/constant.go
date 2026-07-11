@@ -55,8 +55,8 @@ const (
 
 // Oti param
 const (
-	MaxNoCodeChunkSize  = 256 // NoCode 模式下每个 source block 最多 256 个 symbol (256KB)
-	MaxRaptorQChunkSize = 256 // RaptorQ 模式下每个 source block 最多 256 个 symbol (256KB)
+	MaxNoCodeChunkSize  = 1024 // NoCode 模式下每个 source block 最多 256 个 symbol (256KB)
+	MaxRaptorQChunkSize = 1024 // RaptorQ 模式下每个 source block 最多 256 个 symbol (256KB)
 )
 
 const (
@@ -89,5 +89,5 @@ const (
 
 // Receiver param rs
 const (
-	DefaultChunkSize = 256 // 默认每个 source block 包含 256 个 symbol
+	DefaultChunkSize = 1024 // 默认每个 source block 包含 256 个 symbol
 )

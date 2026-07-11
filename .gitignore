@@ -50,3 +50,4 @@ release/
 *.zip
 *.txt
 ref/
+*.bin
