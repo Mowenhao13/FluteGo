@@ -11,6 +11,7 @@ import (
 	"FluteGo/constant"
 	"context"
 	"fmt"
+	"math"
 )
 
 // NcEncoder 无编码器
@@ -140,7 +141,7 @@ func (e *NcEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 			}
 		}
 
-		// 2. 按符号 ID 交织发送：先所有 chunk 的 sym0，再所有 chunk 的 sym1，...
+		// 2. 按符号 ID 交织发送源符号：先所有 chunk 的 sym0，再所有 chunk 的 sym1，...
 		for symID := 0; symID < maxSymbols; symID++ {
 			if ctx != nil {
 				select {
@@ -168,7 +169,48 @@ func (e *NcEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 			}
 		}
 
-		// 3. 释放当前窗口的数据引用，帮助 GC
+		// 3. 发送冗余符号：循环重发源符号
+		// NoCode 没有编码能力，但可以通过循环重发原始符号提供冗余。
+		// 冗余符号的 symID = symID % numSyms（与源符号相同），
+		// 接收端 nc_decoder 已有去重逻辑（received[symIdx]），重复包会被忽略。
+		// 如果源符号丢了，冗余重发会补上。
+		if e.Config.RedundancyRatio > 1.0 {
+			// 计算每个 chunk 需要发送的总符号数（含冗余）
+			// 取窗口内最大 numSyms 计算，确保所有 chunk 都有足够冗余
+			if maxSymbols > 0 {
+				totalSymbols := int(math.Ceil(float64(maxSymbols) * e.Config.RedundancyRatio))
+				for symID := maxSymbols; symID < totalSymbols; symID++ {
+					if ctx != nil {
+						select {
+						case <-ctx.Done():
+							return ctx.Err()
+						default:
+						}
+					}
+
+					for _, c := range chunks {
+						if c.numSyms == 0 {
+							continue
+						}
+						// 循环重发：symID 映射回原始符号索引
+						origSymID := symID % c.numSyms
+						start := origSymID * symbolSize
+						end := start + symbolSize
+						if end > c.size {
+							end = c.size
+						}
+						symbol := c.data[start:end]
+
+						if err := callback(c.idx, uint32(origSymID), uint32(c.size), symbol); err != nil {
+							// 冗余符号发送失败不阻塞整体流程
+							return fmt.Errorf("callback failed for chunk %d repair symbol %d: %w", c.idx, symID, err)
+						}
+					}
+				}
+			}
+		}
+
+		// 4. 释放当前窗口的数据引用，帮助 GC
 		for i := range chunks {
 			chunks[i].data = nil
 			chunks[i] = nil
