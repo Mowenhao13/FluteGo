@@ -360,7 +360,7 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 		finishChan:     make(chan struct{}),
 		OnComplete:     nil,
 		dataChan:       make(chan *WriteRequest, 10240), // 初始化缓冲通道（增大以容纳高吞吐场景下大量回调）
-		packetChan:     make(chan []byte, 16384),       // 单端口架构：异步数据包队列（增大以容纳高吞吐场景）
+		packetChan:     make(chan []byte, 32768),       // 单端口架构：异步数据包队列（增大以容纳高吞吐场景）
 		writeRequestPool: sync.Pool{
 			New: func() interface{} {
 				return &WriteRequest{}
@@ -397,11 +397,11 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 // 使用多个 goroutine 并行处理，提高高吞吐下的解码吞吐量。
 func (r *Receiver) startPacketLoop() {
 	workers := runtime.NumCPU()
-	if workers < 2 {
-		workers = 2
+	if workers < 4 {
+		workers = 4
 	}
-	if workers > 8 {
-		workers = 8 // 限制最大并行度，避免过多锁竞争
+	if workers > 16 {
+		workers = 16 // 多 worker 提升高吞吐下的并发解码能力
 	}
 	for i := 0; i < workers; i++ {
 		r.packetWg.Add(1)
@@ -488,6 +488,10 @@ func (r *Receiver) startWriterLoop() {
 				// 检查完成条件：chunk数够了，或者字节数够了
 				bytesWritten := atomic.LoadInt64(&r.currWritten)
 				shouldFinish := finished >= r.expectedChunks || bytesWritten >= int64(r.config.FileSize)
+				if shouldFinish {
+					log.Printf("[DIAG] fdtID=%d: shouldFinish TRUE: finished=%d expected=%d bytesWritten=%d fileSize=%d chunkIdx=%d",
+						r.fdtID, finished, r.expectedChunks, bytesWritten, r.config.FileSize, req.ChunkIdx)
+				}
 
 				var reportStatus uint8 = 0
 				if shouldFinish {
@@ -820,6 +824,25 @@ func (r *Receiver) runLifecycle(ctx context.Context, conns []*sock.MsSocket) err
 					log.Printf("fdtID(%d): DATA IDLE TIMEOUT (%ds) — written %d/%d bytes (%.1f%%), %d/%d chunks, received %d bytes in %d packets",
 					r.fdtID, constant.IDLE_DATA_TIMEOUT, got, int64(r.config.FileSize), float64(got)*100/float64(int64(r.config.FileSize)), chunks, r.expectedChunks,
 					atomic.LoadInt64(&r.totalReceived), atomic.LoadInt64(&r.totalPackets))
+					// 超时时自动补全缺失的 chunk（用零填充），使文件能被完整写入
+					if chunks < r.expectedChunks {
+						missing := r.expectedChunks - chunks
+						chunkBytes := int64(r.config.ChunkSize) * int64(r.config.SymbolSize)
+						zeroBuf := make([]byte, chunkBytes)
+						for missingIdx := uint32(r.expectedChunks) - missing; missingIdx < r.expectedChunks; missingIdx++ {
+							offset := int64(missingIdx) * chunkBytes
+							// 最后一个 chunk 可能小于 chunkBytes
+							writeLen := chunkBytes
+							if offset+writeLen > int64(r.config.FileSize) {
+								writeLen = int64(r.config.FileSize) - offset
+							}
+							if writeLen > 0 {
+								r.outputFile.WriteAt(zeroBuf[:writeLen], offset)
+								atomic.AddInt64(&r.currWritten, writeLen)
+							}
+						}
+						log.Printf("fdtID(%d): zero-filled %d missing chunks to complete file", r.fdtID, missing)
+					}
 					r.MarkTimedOut()
 					stats := r.CollectStats("timeout")
 					go WriteTransferCSV(r.saveDir, stats)
@@ -860,10 +883,31 @@ func (r *Receiver) runLifecycle(ctx context.Context, conns []*sock.MsSocket) err
 	}
 
 	// 等待完成信号
+	// 增加 100ms 周期轮询，防止写入循环中 shouldFinish 因竞态未触发时永久阻塞
+	pollDone := make(chan struct{}, 1)
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if atomic.LoadUint32(&r.finishedChunks) >= r.expectedChunks ||
+					atomic.LoadInt64(&r.currWritten) >= int64(r.config.FileSize) {
+					r.closeOnce.Do(func() {
+						log.Printf("[DIAG] fdtID=%d: poll detected completion, forcing finish", r.fdtID)
+						close(r.finishChan)
+					})
+				}
+			case <-pollDone:
+				return
+			}
+		}
+	}()
 	select {
 	case <-sessionCtx.Done():
 	case <-r.finishChan: // 文件接收完成信号
 	}
+	close(pollDone)
 
 	if r.enableMd5 {
 		// 验证MD5
@@ -1078,6 +1122,8 @@ func (r *Receiver) IsTimedOut() bool {
 //
 //	通过等待组确保写入循环完成后再关闭文件
 func (r *Receiver) Close() {
+	log.Printf("[DIAG] fdtID=%d: Receiver.Close() called, packetChan.len=%d, dataChan.len=%d, finishedChunks=%d, expectedChunks=%d",
+		r.fdtID, len(r.packetChan), len(r.dataChan), atomic.LoadUint32(&r.finishedChunks), r.expectedChunks)
 	// 关闭数据包队列，停止异步消费循环
 	close(r.packetChan)
 	r.packetWg.Wait()

@@ -65,6 +65,12 @@ type ReceiverSystem struct {
 	fileDataPackets  uint64 // TOI>0 的文件数据包数
 	lctDecodeErrors  uint64 // LCT 头部解码失败数
 
+	// orphan 包缓存：fdtID -> *orphanBuffer
+	// 统一端口架构下，文件数据包可能在 Receiver 注册前到达，
+	// 这些包会被缓存，待 Receiver 注册后立即回放，避免窗口期丢包。
+	orphanBufs    sync.Map
+	orphanBufSize int // 每个 fdtID 最多缓存的 orphan 包数
+
 	FileReporter FileReporter
 	DestIP       string
 	SaveDir      string
@@ -193,6 +199,9 @@ func InitReceiverSystemWithMulticast(maxWorkers int32, destIP string, saveDir st
 	if s.recvPool == nil {
 		return nil, fmt.Errorf("pool not initialized")
 	}
+
+	// 设置 orphan 包缓存上限（每个 fdtID 最多缓存 4096 个包 = ~4MB 内存）
+	s.orphanBufSize = 4096
 
 	return s, nil
 }
@@ -360,9 +369,64 @@ type packetData struct {
 	data []byte
 }
 
+// orphanBuffer 缓存 Receiver 注册前到达的数据包
+type orphanBuffer struct {
+	mu     sync.Mutex
+	pkts   [][]byte // 缓存的完整数据包（含LCT头部）
+	max    int      // 最大缓存数
+}
+
+func newOrphanBuffer(maxSize int) *orphanBuffer {
+	return &orphanBuffer{
+		max: maxSize,
+	}
+}
+
+func (ob *orphanBuffer) add(data []byte) {
+	ob.mu.Lock()
+	defer ob.mu.Unlock()
+	if len(ob.pkts) >= ob.max {
+		return // 超过上限，丢弃
+	}
+	// 复制一份再缓存，避免外部引用导致数据竞争
+	buf := make([]byte, len(data))
+	copy(buf, data)
+	ob.pkts = append(ob.pkts, buf)
+}
+
+func (ob *orphanBuffer) replay(ctx context.Context, recv *receiver.Receiver) int {
+	ob.mu.Lock()
+	pkts := ob.pkts
+	ob.pkts = nil // 清空，不释放底层数组
+	count := len(pkts)
+	ob.mu.Unlock()
+
+	for _, pkt := range pkts {
+		recv.EnqueuePacket(ctx, pkt)
+	}
+	return count
+}
+
+func (ob *orphanBuffer) count() int {
+	ob.mu.Lock()
+	defer ob.mu.Unlock()
+	return len(ob.pkts)
+}
+
 // registerReceiver 注册一个活跃的文件接收器，用于单端口数据包分发。
 func (s *ReceiverSystem) registerReceiver(fdtID uint8, recv *receiver.Receiver) {
 	s.activeReceiverMap.Store(fdtID, recv)
+
+	// 回放缓存的 orphan 包
+	if bufVal, ok := s.orphanBufs.Load(fdtID); ok {
+		buf := bufVal.(*orphanBuffer)
+		n := buf.replay(context.Background(), recv)
+		if n > 0 {
+			log.Printf("[MetaReceiver] Replayed %d buffered orphan packets for fdtID=%d", n, fdtID)
+		}
+		s.orphanBufs.Delete(fdtID)
+	}
+
 	log.Printf("[MetaReceiver] Receiver registered for fdtID=%d", fdtID)
 }
 
@@ -384,9 +448,13 @@ func (s *ReceiverSystem) dispatchFilePacket(ctx context.Context, toi uint32, dat
 		}
 	} else {
 		// Receiver 尚未注册（可能 FDT 还在处理中）
+		// 缓存到 orphan 缓冲区，注册后回放
 		cnt := atomic.AddUint64(&s.orphanPackets, 1)
+		bufVal, _ := s.orphanBufs.LoadOrStore(uint32(fdtID), newOrphanBuffer(s.orphanBufSize))
+		buf := bufVal.(*orphanBuffer)
+		buf.add(data)
 		if cnt <= 5 || cnt%1000 == 0 {
-			log.Printf("[MetaReceiver] ORPHAN packet: TOI=%d (fdtID=%d) has no registered receiver (orphan #%d)", toi, fdtID, cnt)
+			log.Printf("[MetaReceiver] ORPHAN packet: TOI=%d (fdtID=%d), buffered=%d (orphan #%d)", toi, fdtID, buf.count(), cnt)
 		}
 	}
 }
@@ -437,7 +505,7 @@ func (s *ReceiverSystem) StartMetaProgram() {
 		log.Printf("[MetaReceiver] Unified port receiver listening on port %d", baseFilePort)
 
 		// 使用 channel 异步分发数据包，读取循环不阻塞
-		packetChan := make(chan packetData, 4096)
+		packetChan := make(chan packetData, 65535)
 
 		// 读取协程：尽可能快地从 socket 读取数据
 		readDone := make(chan struct{})
@@ -573,10 +641,19 @@ func (s *ReceiverSystem) StartMetaProgram() {
 					log.Printf("[MetaReceiver] Processing file: %s (FdtID: %d, TOI: %d, SymbolSize: %d, ChunkSize: %d)",
 						mt.File.Name, mt.File.FdtID, file.TOI, mt.Oti.SymbolSize, mt.Oti.MaximumChunkSize)
 
+					// 非阻塞发送到 metaChan，防止 FDT 处理阻塞 packet 分发
+					// 如果 metaChan 满，启动 goroutine 等待发送（不阻塞当前处理循环）
 					select {
 					case s.metaChan <- mt:
-					case <-s.ctx.Done():
-						return
+						// 正常发送
+					default:
+						// metaChan 满，后台 goroutine 处理
+						go func(mtPkt *meta.MetaPkt) {
+							select {
+							case s.metaChan <- mtPkt:
+							case <-s.ctx.Done():
+							}
+						}(mt)
 					}
 				}
 			} else {
