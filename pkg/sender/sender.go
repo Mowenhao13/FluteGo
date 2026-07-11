@@ -741,15 +741,20 @@ func (s *Sender) Start(ctx context.Context) error {
 			if repairSymbols < 0 {
 				repairSymbols = 0
 			}
+			status := "sent"
+			sendPct := (1.0 - s.dropRatio) * 100
+			if sendPct < 100 {
+				status = fmt.Sprintf("partial_%.0fpct", sendPct)
+			}
 			writeSendCSV(
-				csvPath, (1.0-s.dropRatio)*100,
+				csvPath, sendPct,
 				s.fdtID, fecTypeName(s.config.Type), filepath.Base(s.config.FName),
 				s.fileSize, s.config.ChunkSize, s.config.SymbolSize, s.chunkCount,
 				s.config.RedundancyRatio,
 				s.sendEnd, dur, mbps, goodput,
 				totalPackets, totalBytes, headerBytes, symbolPayload,
 				symRatio, wireRatio, symOverhead, wireOverhead,
-				baseSymbols, repairSymbols,
+				baseSymbols, repairSymbols, status,
 			)
 		}
 
@@ -790,7 +795,7 @@ func writeSendCSV(csvPath string, sendPct float64,
 	sendEnd time.Time, dur time.Duration, throughputMbps float64, goodputMbps float64,
 	totalPackets int64, totalBytes int64, headerBytes int64, symbolPayload int64,
 	symRatio float64, wireRatio float64, symOverhead int64, wireOverhead int64,
-	baseSymbols int64, repairSymbols int64) {
+	baseSymbols int64, repairSymbols int64, status string) {
 
 	needHeader := false
 	if _, err := os.Stat(csvPath); os.IsNotExist(err) {
@@ -810,12 +815,22 @@ func writeSendCSV(csvPath string, sendPct float64,
 	if needHeader {
 		w.Write([]string{
 			"Timestamp", "FdtID", "FEC", "FileName", "FileSize",
-			"ChunkSize", "SymbolSize", "Chunks", "ConfigRatio", "SendPercentage",
+			"SymbolSize", "SourceBlockSize", "RepairSymbols",
+			"RedundancyRatioPct", "TotalSentSymbols",
+			"Chunks", "ConfigRatio", "SendPercentage",
 			"DurationSec", "ThroughputMbps", "GoodputMbps",
 			"TotalPackets", "TotalBytes", "HeaderBytes", "SymbolPayload",
 			"SymRatio", "WireRatio", "SymOverheadBytes", "WireOverheadBytes",
 			"SourceBlockSymbols", "RepairSymbols",
+			"TotalPackets", "TotalBytes",
+			"Status",
 		})
+	}
+
+	// 使用传入的 repairSymbols 和 status 参数
+	var redundancyPct float64
+	if baseSymbols > 0 {
+		redundancyPct = float64(repairSymbols) / float64(baseSymbols) * 100
 	}
 
 	record := []string{
@@ -824,11 +839,14 @@ func writeSendCSV(csvPath string, sendPct float64,
 		fecType,
 		fileName,
 		strconv.FormatInt(fileSize, 10),
-		strconv.FormatUint(uint64(chunkSize), 10),
 		strconv.Itoa(int(symbolSize)),
+		strconv.FormatUint(uint64(chunkSize), 10),
+		strconv.FormatInt(repairSymbols, 10),
+		strconv.FormatFloat(redundancyPct, 'f', 2, 64),
+		strconv.FormatInt(totalPackets, 10),
 		strconv.FormatUint(uint64(chunks), 10),
 		strconv.FormatFloat(configRatio, 'f', 2, 64),
-			strconv.FormatFloat(sendPct, 'f', 1, 64),
+		strconv.FormatFloat(sendPct, 'f', 1, 64),
 		strconv.FormatFloat(dur.Seconds(), 'f', 6, 64),
 		strconv.FormatFloat(throughputMbps, 'f', 4, 64),
 		strconv.FormatFloat(goodputMbps, 'f', 4, 64),
@@ -842,6 +860,7 @@ func writeSendCSV(csvPath string, sendPct float64,
 		strconv.FormatInt(wireOverhead, 10),
 		strconv.FormatInt(baseSymbols, 10),
 		strconv.FormatInt(repairSymbols, 10),
+		status,
 	}
 
 	if err := w.Write(record); err != nil {
