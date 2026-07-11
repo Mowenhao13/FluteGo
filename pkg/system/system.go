@@ -51,6 +51,7 @@ type ReceiverSystem struct {
 	enableMd5       bool
 	recvPool        *pool.ConnPool
 	metaConn        *sock.MsSocket
+	fileDataConn    *sock.MsSocket // 共享的文件数据连接（BASE_FILE_PORT=3400），所有文件数据包共用
 	targets         sync.Map
 	curReceived     sync.Map
 
@@ -602,12 +603,96 @@ func firstErr(errs []error) error {
 
 }
 
+// startFileDataListener 启动共享的文件数据监听器（BASE_FILE_PORT=3400）
+//
+// 在统一端口架构下，所有文件数据包（TOI>0）通过此连接统一接收，
+// 解析 LCT 头部后根据 TOI 通过 dispatchFilePacket 分发给对应的 Receiver。
+// 此连接创建一次，加入多播组，运行在整个系统生命周期内。
+func (s *ReceiverSystem) startFileDataListener() {
+	filePort := constant.BASE_FILE_PORT
+
+	// 创建文件数据连接（BASE_FILE_PORT=3400），自动加入多播组
+	fileConns, connErrs := s.recvPool.CreateFileConn(255, 1, filePort)
+	for _, cerr := range connErrs {
+		if cerr != nil {
+			log.Printf("[FileDataListener] failed to create connection on port %d: %v", filePort, cerr)
+		}
+	}
+	if len(fileConns) == 0 {
+		log.Printf("[FileDataListener] FATAL: no file data connection created on port %d", filePort)
+		return
+	}
+	s.fileDataConn = fileConns[0]
+	log.Printf("[FileDataListener] listening for file data on port %d", filePort)
+
+	buf := make([]byte, 65535)
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		default:
+		}
+
+		bytesRecvd, err := s.fileDataConn.Socket.ReadFromUDP(buf)
+		if err != nil {
+			select {
+			case <-s.ctx.Done():
+				return
+			default:
+			}
+			if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
+				return
+			}
+			continue
+		}
+		if bytesRecvd == 0 {
+			continue
+		}
+
+		if bytesRecvd < meta.LCTHeaderLength {
+			continue
+		}
+
+		var lctHeader meta.LCTHeader
+		if err := lctHeader.Decode(buf[:meta.LCTHeaderLength]); err != nil {
+			atomic.AddUint64(&s.lctDecodeErrors, 1)
+			continue
+		}
+
+		if lctHeader.TOI == meta.TOIFDT {
+			// TOI=0: FDT XML，由 MetaReceiver 处理，此处跳过
+			atomic.AddUint64(&s.fdtPackets, 1)
+			continue
+		}
+
+		// TOI>0: 文件数据包
+		atomic.AddUint64(&s.fileDataPackets, 1)
+
+		// 复制数据并分发
+		data := make([]byte, bytesRecvd)
+		copy(data, buf[:bytesRecvd])
+		s.dispatchFilePacket(s.ctx, lctHeader.TOI, data)
+	}
+}
+
 func (s *ReceiverSystem) StartFileProgram() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[FileDataListener] PANIC in StartFileProgram: %v", r)
+		}
+	}()
 	log.Printf("Using %d receiverWorkers", constant.ReceiverWorkers)
 	for i := 0; i < constant.ReceiverWorkers; i++ {
 		s.wg.Add(1)
 		go s.receiverWorker(i)
 	}
+
+	// 启动共享的文件数据监听器（端口 3400），所有文件数据包通过此连接接收并分发
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.startFileDataListener()
+	}()
 }
 
 // receiverWorker 循环读取元数据包并派发接收任务。
@@ -778,7 +863,7 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 		}
 	}()
 
-	log.Printf("[runReceiver] fdtID=%d, file=%s (unified port mode)",
+	log.Printf("[runReceiver] fdtID=%d, file=%s (dedicated file port)",
 		fdtID, task.File.Name)
 
 	// 初始化接收器
@@ -825,7 +910,9 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 		close(recvReportChan)
 	}
 
-	// 启动接收器（单端口被动模式，由 StartMetaProgram 统一分发数据包）
+	// 启动接收器（使用共享文件数据端口 BASE_FILE_PORT=3400）
+	// 文件数据包由 startFileDataListener 统一接收并通过 dispatchFilePacket 分发，
+	// 每个 Receiver 以被动模式运行，不持有独立 socket。
 	if err := recv.RunPassive(ctx); err != nil {
 		s.reportError(ctx, uint8(errs.LevelError), err, fdtID)
 		// 确保错误时通道被关闭
@@ -836,3 +923,5 @@ func (s *ReceiverSystem) runReceiver(mainCtx context.Context, task *meta.MetaPkt
 		}
 	}
 }
+
+// (end of runReceiver)

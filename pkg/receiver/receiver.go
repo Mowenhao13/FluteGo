@@ -746,6 +746,17 @@ func (r *Receiver) RunPassive(ctx context.Context) error {
 	return r.runLifecycle(ctx, nil)
 }
 
+// StartWithConns 使用外部传入的连接启动接收器（独立端口模式）
+//
+// 每个文件有独立的 BASE_FILE_PORT socket，直接 readLoop 读取，
+// 不经过 StartMetaProgram 的 dispatcher，消除单端口瓶颈。
+func (r *Receiver) StartWithConns(ctx context.Context, conns []*sock.MsSocket) error {
+	if len(conns) == 0 {
+		return fmt.Errorf("no connections provided for fdtID %d", r.fdtID)
+	}
+	return r.runLifecycle(ctx, conns)
+}
+
 // runLifecycle 运行接收器生命周期：超时监控、等待完成、MD5 校验、资源清理。
 // 当 conns 不为空时，为每个连接启动 readLoop；为空时则进入被动模式，等待外部包。
 func (r *Receiver) runLifecycle(ctx context.Context, conns []*sock.MsSocket) error {
