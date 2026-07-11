@@ -19,11 +19,10 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net"
 	"os"
+	"net"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // ReceiverSystem 接收端系统
@@ -483,207 +482,126 @@ func (s *ReceiverSystem) StartMetaProgram() {
 		defer s.wg.Done()
 		defer close(s.metaChan)
 
-		baseFilePort := constant.BASE_FILE_PORT
-		tempConn, err := s.recvPool.CreateFileConn(0, 1, baseFilePort)
-		if err != nil || len(tempConn) == 0 {
-			errMsg := fmt.Errorf("failed to create temp connection on port %d: %v", baseFilePort, err)
+		// 创建元数据连接（META_PORT = 3399）— 仅用于接收 FDT XML
+		metaPort := constant.META_PORT
+		metaConns, metaErr := s.recvPool.CreateFileConn(0, 1, metaPort)
+		if err := firstErr(metaErr); err != nil || len(metaConns) == 0 {
+			errMsg := fmt.Errorf("failed to create meta connection on port %d: %v", metaPort, firstErr(metaErr))
 			s.reportError(s.ctx, uint8(errs.LevelFatal), errMsg, 0)
 			return
 		}
+		metaConn := metaConns[0]
+		s.metaConn = metaConn
+		log.Printf("[MetaReceiver] Meta receiver listening for FDT XML on port %d", metaPort)
 
-		conn := tempConn[0]
-		s.metaConn = conn
+		// 元数据读取循环 — 只收 FDT，独立简单读取，不与其他数据争抢
+		metaBuf := make([]byte, constant.META_BUF)
+		for {
+			select {
+			case <-s.ctx.Done():
+				return
+			default:
+			}
 
-		// 增大 UDP 接收缓冲区，防止突发流量导致丢包。
-		// 注意：pool.createNewConn 已尝试设置更大的缓冲区（64MB→1MB），
-		// 这里不应缩小它，只在当前值过小时尝试增大。
-		// Windows 上 SO_RCVBUF 有系统上限，设置失败也不致命。
-		if err := conn.Socket.SetReadBuffer(16 * 1024 * 1024); err != nil {
-			log.Printf("[MetaReceiver] Warning: failed to enlarge receive buffer to 16MB: %v", err)
-		}
-
-		log.Printf("[MetaReceiver] Unified port receiver listening on port %d", baseFilePort)
-
-		// 使用 channel 异步分发数据包，读取循环不阻塞
-		packetChan := make(chan packetData, 65535)
-
-		// 读取协程：尽可能快地从 socket 读取数据
-		readDone := make(chan struct{})
-		go func() {
-			defer close(readDone)
-			defer close(packetChan)
-
-			buf := make([]byte, constant.META_BUF)
-			for {
+			bytesRecvd, err := metaConn.Socket.ReadFromUDP(metaBuf)
+			if err != nil {
 				select {
 				case <-s.ctx.Done():
 					return
 				default:
 				}
-
-				bytesRecvd, err := conn.Socket.ReadFromUDP(buf)
-				if err != nil {
-					select {
-					case <-s.ctx.Done():
-						return
-					default:
-					}
-					if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
-						return
-					}
-					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-						continue
-					}
-					continue
-				}
-
-				if bytesRecvd == 0 {
-					continue
-				}
-
-				// 复制数据并立即发送到处理 channel
-				data := make([]byte, bytesRecvd)
-				copy(data, buf[:bytesRecvd])
-
-				select {
-				case packetChan <- packetData{data: data}:
-				case <-s.ctx.Done():
+				if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
 					return
 				}
+				continue
 			}
-		}()
-
-		// 处理协程：从 channel 读取并路由数据包
-		var totalPackets uint64
-		// 定期统计日志：每 3 秒输出一次数据包接收/分发情况
-		statsTicker := time.NewTicker(3 * time.Second)
-		defer statsTicker.Stop()
-		go func() {
-			for {
-				select {
-				case <-s.ctx.Done():
-					return
-				case <-statsTicker.C:
-					tp := atomic.LoadUint64(&totalPackets)
-					if tp == 0 {
-						continue
-					}
-					fdt := atomic.LoadUint64(&s.fdtPackets)
-					fdp := atomic.LoadUint64(&s.fileDataPackets)
-					orph := atomic.LoadUint64(&s.orphanPackets)
-					drop := atomic.LoadUint64(&s.droppedPackets)
-					lctErr := atomic.LoadUint64(&s.lctDecodeErrors)
-					_, _, _, _, _, _ = tp, fdt, fdp, orph, drop, lctErr
-				}
+			if bytesRecvd == 0 {
+				continue
 			}
-		}()
 
-		for pkt := range packetChan {
-			totalPackets++
-			data := pkt.data
+			data := make([]byte, bytesRecvd)
+			copy(data, metaBuf[:bytesRecvd])
 
 			if len(data) < meta.LCTHeaderLength {
 				continue
 			}
 
 			var lctHeader meta.LCTHeader
-			if err := lctHeader.Decode(data[:meta.LCTHeaderLength]); err != nil {
-				cnt := atomic.AddUint64(&s.lctDecodeErrors, 1)
-				if cnt <= 3 {
-					log.Printf("[MetaReceiver] LCT decode failed (#%d): %v, first bytes=% x", cnt, err, data[:min(len(data), 24)])
-				}
+			if lctHeader.Decode(data[:meta.LCTHeaderLength]) != nil {
+				continue
+			}
+			if lctHeader.TOI != meta.TOIFDT {
 				continue
 			}
 
-			if lctHeader.TOI == meta.TOIFDT {
-				atomic.AddUint64(&s.fdtPackets, 1)
-				// TOI=0: FDT XML
-				fdtXML := data[meta.LCTHeaderLength:]
+			fdtXML := data[meta.LCTHeaderLength:]
+			fdt, err := meta.DeserializeFDT(fdtXML)
+			if err != nil {
+				log.Printf("[MetaReceiver] Failed to deserialize FDT XML: %v", err)
+				continue
+			}
 
-				fdt, err := meta.DeserializeFDT(fdtXML)
-				if err != nil {
-					log.Printf("[MetaReceiver] Failed to deserialize FDT XML: %v", err)
-					continue
+			log.Printf("[MetaReceiver] Parsed FDT: FdtID=%d, Files=%d", fdt.FdtID, len(fdt.Files))
+
+			for _, file := range fdt.Files {
+				mt := &meta.MetaPkt{
+					File: &filedesc.FileDesc{
+						FdtID:           uint8(fdt.FdtID),
+						Name:            file.ContentLocation,
+						TransferLen:     file.TransferLength,
+						ContentLength:   file.ContentLength,
+						ContentType:     file.ContentType,
+						ContentEncoding: file.ContentEncoding,
+						Md5:             file.ContentMD5,
+						FileETag:        file.FileETag,
+					},
+					Oti: oti.Oti{
+						FECEncodingID:        fdt.FECOTIFECEncodingID,
+						SymbolSize:           fdt.FECOTIEncodingSymbolLength,
+						MaximumChunkSize:     fdt.FECOTIMaxSourceBlockLength,
+					},
+					TotalFiles: uint16(len(fdt.Files)),
 				}
 
-				log.Printf("[MetaReceiver] Parsed FDT: FdtID=%d, Files=%d", fdt.FdtID, len(fdt.Files))
-
-				for _, file := range fdt.Files {
-					mt := &meta.MetaPkt{
-						File: &filedesc.FileDesc{
-							FdtID:           uint8(fdt.FdtID),
-							Name:            file.ContentLocation,
-							TransferLen:     file.TransferLength,
-							ContentLength:   file.ContentLength,
-							ContentType:     file.ContentType,
-							ContentEncoding: file.ContentEncoding,
-							Md5:             file.ContentMD5,
-							FileETag:        file.FileETag,
-						},
-						Oti: oti.Oti{
-							FECEncodingID:        fdt.FECOTIFECEncodingID,
-							SymbolSize:           fdt.FECOTIEncodingSymbolLength,
-							MaximumChunkSize:     fdt.FECOTIMaxSourceBlockLength,
-						},
-						TotalFiles: uint16(len(fdt.Files)),
-					}
-
-					if file.FECOTIFECEncodingID != 0 {
-						mt.Oti.FECEncodingID = file.FECOTIFECEncodingID
-					}
-					if file.FECOTIEncodingSymbolLength != 0 {
-						mt.Oti.SymbolSize = file.FECOTIEncodingSymbolLength
-					}
-					if file.FECOTIMaxSourceBlockLength != 0 {
-						mt.Oti.MaximumChunkSize = file.FECOTIMaxSourceBlockLength
-					}
-
-					log.Printf("[MetaReceiver] Processing file: %s (FdtID: %d, TOI: %d, SymbolSize: %d, ChunkSize: %d)",
-						mt.File.Name, mt.File.FdtID, file.TOI, mt.Oti.SymbolSize, mt.Oti.MaximumChunkSize)
-
-					// 非阻塞发送到 metaChan，防止 FDT 处理阻塞 packet 分发
-					// 如果 metaChan 满，启动 goroutine 等待发送（不阻塞当前处理循环）
-					select {
-					case s.metaChan <- mt:
-						// 正常发送
-					default:
-						// metaChan 满，后台 goroutine 处理
-						go func(mtPkt *meta.MetaPkt) {
-							select {
-							case s.metaChan <- mtPkt:
-							case <-s.ctx.Done():
-							}
-						}(mt)
-					}
+				if file.FECOTIFECEncodingID != 0 {
+					mt.Oti.FECEncodingID = file.FECOTIFECEncodingID
 				}
-			} else {
-				fdp := atomic.AddUint64(&s.fileDataPackets, 1)
-				// 前 3 个文件数据包打印日志，帮助诊断
-				if fdp <= 3 {
-					log.Printf("[MetaReceiver] File data packet #%d: TOI=%d, len=%d, chunkIdx=%d, symbolID=%d",
-						fdp, lctHeader.TOI, len(data), lctHeader.ChunkIndex, lctHeader.SymbolID)
+				if file.FECOTIEncodingSymbolLength != 0 {
+					mt.Oti.SymbolSize = file.FECOTIEncodingSymbolLength
 				}
-				// TOI>0: 文件数据，根据 TOI 分发给对应 Receiver
-				s.dispatchFilePacket(s.ctx, lctHeader.TOI, data)
+				if file.FECOTIMaxSourceBlockLength != 0 {
+					mt.Oti.MaximumChunkSize = file.FECOTIMaxSourceBlockLength
+				}
+
+				log.Printf("[MetaReceiver] Processing file: %s (FdtID: %d, TOI: %d, SymbolSize: %d, ChunkSize: %d)",
+					mt.File.Name, mt.File.FdtID, file.TOI, mt.Oti.SymbolSize, mt.Oti.MaximumChunkSize)
+
+				select {
+				case s.metaChan <- mt:
+				default:
+					go func(mtPkt *meta.MetaPkt) {
+						select {
+						case s.metaChan <- mtPkt:
+						case <-s.ctx.Done():
+						}
+					}(mt)
+				}
 			}
 		}
-
-		log.Printf("[MetaReceiver] Reader stopped, total=%d, fdt=%d, fileData=%d, dropped=%d, orphan=%d, lctErr=%d",
-			totalPackets, atomic.LoadUint64(&s.fdtPackets), atomic.LoadUint64(&s.fileDataPackets),
-			atomic.LoadUint64(&s.droppedPackets), atomic.LoadUint64(&s.orphanPackets),
-			atomic.LoadUint64(&s.lctDecodeErrors))
 	}()
 }
 
-// StartFileProgram 启动文件接收管线。
-//
-// # 描述
-//
-//	初始化固定数量的 receiverWorker，以并行方式消费 `metaChan` 中的元数据包。
-//
-// # 并发控制
-//
-//	通过常量 `constant.ReceiverWorkers` 控制工作协程数量。
+// firstErr 返回 error 切片中的第一个非 nil 值
+func firstErr(errs []error) error {
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
+
+}
+
 func (s *ReceiverSystem) StartFileProgram() {
 	log.Printf("Using %d receiverWorkers", constant.ReceiverWorkers)
 	for i := 0; i < constant.ReceiverWorkers; i++ {

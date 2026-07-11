@@ -74,7 +74,7 @@ const (
 	IDLE_SENDER_TIMEOUT        = 60 // in seconds
 	IDLE_DATA_TIMEOUT          = 30 // in seconds，接收端无数据超时（大文件尾部解码需要时间）
 
-	META_PORT = 3400
+	META_PORT = 3399
 	POOL_SEND = 0
 	POOL_RECV = 1
 

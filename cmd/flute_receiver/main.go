@@ -122,7 +122,7 @@ func runCLIReceiver(destIP, saveDir string, csvEnabled bool) {
 }
 
 func main() {
-	runtime.GOMAXPROCS(8)
+	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	cliMode := flag.Bool("cli", false, "Run in CLI mode (no JSON config, no API server)")
 	destIPFlag := flag.String("dest-ip", "127.0.0.1", "Destination IP address")

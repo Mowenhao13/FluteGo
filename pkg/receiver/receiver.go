@@ -621,14 +621,18 @@ func (r *Receiver) OnDecodedData(data []byte, offset int64, chunkIdx uint32) err
 	req.Offset = offset
 	req.ChunkIdx = chunkIdx
 
-	// Debug: Check channel status
-	if len(r.dataChan) > cap(r.dataChan)*9/10 {
-		log.Printf("WARNING: Write queue nearly full: %d/%d. Receiver may block.", len(r.dataChan), cap(r.dataChan))
+	// dataChan 非阻塞发送，防止写入慢导致级联阻塞到 socket 读取
+	// 如果通道满，丢弃数据（文件可能不完整，但不会级联丢包）
+	// RaptorQ 模式下丢弃的 chunk 可通过 repair symbols 恢复
+	// NoCode 模式下丢弃的 chunk 会在超时后零填充
+	select {
+	case r.dataChan <- req:
+	default:
+		log.Printf("WARNING: Write queue FULL (%d/%d), dropping chunk %d. Backpressure avoided.",
+			len(r.dataChan), cap(r.dataChan), chunkIdx)
+		// 归还写入请求对象
+		r.writeRequestPool.Put(req)
 	}
-
-	// 直接发送到通道，减少逻辑判断和Timer开销
-	// 如果通道满，这里会阻塞，形成自然的背压，阻止接收端接收过快
-	r.dataChan <- req
 
 	// log.Printf("OnDecodedData: chunk %d, offset %d, len %d", chunkIdx, offset, len(data))
 	return nil

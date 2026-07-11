@@ -330,12 +330,12 @@ func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverh
 	}
 	fileConn := fileConns[0]
 
-	destAddr := &net.UDPAddr{IP: net.ParseIP(p.DestIP), Port: mt.BasePort}
-	log.Printf("[SendFile] Sending FDT XML (%d bytes + %d LCT header) to %s:%d (unified port) ...",
+	metaAddr := &net.UDPAddr{IP: net.ParseIP(p.DestIP), Port: constant.META_PORT}
+	log.Printf("[SendFile] Sending FDT XML (%d bytes + %d LCT header) to %s:%d (meta port) ...",
 		len(fdtXML), len(lctBytes), p.DestIP, mt.BasePort)
 	// 重发 FDT XML 3 次，防止跨设备多播丢包导致接收端无法创建 Receiver
 	for i := 0; i < 3; i++ {
-		if _, wErr := fileConn.Socket.WriteToUDP(fdtPacket, destAddr); wErr != nil {
+		if _, wErr := fileConn.Socket.WriteToUDP(fdtPacket, metaAddr); wErr != nil {
 			return fmt.Errorf("Failed to send FDT XML: %v", wErr)
 		}
 		if i < 2 {
@@ -343,7 +343,7 @@ func SendFile(p *pool.ConnPool, mt *meta.MetaPkt, limiter *rate.Limiter, onOverh
 		}
 	}
 
-	log.Printf("[SendFile] FDT XML sent (3x for redundancy)")
+	log.Printf("[SendFile] FDT XML sent (3x for redundancy) to meta port %d", constant.META_PORT)
 	log.Printf("Sender will be started after %d seconds\n", constant.START_SEND_WAIT)
 	time.Sleep(constant.START_SEND_WAIT * time.Second)
 
@@ -519,12 +519,12 @@ func runCLISender(destIP, filePath, fecType string, fid uint8,
 		log.Fatal("[CLI] No file connection available")
 	}
 	fileConn := fileConns[0]
-	destAddr := &net.UDPAddr{IP: net.ParseIP(destIP), Port: baseFilePort}
-	log.Printf("[CLI] Sending FDT XML (%d bytes + %d LCT header) to %s:%d (unified port) ...",
-		len(fdtXML), len(lctBytes), destIP, baseFilePort)
+	metaAddr := &net.UDPAddr{IP: net.ParseIP(destIP), Port: constant.META_PORT}
+	log.Printf("[CLI] Sending FDT XML (%d bytes + %d LCT header) to %s:%d (meta port) ...",
+		len(fdtXML), len(lctBytes), destIP, constant.META_PORT)
 	// 重发 FDT XML 3 次，防止跨设备多播丢包导致接收端无法创建 Receiver
 	for i := 0; i < 3; i++ {
-		if _, wErr := fileConn.Socket.WriteToUDP(fdtPacket, destAddr); wErr != nil {
+		if _, wErr := fileConn.Socket.WriteToUDP(fdtPacket, metaAddr); wErr != nil {
 			log.Fatalf("[CLI] Failed to send FDT XML: %v", wErr)
 		}
 		if i < 2 {
