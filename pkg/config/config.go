@@ -82,7 +82,7 @@ func Default() *Config {
 		},
 		Sender: SenderConfig{
 			SendFileDir:         "cmd/send_files/",
-			SendRedundancyRatio: 1.05,
+			SendRedundancyRatio: 1.15,
 			RateLimitMbps:       800,
 			StartSendWait:       2,
 		},

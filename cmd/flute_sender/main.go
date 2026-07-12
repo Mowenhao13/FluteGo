@@ -98,7 +98,7 @@ func main() {
 	_ = flag.Int("meta-port", 3399, "Meta port (deprecated, ignored)")
 	numPortsFlag := flag.Int("num-ports", 1, "Number of transfer ports")
 	sendFileDirFlag := flag.String("send-file-dir", "cmd/send_files/", "Directory for sent files")
-	sendRedundancyRatioFlag := flag.Float64("send-redundancy-ratio", 1.05, "Redundancy ratio")
+	sendRedundancyRatioFlag := flag.Float64("send-redundancy-ratio", 1.15, "Redundancy ratio")
 	rateLimitMbpsFlag := flag.Int("rate-limit-mbps", 500, "Rate limit in Mbps")
 	percentageFlag := flag.Int("percentage", 100, "Send percentage of total data (1-100, for loss recovery testing)")
 	startSendWaitFlag := flag.Int("start-send-wait", 1, "Seconds to wait before sending")
