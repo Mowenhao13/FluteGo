@@ -191,6 +191,7 @@ func (e *RqEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 
 				symbol := blk.encoder.GenSymbol(symID)
 				if symbol == nil {
+					log.Printf("warning: GenSymbol returned nil for chunk %d symID %d", blk.id, symID)
 					continue
 				}
 
@@ -217,6 +218,7 @@ func (e *RqEncoder) Encode(ctx context.Context, chunkCount uint32, provider Data
 
 				symbol := blk.encoder.GenSymbol(symID)
 				if symbol == nil {
+					log.Printf("warning: GenSymbol returned nil for chunk %d repair symID %d", blk.id, symID)
 					continue
 				}
 

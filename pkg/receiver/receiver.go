@@ -138,6 +138,8 @@ type Receiver struct {
 	// 异步数据包队列：startFileDataListener → packetChan → worker → processPacket
 	packetChan chan *queuedPacket
 	packetWg   sync.WaitGroup
+
+	closed chan struct{} // 关闭信号，先于 packetChan 关闭，用于 EnqueuePooledPacket 优雅降级
 }
 
 // queuedPacket 包装数据包及其来源 pool，用于在处理完成后归还缓冲区。
@@ -376,6 +378,7 @@ func newReceiver(outFilePath string, config decoder.DecoderConfig, fdtID uint8, 
 		OnComplete:     nil,
 		dataChan:       make(chan *WriteRequest, 10240), // 初始化缓冲通道（增大以容纳高吞吐场景下大量回调）
 		packetChan:     make(chan *queuedPacket, 32768), // 异步数据包队列（增大以容纳高吞吐场景）
+		closed:         make(chan struct{}),
 		writeRequestPool: sync.Pool{
 			New: func() interface{} {
 				return &WriteRequest{}
@@ -446,6 +449,12 @@ func (r *Receiver) EnqueuePacket(ctx context.Context, data []byte) error {
 // NoCode 模式下丢一个包就导致 chunk 不完整，因此不能静默丢弃。
 func (r *Receiver) EnqueuePooledPacket(ctx context.Context, data []byte, pool *sync.Pool) error {
 	select {
+	case <-r.closed:
+		// 接收器已关闭，丢弃数据包
+		if pool != nil {
+			pool.Put(data[:cap(data)])
+		}
+		return fmt.Errorf("receiver closed for fdtID=%d", r.fdtID)
 	case r.packetChan <- &queuedPacket{data: data, pool: pool}:
 		return nil
 	case <-time.After(500 * time.Millisecond):
@@ -1068,7 +1077,7 @@ func (r *Receiver) processPacket(ctx context.Context, msck *sock.MsSocket, data 
 		atomic.StoreInt64(&msck.LastUsed, now)
 	}
 	atomic.StoreInt64(&r.lastDataTime, now)
-	atomic.StoreInt64(&r.lastPacketEnd, now) // 记录最后一个包的接收时间，用于纯接收速率计算
+	atomic.StoreInt64(&r.lastPacketEnd, time.Now().UnixNano()) // 纳秒级，用于 recv duration 计算
 	atomic.AddInt64(&r.totalReceived, int64(n))
 	atomic.AddInt64(&r.totalPackets, 1)
 	if cp := pool.GetConnPool(); cp != nil {
@@ -1173,6 +1182,15 @@ func (r *Receiver) IsTimedOut() bool {
 func (r *Receiver) Close() {
 	log.Printf("[DIAG] fdtID=%d: Receiver.Close() called, packetChan.len=%d, dataChan.len=%d, finishedChunks=%d, expectedChunks=%d",
 		r.fdtID, len(r.packetChan), len(r.dataChan), atomic.LoadUint32(&r.finishedChunks), r.expectedChunks)
+
+	// 先关闭 closed 信号，通知 EnqueuePooledPacket 停止入队
+	select {
+	case <-r.closed:
+		// 已关闭，跳过
+	default:
+		close(r.closed)
+	}
+
 	// 关闭数据包队列，停止异步消费循环
 	close(r.packetChan)
 	r.packetWg.Wait()

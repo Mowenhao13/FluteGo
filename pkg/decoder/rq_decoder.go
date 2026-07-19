@@ -65,6 +65,7 @@ func (r *RqDecoder) getrqChunkDecoder(chunkIdx uint32) (*rqChunkDecoder, error) 
 		return nil, fmt.Errorf("无效的chunk索引: %d", chunkIdx)
 	}
 
+	// 先尝试 Load，避免不必要的 CreateDecoder 和资源浪费
 	if existing, exists := r.RqChunkDecoders.Load(chunkIdx); exists {
 		dec := existing.(*rqChunkDecoder)
 		dec.lastUsed = time.Now()
@@ -95,15 +96,9 @@ func (r *RqDecoder) getrqChunkDecoder(chunkIdx uint32) (*rqChunkDecoder, error) 
 
 	existing, loaded := r.RqChunkDecoders.LoadOrStore(chunkIdx, newrqChunkDecoder)
 	if loaded {
-		if dec, ok := existing.(*rqChunkDecoder); ok && dec != nil {
-			dec.lastUsed = time.Now()
-			if dec.decoded {
-				return nil, fmt.Errorf("chunk %d already decoded", chunkIdx)
-			}
-			return dec, nil
-		}
-		r.RqChunkDecoders.Store(chunkIdx, newrqChunkDecoder)
-		return newrqChunkDecoder, nil
+		// 另一个 goroutine 已抢先存储，丢弃新创建的 decoder（设为 nil 帮助 GC 回收）
+		newrqChunkDecoder.decoder = nil
+		return existing.(*rqChunkDecoder), nil
 	}
 	atomic.AddUint32(&r.DecoderCnt, 1)
 
