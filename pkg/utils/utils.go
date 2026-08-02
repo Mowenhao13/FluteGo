@@ -104,6 +104,114 @@ func EnsureStaticARP(enable bool, ip, mac, iface, role string) error {
 	return nil
 }
 
+// ResolveMulticastInterface 根据多播 IP 查询路由表，自动确定出口网络接口和源 IP 地址。
+//
+// # 描述
+//
+//	通过操作系统路由表查询多播 IP 对应的出口接口，避免用户手动指定 --mcast-iface。
+//	单向无反馈信道（FLUTE/UDP）一般运行在以太网上，路由表能正确指示 OS 选择哪个接口发送多播流量。
+//
+// # 平台支持
+//
+//   - darwin: route -n get <mcastIP> → interface: <name>
+//   - linux:  ip route get <mcastIP> → dev <name> src <ip>
+//
+// # 参数
+//
+//   - `mcastIP`: 多播 IP 地址字符串（如 "239.1.1.1"）
+//
+// # 返回值
+//
+//   - `*net.Interface`: 找到的出口接口，查询失败时返回 nil
+//   - `net.IP`: 该接口的源 IP 地址（IPv4），查询失败时返回 nil
+//   - `error`: 查询过程中的错误，可用于日志排查
+func ResolveMulticastInterface(mcastIP string) (*net.Interface, net.IP, error) {
+	ip := net.ParseIP(mcastIP)
+	if ip == nil {
+		return nil, nil, fmt.Errorf("invalid multicast IP: %s", mcastIP)
+	}
+
+	var ifaceName string
+	var srcIP net.IP
+
+	switch runtime.GOOS {
+	case "darwin":
+		// macOS: route -n get <mcastIP>
+		// 输出示例:
+		//   route to: 239.1.1.1
+		//   interface: en0
+		//   ...
+		out, err := exec.Command("route", "-n", "get", mcastIP).Output()
+		if err != nil {
+			return nil, nil, fmt.Errorf("route -n get %s failed: %w", mcastIP, err)
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "interface:") {
+				ifaceName = strings.TrimSpace(strings.TrimPrefix(line, "interface:"))
+				break
+			}
+		}
+		if ifaceName == "" {
+			return nil, nil, fmt.Errorf("route -n get %s: interface not found in output", mcastIP)
+		}
+		log.Printf("[multicast] route lookup: %s -> interface %s", mcastIP, ifaceName)
+
+	case "linux":
+		// Linux: ip route get <mcastIP>
+		// 输出示例:
+		//   multicast 239.1.1.1 dev eth0 src 192.168.0.12 table local ...
+		out, err := exec.Command("ip", "route", "get", mcastIP).Output()
+		if err != nil {
+			return nil, nil, fmt.Errorf("ip route get %s failed: %w", mcastIP, err)
+		}
+		fields := strings.Fields(string(out))
+		for i, f := range fields {
+			if f == "dev" && i+1 < len(fields) {
+				ifaceName = fields[i+1]
+			}
+			if f == "src" && i+1 < len(fields) {
+				srcIP = net.ParseIP(fields[i+1])
+			}
+		}
+		if ifaceName == "" {
+			return nil, nil, fmt.Errorf("ip route get %s: 'dev' not found in output: %s", mcastIP, strings.TrimSpace(string(out)))
+		}
+		log.Printf("[multicast] route lookup: %s -> dev %s src %s", mcastIP, ifaceName, srcIP)
+
+	default:
+		return nil, nil, fmt.Errorf("ResolveMulticastInterface: unsupported platform %s", runtime.GOOS)
+	}
+
+	// 通过接口名查找 net.Interface
+	iface, err := net.InterfaceByName(ifaceName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("interface %s not found: %w", ifaceName, err)
+	}
+
+	// 如果路由表没给 src IP（macOS 场景），从接口获取第一个 IPv4 地址
+	if srcIP == nil || srcIP.To4() == nil {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			return nil, nil, fmt.Errorf("get addresses for %s failed: %w", ifaceName, err)
+		}
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok {
+				if ipv4 := ipnet.IP.To4(); ipv4 != nil {
+					srcIP = ipv4
+					break
+				}
+			}
+		}
+		if srcIP == nil {
+			return nil, nil, fmt.Errorf("interface %s has no IPv4 address", ifaceName)
+		}
+	}
+
+	log.Printf("[multicast] resolved: %s via %s (%s, %s)", mcastIP, ifaceName, iface.Name, srcIP.String())
+	return iface, srcIP, nil
+}
+
 // CreateUDPListener 在指定地址上创建 UDP 监听套接字。
 //
 // # 参数

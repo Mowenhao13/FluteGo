@@ -10,6 +10,8 @@ test/tmp_recv/
 
 # Build output
 dist/
+/flute_sender
+/flute_receiver
 
 # Test data
 test_data/

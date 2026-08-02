@@ -3,6 +3,7 @@ package pool
 import (
 	"FluteGo/constant"
 	"FluteGo/pkg/sock"
+	"FluteGo/pkg/utils"
 	"fmt"
 	"log"
 	"net"
@@ -55,6 +56,17 @@ func InitConnPoolWithMulticast(destIP string, mode uint8, multicastIP string) {
 		ifaceIPLock.Lock()
 		ifaceIP := globalMulticastIfaceIP
 		ifaceIPLock.Unlock()
+
+		// 多播模式 + 发送端 + 未手动指定接口 → 自动查路由表确定出口网卡
+		if ifaceIP == "" && multicastIP != "" && mode == POOL_SEND {
+			if iface, srcIP, err := utils.ResolveMulticastInterface(multicastIP); err == nil {
+				ifaceIP = srcIP.String()
+				log.Printf("[multicast] auto-resolved interface: %s (%s)", iface.Name, ifaceIP)
+			} else {
+				log.Printf("[multicast] WARNING: failed to auto-resolve interface for %s: %v", multicastIP, err)
+				log.Printf("[multicast] HINT: use --mcast-iface <LOCAL_IP> to specify the outgoing interface manually")
+			}
+		}
 
 		connPool = &ConnPool{
 			Mode:             mode,
