@@ -403,7 +403,7 @@ go build -o flute_receiver ./cmd/flute_receiver/
 | 512 MB  | 603,136   | 115.04% | 512/512 chunks   | 34.4  | 188 | completed |
 | 768 MB  | 904,704   | 115.04% | 768/768 chunks   | 53.7  | 277 | completed |
 | 1024 MB | 1,206,272 | 115.04% | 1024/1024 chunks | 77.7  | 362 | completed |
-
+<!-- 
 **关键发现：**
 - 所有文件 MD5 校验通过，两种 FEC 在直连不限速环境下均稳定完成传输。
 - NoCode 0% 冗余下收包率精确 100.00%，零丢包；有效速率 439–464 Mbps。
@@ -411,5 +411,5 @@ go build -o flute_receiver ./cmd/flute_receiver/
 - 两者吞吐速率接近（NoCode 449–475 Mbps，RaptorQ 495–544 Mbps），RaptorQ 总速率更高因多发了 15% 冗余包，但有效速率相当。
 - 1024 MB 文件约 20 秒完成，峰值堆内存 NoCode 106 MB / RaptorQ 78 MB，内存控制良好。
 - NoCode 开销：`SymRatio = 1.0156`，`WireRatio = 1.0234`（仅 24B LCT 头部），线缆开销约 2.3%。
-- RaptorQ 开销：`SymRatio = 1.1684`，`WireRatio = 1.1774`（含冗余 + LCT 头部），线缆开销约 17.7%。
+- RaptorQ 开销：`SymRatio = 1.1684`，`WireRatio = 1.1774`（含冗余 + LCT 头部），线缆开销约 17.7%。 -->
 
