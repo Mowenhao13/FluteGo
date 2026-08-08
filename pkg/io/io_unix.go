@@ -4,12 +4,14 @@ package io
 
 import (
 	"FluteGo/pkg/sock"
+	"sync"
 )
 
 type UnixIOHandler struct {
 	msck          *sock.MsSocket
 	maxPacketSize int
 	dataQueue     chan []byte
+	bufPool       *sync.Pool // 复用 MAX_PACKET_SIZE 的 buffer，消除二次拷贝
 }
 
 func init() {
@@ -22,29 +24,36 @@ func (h *UnixIOHandler) TryDequeue() (interface{}, bool) {
 }
 
 func newUnixIOHandler(msck *sock.MsSocket, maxPacketSize int) (IOHandler, error) {
+	pool := &sync.Pool{
+		New: func() interface{} {
+			b := make([]byte, maxPacketSize)
+			return b
+		},
+	}
 	return &UnixIOHandler{
 		msck:          msck,
 		maxPacketSize: maxPacketSize,
 		dataQueue:     make(chan []byte, 16384),
+		bufPool:       pool,
 	}, nil
 }
 
 func (h *UnixIOHandler) Start() {
 	// 启动接收协程
 	go func() {
-		buf := make([]byte, h.maxPacketSize)
 		for {
+			// 从池获取缓冲区，避免每包分配
+			buf := h.bufPool.Get().([]byte)
+
 			n, err := h.msck.Socket.ReadFromUDP(buf)
 			if err != nil {
+				h.bufPool.Put(buf)
 				return
 			}
 
-			// 拷贝数据到新的缓冲区
-			data := make([]byte, n)
-			copy(data, buf[:n])
-
-			// 发送到数据队列
-			h.dataQueue <- data
+			// 直接传递 pool buffer 切片 —— 无二次拷贝
+			// 消费者必须同步处理或拷贝数据后归还到 bufPool
+			h.dataQueue <- buf[:n]
 		}
 	}()
 }
@@ -58,5 +67,8 @@ func (h *UnixIOHandler) GetDataQueue() chan []byte {
 }
 
 func (h *UnixIOHandler) ReturnContext(ctx interface{}) {
-	// Unix实现不需要此方法
+	// Unix 实现：如果 ctx 是 []byte，归还到 bufPool
+	if buf, ok := ctx.([]byte); ok {
+		h.bufPool.Put(buf[:cap(buf)])
+	}
 }
