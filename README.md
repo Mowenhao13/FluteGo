@@ -57,11 +57,20 @@ sequenceDiagram
 ### 多播模式（Multicast）
 - 使用多播地址（如 `239.1.1.1`）进行一对多传输
 - 支持同一子网内多个接收端同时接收
-- 需要配置多播接口（`--mcast-iface`）指定出口网卡
+- **发送端自动查路由表选择出口网卡**，无需手动指定
 - 发送端设置 `IP_MULTICAST_TTL=2`，支持跨 1 个路由器
-- 接收端需加入多播组（IGMP）
+- 接收端自动在所有可用接口上加入多播组（`INADDR_ANY`）
 
 **多播配置示例：**
+```bash
+# 发送端（自动选择网卡）
+go run ./cmd/flute_sender/main.go --cli --file test.pdf --dest-ip 239.1.1.1
+
+# 接收端
+go run ./cmd/flute_receiver/main.go --cli --dest-ip 239.1.1.1
+```
+
+**手动指定网卡（多网卡环境需要显式控制时）：**
 ```bash
 # 发送端（指定以太网接口 192.168.0.12）
 go run ./cmd/flute_sender/main.go --cli --file test.pdf --dest-ip 239.1.1.1 --mcast-iface 192.168.0.12
@@ -70,7 +79,51 @@ go run ./cmd/flute_sender/main.go --cli --file test.pdf --dest-ip 239.1.1.1 --mc
 go run ./cmd/flute_receiver/main.go --cli --dest-ip 239.1.1.1 --mcast-iface 192.168.0.10
 ```
 
-**注意：** 多播模式下，发送端和接收端必须在同一子网或相邻子网（TTL=2）。多网卡环境必须指定正确的以太网接口，否则多播包会从错误的网卡发出。
+**注意：** 多播模式下，发送端和接收端必须在同一子网或相邻子网（TTL=2）。发送端默认通过查询系统路由表（`route -n get` / `ip route get`）自动确定出口网卡；路由查询失败时会回退到 `INADDR_ANY` 并提示手动指定 `--mcast-iface`。
+
+---
+
+### 网卡选择机制
+
+发送端和接收端通过不同策略选择网络接口：
+
+| 模式 | 发送端 | 接收端 |
+|------|--------|--------|
+| **单播** | 不指定网卡—由 **OS 路由表**根据目标 IP 决定出口接口 | 绑定到 `0.0.0.0`（所有接口）—内核在所有 UP 接口上监听 |
+| **多播** | 默认查路由表（`route -n get` / `ip route get`）自动确定出口接口 → `IP_MULTICAST_IF` 设置出口；支持 `--mcast-iface` 手动覆盖 | 绑定到 `0.0.0.0` + `INADDR_ANY` 上 `IP_ADD_MEMBERSHIP`，内核在所有接口加入多播组 |
+
+- 多播模式下发送端优先查路由表自动选择出口网卡；路由查询失败时回退到 `INADDR_ANY` 并提示手动指定 `--mcast-iface`。
+- 接收端始终绑定 `0.0.0.0`，不主动选择网卡；多播时通过 `JoinMulticastGroup` 注册硬件过滤。
+
+---
+
+### 硬件地址（ARP）说明
+
+FluteGo 运行在纯 UDP/IP 之上（`AF_INET` + `SOCK_DGRAM`），**不接触链路层**：
+
+| 场景 | 发送端需要对方 MAC？ | 接收端需要对方 MAC？ | 原因 |
+|------|---------------------|---------------------|------|
+| **单播** | **需要**（静态 ARP 或 ARP 可达） | **不需要** | 以太网帧需要目标 MAC；单向信道中 ARP 请求无回复，故需手动配置静态 ARP |
+| **多播** | **不需要** | **不需要** | 多播 MAC 由 IP 地址通过确定性算法算出（如 `239.1.1.1` → `01:00:5E:01:01:01`），无需 ARP |
+
+> **关于 `IP_ADD_MEMBERSHIP`：** 接收端通过 `SetsockoptIPMreq(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq)` 加入多播组。此系统调用的核心作用是：
+> 1. 更新**网卡硬件多播过滤表**，使网卡不再丢弃该组播 MAC 的帧
+> 2. 设置**内核 socket 过滤规则**，将匹配的多播包投递到应用层
+> 
+> 在有 IGMP Snooping 交换机的网络环境下，内核会额外发送 IGMP Report 通知交换机；在**网线直连**场景（无交换机）下，IGMP Report 无接收方，但硬件过滤表已正确设置，数据仍能正常接收。
+>
+> FluteGo 本身不构建或解析 IGMP 报文——该协议由操作系统内核自动处理。
+
+---
+
+### IGMP 与多播转发
+
+| 交换机配置 | 行为 |
+|------------|------|
+| **IGMP Snooping 关闭**（默认） | 组播帧作为广播帧向所有端口泛洪（flood），接收端总能收到 |
+| **IGMP Snooping 开启** | 交换机监听 IGMP Report 建立 MAC→端口映射，组播流量只转发到注册过的端口 |
+
+物理介质（光纤/铜缆）不影响 IGMP 行为——IGMP 是 IP 层协议，光纤交换机处理机制与电口交换机完全相同。
 
 ## 开始使用前
 [静态 ARP 配置说明](STATIC_ARP.md)
@@ -189,6 +242,7 @@ go build -o flute_receiver ./cmd/flute_receiver/
 
 ## 性能测试
 
+<!-- 
 两种测试场景：
 - **Mac→Win**：Apple M4/16GB/macOS 26.2（发送端）→ AMD Ryzen/32GB/Win 11（接收端），**不限速**
 - **Win→Mac**：AMD Ryzen 9 7940HX@5.2GHz/32GB/Win 11（发送端）→ Apple M4/16GB/macOS 26.2（接收端），**500 Mbps 限速**（另有无限速对照）
@@ -278,11 +332,11 @@ go build -o flute_receiver ./cmd/flute_receiver/
 <!-- | Win→Mac 5×1GB RaptorQ 并发（不限速） | 25–41 MB | 99 MB | ~4300–5400 |
 | Win→Mac 5×1GB NoCode 并发（500M限速） | 12–31 MB | 58 MB | ~7300–10600 | -->
 
-- Win 发送端内存稳定（14–19 MB），无 FEC 解码状态。
+<!-- - Win 发送端内存稳定（14–19 MB），无 FEC 解码状态。
 - NoCode GC 高于 RaptorQ（`sync.Pool` 写缓冲无状态缓存），限速场景因耗时拉长 GC 最高。
 - 所有场景内存稳定，无泄漏。 -->
 
-### 接收端收包统计
+<!-- ### 接收端收包统计
 
 | 场景 | FEC | 预期包数 | 实际收包 | 比率 |
 |------|-----|---------|---------|------|
@@ -294,80 +348,68 @@ go build -o flute_receiver ./cmd/flute_receiver/
 
 - RaptorQ 收包率精确匹配 `基符号数 × 冗余比`，不限速和限速均稳定 125.00%。
 - NoCode 零丢包，100% 精确匹配。
+--> --> -->
 
-## RaptorQ Recovery Formula
+### Win→Win 单文件传输（直连网线，不限速）
 
-### Parameters
+**测试环境：**
+- 发送端 / 接收端：同一局域网两台 Windows 主机，千兆网线直连
+- 参数：`SymbolSize = 1024B`，`ChunkSize = 1024 symbols (1MB)`，`MaxPacketSize = 1048B`
+- 速率：不限速（`rateLimitMbps = 0`）
+- 文件：`bin/test_{128,256,512,768,1024}MB.bin`（随机二进制，MD5 校验通过）
+- 数据来源：`results/sender_performance.csv` + `results/transfer_stats.csv`
+- 速率以发送端为准（接收端因异步处理存在统计偏差）
 
-| Symbol | Meaning | How to compute |
-|--------|---------|---------------|
-| `S` | symbol size (bytes) | `maxPacketSize - 8` |
-| `C` | chunk size (bytes) | OTI `MaximumChunkSize` (default 32768) |
-| `F` | file size (bytes) | `os.Stat()` |
-| `R` | redundancy ratio | `--send-redundancy-ratio` |
-| `D` | drop probability | `1.0 - percentage/100` |
+#### NoCode（0% 冗余）
 
-### Derived values
+**发送端性能（速率权威）：**
 
-```
-baseSymbols   B = ceil(C / S)
-totalSymbols  T = ceil(B * R)
-chunkCount    N = ceil(F / C)
-sendRate      p = 1 - D
-```
+| 文件大小 | 耗时 (s) | 吞吐速率 (Mbps) | 有效速率 (Mbps) | 总发送包数 | 源符号数 | 修复符号数 |
+|---------|---------|----------------|----------------|-----------|---------|-----------|
+| 128 MB  | 2.314   | 474.84         | 463.97         | 131,072   | 131,072 | 0         |
+| 256 MB  | 4.707   | 466.92         | 456.23         | 262,144   | 262,144 | 0         |
+| 512 MB  | 9.717   | 452.37         | 442.01         | 524,288   | 524,288 | 0         |
+| 768 MB  | 14.168  | 465.37         | 454.71         | 786,432   | 786,432 | 0         |
+| 1024 MB | 19.579  | 449.03         | 438.74         | 1,048,576 | 1,048,576 | 0       |
 
-### Recovery condition
+**接收端统计：**
 
-A transfer **succeeds** when every chunk receives enough symbols to decode.
-With random independent packet loss at rate D, the probability a single chunk fails is:
+| 文件大小 | 收包数 | 收包率 | 完整性 | 峰值堆内存 (MB) | GC 次数 | 状态 |
+|---------|--------|-------|--------|----------------|---------|------|
+| 128 MB  | 131,072   | 100.00% | 128/128 chunks   | 52.3  | 47  | completed |
+| 256 MB  | 262,144   | 100.00% | 256/256 chunks   | 52.6  | 105 | completed |
+| 512 MB  | 524,288   | 100.00% | 512/512 chunks   | 81.6  | 200 | completed |
+| 768 MB  | 786,432   | 100.00% | 768/768 chunks   | 22.3  | 295 | completed |
+| 1024 MB | 1,048,576 | 100.00% | 1024/1024 chunks | 106.3 | 393 | completed |
 
-```
-P(fail per chunk) = P( Binomial(T, p) < B )
-```
+#### RaptorQ（15% 冗余）
 
-For `N` chunks to all succeed with high confidence:
+**发送端性能：**
 
-```
-P(fail per chunk) * N  <  0.5    (expected failures < 1)
-```
+| 文件大小 | 耗时 (s) | 吞吐速率 (Mbps) | 有效速率 (Mbps) | 总发送包数 | 源符号数 | 修复符号数 |
+|---------|---------|----------------|----------------|-----------|---------|-----------|
+| 128 MB  | 2.323   | 544.18         | 462.21         | 150,784   | 131,072 | 19,712    |
+| 256 MB  | 4.713   | 536.47         | 455.66         | 301,568   | 262,144 | 39,424    |
+| 512 MB  | 10.211  | 495.20         | 420.60         | 603,136   | 524,288 | 78,848    |
+| 768 MB  | 14.974  | 506.54         | 430.24         | 904,704   | 786,432 | 118,272   |
+| 1024 MB | 19.911  | 507.94         | 431.42         | 1,206,272 | 1,048,576 | 157,696 |
 
-### Verified boundaries (Windows localhost, RaptorQ, rate-limit=0)
+**接收端统计：**
 
-**100 MB file (N = 3,200 chunks):**
-
-| R | T | p min | Loss max | Overhead | Validated |
-|---|----|---------|----------|----------|-----------|
-| 1.30 | 32 | 0.95 | 5% | +30% | OK |
-| 1.50 | 36 | 0.90 | 10% | +50% | OK |
-| 1.60 | 39 | 0.85 | 15% | +60% | OK |
-| 2.00 | 48 | 0.75 | 25% | +100% | OK |
-| 2.50 | 60 | 0.60 | 40% | +150% | OK |
-| 3.00 | 72 | 0.60 | 40% | +200% | OK |
-
-**1 GB file (N = 32,768 chunks):**
-
-| R | T | p min | Loss max | Overhead | Validated |
-|---|----|---------|----------|----------|-----------|
-| 1.30 | 32 | 0.95 | 5% | +30% | OK |
-| 1.50 | 36 | 0.90 | 10% | +50% | OK |
-| 1.75 | 42 | 0.85 | 15% | +75% | OK |
-| 2.00 | 48 | 0.80 | 20% | +100% | OK |
-| 2.50 | 60 | 0.70 | 30% | +150% | OK |
-| 3.00 | 72 | 0.60 | 40% | +200% | OK |
-
-### Key insight
-
-Larger files have **more chunks** → higher chance of an extreme outlier.
-For a 1 GB file (32,768 chunks) you need **~1 extra symbol per chunk** of safety margin compared to a 100 MB file.
-
-### Quick reference
-
-```bash
-# 5% loss  -> ratio >= 1.3
-# 10% loss -> ratio >= 1.5
-# 15% loss -> ratio >= 1.75
-# 20% loss -> ratio >= 2.0
-# 30% loss -> ratio >= 2.5
-# 40% loss -> ratio >= 3.0
-```
+| 文件大小 | 收包数 | 收包率 | 完整性 | 峰值堆内存 (MB) | GC 次数 | 状态 |
+|---------|--------|-------|--------|----------------|---------|------|
+| 128 MB  | 150,784   | 115.04% | 128/128 chunks   | 80.1  | 48  | completed |
+| 256 MB  | 301,568   | 115.04% | 256/256 chunks   | 38.5  | 96  | completed |
+| 512 MB  | 603,136   | 115.04% | 512/512 chunks   | 34.4  | 188 | completed |
+| 768 MB  | 904,704   | 115.04% | 768/768 chunks   | 53.7  | 277 | completed |
+| 1024 MB | 1,206,272 | 115.04% | 1024/1024 chunks | 77.7  | 362 | completed |
+<!-- 
+**关键发现：**
+- 所有文件 MD5 校验通过，两种 FEC 在直连不限速环境下均稳定完成传输。
+- NoCode 0% 冗余下收包率精确 100.00%，零丢包；有效速率 439–464 Mbps。
+- RaptorQ 15% 冗余下收包率精确 115.04%，匹配 `1.15×` 冗余比；有效速率 420–462 Mbps。
+- 两者吞吐速率接近（NoCode 449–475 Mbps，RaptorQ 495–544 Mbps），RaptorQ 总速率更高因多发了 15% 冗余包，但有效速率相当。
+- 1024 MB 文件约 20 秒完成，峰值堆内存 NoCode 106 MB / RaptorQ 78 MB，内存控制良好。
+- NoCode 开销：`SymRatio = 1.0156`，`WireRatio = 1.0234`（仅 24B LCT 头部），线缆开销约 2.3%。
+- RaptorQ 开销：`SymRatio = 1.1684`，`WireRatio = 1.1774`（含冗余 + LCT 头部），线缆开销约 17.7%。 -->
 
